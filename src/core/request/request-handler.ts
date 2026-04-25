@@ -18,6 +18,7 @@ import { RetryStrategy } from './retry-strategy'
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
 const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/
+const REAUTH_FAILURE_COOLDOWN_MS = 60000
 
 export class RequestHandler {
   private accountSelector: AccountSelector
@@ -26,6 +27,8 @@ export class RequestHandler {
   private responseHandler: ResponseHandler
   private usageTracker: UsageTracker
   private retryStrategy: RetryStrategy
+  private reauthInFlight: Promise<boolean> | null = null
+  private lastFailedReauthAt = 0
 
   constructor(
     private accountManager: AccountManager,
@@ -277,25 +280,66 @@ export class RequestHandler {
 
   private async triggerReauth(showToast: ToastFunction): Promise<boolean> {
     if (!this.client) return false
+
+    const cooldownRemaining = REAUTH_FAILURE_COOLDOWN_MS - (Date.now() - this.lastFailedReauthAt)
+    if (cooldownRemaining > 0) {
+      showToast(
+        'Recent re-authentication failed. Please complete authentication manually.',
+        'error'
+      )
+      return false
+    }
+
+    if (this.reauthInFlight) {
+      return this.reauthInFlight
+    }
+
+    this.reauthInFlight = this.performReauth(showToast)
+    const success = await this.reauthInFlight.finally(() => {
+      this.reauthInFlight = null
+    })
+    if (!success) this.lastFailedReauthAt = Date.now()
+    return success
+  }
+
+  private async performReauth(showToast: ToastFunction): Promise<boolean> {
     try {
       showToast('Session expired. Re-authenticating...', 'warning')
       await this.client.provider.oauth.authorize({
         path: { id: 'kiro' },
         body: { method: 0 }
       })
-      // Sync fresh tokens from CLI after re-auth
-      await syncFromKiroCli()
+
+      await this.client.provider.oauth.callback({
+        path: { id: 'kiro' },
+        body: { method: 0 }
+      })
+
       this.repository.invalidateCache()
       const accounts = await this.repository.findAll()
       for (const acc of accounts) {
         this.accountManager.addAccount(acc)
       }
+
+      if (!this.hasUsableAccount(accounts)) {
+        logger.warn('Re-auth completed but no usable Kiro account was found')
+        showToast('Re-authentication completed but no usable Kiro account was found.', 'error')
+        return false
+      }
+
       showToast('Re-authentication successful.', 'success')
       return true
     } catch (e) {
       logger.error('Re-auth failed', e instanceof Error ? e : new Error(String(e)))
       return false
     }
+  }
+
+  private hasUsableAccount(accounts: ManagedAccount[]): boolean {
+    const now = Date.now()
+    return accounts.some(
+      (acc) => acc.isHealthy && acc.expiresAt > now && !isPermanentError(acc.unhealthyReason)
+    )
   }
 
   private allAccountsPermanentlyUnhealthy(): boolean {
