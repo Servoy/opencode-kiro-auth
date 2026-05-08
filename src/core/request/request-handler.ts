@@ -79,7 +79,15 @@ export class RequestHandler {
         continue
       }
 
-      let acc = await this.accountSelector.selectHealthyAccount(showToast)
+      let acc = await this.accountSelector.selectHealthyAccount(showToast).catch(async (e) => {
+        if (e instanceof Error && e.message.includes('reauth required')) {
+          const reauthed = await this.triggerReauth(showToast)
+          if (!reauthed)
+            throw new Error('All accounts are unhealthy or rate-limited. Please re-authenticate.')
+          return null
+        }
+        throw e
+      })
       if (!acc) {
         consecutiveNullAccounts++
         const backoffDelay = Math.min(1000 * Math.pow(2, consecutiveNullAccounts - 1), 10000)

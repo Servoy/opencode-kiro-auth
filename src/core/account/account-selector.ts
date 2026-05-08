@@ -48,7 +48,7 @@ export class AccountSelector {
         await this.sleep(wait)
         return null
       }
-      throw new Error('All accounts are unhealthy or rate-limited')
+      throw new Error('All accounts are unhealthy or rate-limited: reauth required')
     }
 
     this.resetCircuitBreaker()
