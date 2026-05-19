@@ -122,8 +122,34 @@ export async function syncFromKiroCli() {
           }
         }
 
-        const resolvedEmail =
+        // If fetchUsageLimits failed, reuse a known real email for this profileArn/clientId
+        // to avoid creating a new placeholder row with a different hash.
+        let resolvedEmail: string =
           email || makePlaceholderEmail(authMethod, serviceRegion, clientId, profileArn)
+        if (resolvedEmail.startsWith('placeholder-')) {
+          let existingReal: any | undefined
+          if (profileArn) {
+            existingReal = all.find(
+              (a) =>
+                a.auth_method === authMethod &&
+                a.profile_arn === profileArn &&
+                a.email &&
+                !a.email.startsWith('placeholder-')
+            )
+          }
+          if (!existingReal && authMethod === 'idc' && clientId) {
+            existingReal = all.find(
+              (a) =>
+                a.auth_method === 'idc' &&
+                a.client_id === clientId &&
+                a.email &&
+                !a.email.startsWith('placeholder-')
+            )
+          }
+          if (existingReal) {
+            resolvedEmail = existingReal.email
+          }
+        }
 
         const id = createDeterministicAccountId(resolvedEmail, authMethod, clientId, profileArn)
         const existingById = all.find((a) => a.id === id)
@@ -196,6 +222,12 @@ export async function syncFromKiroCli() {
           limitCount,
           lastSync: Date.now()
         })
+
+        // Remove stale rows for the same logical account that were created with
+        // the old hash key (which included the rotating clientId for IDC accounts).
+        if (authMethod === 'idc' && profileArn) {
+          await kiroDb.deleteStaleIdcDuplicates(id, resolvedEmail, profileArn)
+        }
       }
     }
     cliDb.close()

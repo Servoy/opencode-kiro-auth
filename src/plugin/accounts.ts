@@ -17,9 +17,12 @@ export function createDeterministicAccountId(
   clientId?: string,
   profileArn?: string
 ): string {
-  return createHash('sha256')
-    .update(`${email}:${method}:${clientId || ''}:${profileArn || ''}`)
-    .digest('hex')
+  // IDC clientId rotates on every re-auth; use profileArn + email as the stable identity.
+  const key =
+    method === 'idc'
+      ? `${email}:${method}:${profileArn || ''}`
+      : `${email}:${method}:${clientId || ''}:${profileArn || ''}`
+  return createHash('sha256').update(key).digest('hex')
 }
 
 export class AccountManager {
