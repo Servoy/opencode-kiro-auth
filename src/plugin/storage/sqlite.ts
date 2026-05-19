@@ -137,6 +137,34 @@ export class KiroDatabase {
     })
   }
 
+  async deleteStaleIdcDuplicates(
+    canonicalId: string,
+    email: string,
+    profileArn: string
+  ): Promise<void> {
+    await withDatabaseLock(this.path, async () => {
+      this.db
+        .prepare(
+          `DELETE FROM accounts
+           WHERE auth_method = 'idc'
+             AND email = ?
+             AND profile_arn = ?
+             AND id != ?`
+        )
+        .run(email, profileArn, canonicalId)
+      // Also clean up placeholder rows for the same profileArn.
+      this.db
+        .prepare(
+          `DELETE FROM accounts
+           WHERE auth_method = 'idc'
+             AND profile_arn = ?
+             AND email LIKE 'placeholder-%'
+             AND id != ?`
+        )
+        .run(profileArn, canonicalId)
+    })
+  }
+
   private rowToAccount(row: any): ManagedAccount {
     return {
       id: row.id,
@@ -165,6 +193,41 @@ export class KiroDatabase {
 
   close() {
     this.db.close()
+  }
+
+  getConversationId(workspace: string, fingerprint: string): string | undefined {
+    const row = this.db
+      .prepare('SELECT conv_id FROM conversations WHERE workspace = ? AND fingerprint = ?')
+      .get(workspace, fingerprint) as { conv_id: string } | undefined
+    if (row) {
+      this.db
+        .prepare('UPDATE conversations SET last_used = ? WHERE workspace = ? AND fingerprint = ?')
+        .run(Date.now(), workspace, fingerprint)
+    }
+    return row?.conv_id
+  }
+
+  /**
+   * Persist a conversationId and clean up entries older than ttlDays (default 7).
+   */
+  setConversationId(workspace: string, fingerprint: string, convId: string, ttlDays = 7): void {
+    const now = Date.now()
+    const cutoff = now - ttlDays * 24 * 60 * 60 * 1000
+    this.db.run('BEGIN TRANSACTION')
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO conversations (workspace, fingerprint, conv_id, last_used)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(workspace, fingerprint) DO UPDATE SET conv_id = excluded.conv_id, last_used = excluded.last_used`
+        )
+        .run(workspace, fingerprint, convId, now)
+      this.db.prepare('DELETE FROM conversations WHERE last_used < ?').run(cutoff)
+      this.db.run('COMMIT')
+    } catch (e) {
+      this.db.run('ROLLBACK')
+      throw e
+    }
   }
 }
 

@@ -34,7 +34,8 @@ export class RequestHandler {
     private accountManager: AccountManager,
     private config: KiroConfig,
     private repository: AccountRepository,
-    private client?: any
+    private client?: any,
+    private workspace = ''
   ) {
     this.accountSelector = new AccountSelector(accountManager, config, syncFromKiroCli, repository)
     this.tokenRefresher = new TokenRefresher(config, accountManager, syncFromKiroCli, repository)
@@ -172,6 +173,11 @@ export class RequestHandler {
             continue
           }
 
+          if (this.allAccountsPermanentlyUnhealthy()) {
+            const reauthed = await this.triggerReauth(showToast)
+            if (reauthed) continue
+          }
+
           throw new Error(`Kiro Error: ${httpStatus}`)
         }
 
@@ -201,7 +207,7 @@ export class RequestHandler {
     budget: number,
     showToast?: (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
   ): SdkPreparedRequest {
-    return transformToSdkRequest(body, model, auth, think, budget, showToast)
+    return transformToSdkRequest(body, model, auth, think, budget, showToast, this.workspace)
   }
 
   private handleSuccessfulRequest(acc: ManagedAccount): void {

@@ -26,7 +26,7 @@ export const createKiroPlugin =
     const accountManager = await AccountManager.loadFromDisk(config.account_selection_strategy)
     authHandler.setAccountManager(accountManager)
 
-    const requestHandler = new RequestHandler(accountManager, config, repository, client)
+    const requestHandler = new RequestHandler(accountManager, config, repository, client, directory)
 
     return {
       config: async (input: any) => {

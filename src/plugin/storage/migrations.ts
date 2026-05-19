@@ -7,6 +7,25 @@ export function runMigrations(db: Database): void {
   migrateStartUrlColumn(db)
   migrateOidcRegionColumn(db)
   migrateDropRefreshTokenUniqueIndex(db)
+  migrateConversationsTable(db)
+}
+
+function migrateConversationsTable(db: Database): void {
+  const hasTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'")
+    .get()
+  if (hasTable) return
+
+  db.run(`
+    CREATE TABLE conversations (
+      workspace   TEXT    NOT NULL,
+      fingerprint TEXT    NOT NULL,
+      conv_id     TEXT    NOT NULL,
+      last_used   INTEGER NOT NULL,
+      PRIMARY KEY (workspace, fingerprint)
+    )
+  `)
+  db.run('CREATE INDEX idx_conversations_last_used ON conversations(last_used)')
 }
 
 function migrateToUniqueRefreshToken(db: Database): void {

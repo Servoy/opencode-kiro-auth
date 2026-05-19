@@ -22,12 +22,36 @@ import {
   extractTextFromParts
 } from './image-handler.js'
 import { resolveKiroModel } from './models.js'
+import { kiroDb } from './storage/sqlite.js'
 import type {
   CodeWhispererRequest,
   KiroAuthDetails,
   PreparedRequest,
   SdkPreparedRequest
 } from './types'
+
+// Stable conversationId per thread — fingerprint is SHA-256(workspace + firstUserContent).
+// New thread always gets a fresh UUID; continuation reuses what's in the DB.
+function deriveConversationId(
+  workspace: string,
+  firstUserContent: string,
+  isNewThread: boolean
+): string {
+  const fingerprint = crypto
+    .createHash('sha256')
+    .update(workspace + '\0' + (firstUserContent || '_empty_'))
+    .digest('hex')
+    .slice(0, 32)
+
+  if (!isNewThread) {
+    const existing = kiroDb.getConversationId(workspace, fingerprint)
+    if (existing) return existing
+  }
+
+  const id = crypto.randomUUID()
+  kiroDb.setConversationId(workspace, fingerprint, id)
+  return id
+}
 
 interface TransformResult {
   request: CodeWhispererRequest
@@ -43,12 +67,24 @@ function buildCodeWhispererRequest(
   auth: KiroAuthDetails,
   think = false,
   budget = 20000,
-  showToast?: ToastFunction
+  showToast?: ToastFunction,
+  workspace = ''
 ): TransformResult {
   const req = typeof body === 'string' ? JSON.parse(body) : body
   const { messages, tools, system } = req
-  const convId = crypto.randomUUID()
   if (!messages || messages.length === 0) throw new Error('No messages')
+
+  // Keep the same conversationId across all turns in a thread (including tool calls)
+  // so Kiro treats them as one session. New thread = fresh UUID, continuation = reuse from DB.
+  const nonSystemMessages = messages.filter((m: any) => m.role !== 'system')
+  const isNewThread = nonSystemMessages.length === 1
+  const firstUserMsg = nonSystemMessages.find((m: any) => m.role === 'user')
+  const firstUserContent = firstUserMsg
+    ? typeof firstUserMsg.content === 'string'
+      ? firstUserMsg.content
+      : JSON.stringify(firstUserMsg.content)
+    : ''
+  const convId = deriveConversationId(workspace, firstUserContent, isNewThread)
   const resolved = resolveKiroModel(model)
   const systemMsgs = messages.filter((m: any) => m.role === 'system')
   const otherMsgs = messages.filter((m: any) => m.role !== 'system')
@@ -279,9 +315,18 @@ export function transformToCodeWhisperer(
   model: string,
   auth: KiroAuthDetails,
   think = false,
-  budget = 20000
+  budget = 20000,
+  workspace = ''
 ): PreparedRequest {
-  const { request, resolved, convId } = buildCodeWhispererRequest(body, model, auth, think, budget)
+  const { request, resolved, convId } = buildCodeWhispererRequest(
+    body,
+    model,
+    auth,
+    think,
+    budget,
+    undefined,
+    workspace
+  )
   const osP = os.platform(),
     osR = os.release(),
     nodeV = process.version.replace('v', '')
@@ -317,7 +362,8 @@ export function transformToSdkRequest(
   auth: KiroAuthDetails,
   think = false,
   budget = 20000,
-  showToast?: ToastFunction
+  showToast?: ToastFunction,
+  workspace = ''
 ): SdkPreparedRequest {
   const { request, resolved, convId } = buildCodeWhispererRequest(
     body,
@@ -325,7 +371,8 @@ export function transformToSdkRequest(
     auth,
     think,
     budget,
-    showToast
+    showToast,
+    workspace
   )
   return {
     conversationState: request.conversationState,
