@@ -44,8 +44,7 @@ export async function* transformKiroStream(
     while (true) {
       const { done, value } = await reader.read()
       if (done) {
-        // Flush any bytes buffered inside the TextDecoder for incomplete
-        // multi-byte UTF-8 sequences at the end of the stream.
+        // Flush remaining multi-byte UTF-8 from TextDecoder
         const tail = decoder.decode()
         if (tail) rawBuffer += tail
         break

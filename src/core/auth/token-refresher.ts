@@ -81,7 +81,7 @@ export class TokenRefresher {
         error.message.includes('Invalid grant provided') ||
         error.message.includes('Client is expired'))
     ) {
-      this.accountManager.markUnhealthy(account, error.message)
+      this.accountManager.markUnhealthy(account, error.code || error.message)
       await this.repository.batchSave(this.accountManager.getAccounts())
       return { account, shouldContinue: true }
     }

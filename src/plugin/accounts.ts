@@ -17,7 +17,7 @@ export function createDeterministicAccountId(
   clientId?: string,
   profileArn?: string
 ): string {
-  // IDC clientId rotates on every re-auth; use profileArn + email as the stable identity.
+  // IDC clientId rotates on re-auth; profileArn + email is the stable identity.
   const key =
     method === 'idc'
       ? `${email}:${method}:${profileArn || ''}`
@@ -105,8 +105,16 @@ export class AccountManager {
       if (this.strategy === 'sticky') {
         selected = available.find((_, i) => i === this.cursor) || available[0]
       } else if (this.strategy === 'round-robin') {
-        selected = available[this.cursor % available.length]
-        this.cursor = (this.cursor + 1) % available.length
+        // Cursor anchored to this.accounts, not the filtered `available` list
+        const n = this.accounts.length
+        for (let i = 0; i < n; i++) {
+          const candidate = this.accounts[(this.cursor + i) % n]
+          if (candidate && available.includes(candidate)) {
+            selected = candidate
+            this.cursor = (this.accounts.indexOf(candidate) + 1) % n
+            break
+          }
+        }
       } else if (this.strategy === 'lowest-usage') {
         selected = [...available].sort(
           (a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0)
@@ -114,22 +122,30 @@ export class AccountManager {
       }
     }
     if (!selected) {
+      // Fallback: unhealthy accounts without a scheduled recoveryTime
       const fallback = this.accounts
-        .filter((a) => !a.isHealthy && a.failCount < 10 && !isPermanentError(a.unhealthyReason))
+        .filter(
+          (a) =>
+            !a.isHealthy &&
+            a.failCount < 10 &&
+            !isPermanentError(a.unhealthyReason) &&
+            !a.recoveryTime
+        )
         .sort(
           (a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0)
         )[0]
       if (fallback) {
         fallback.isHealthy = true
         delete fallback.unhealthyReason
-        delete fallback.recoveryTime
         selected = fallback
       }
     }
     if (selected) {
       selected.lastUsed = now
       selected.usedCount = (selected.usedCount || 0) + 1
-      this.cursor = this.accounts.indexOf(selected)
+      if (this.strategy !== 'round-robin') {
+        this.cursor = this.accounts.indexOf(selected)
+      }
       return selected
     }
     return null

@@ -30,13 +30,12 @@ import type {
   SdkPreparedRequest
 } from './types'
 
-// Stable conversationId per thread — fingerprint is SHA-256(workspace + firstUserContent).
-// New thread always gets a fresh UUID; continuation reuses what's in the DB.
-function deriveConversationId(
+// Stable conversationId + agentContinuationId per thread, persisted in SQLite.
+function deriveConversationIds(
   workspace: string,
   firstUserContent: string,
   isNewThread: boolean
-): string {
+): { convId: string; agentContinuationId: string } {
   const fingerprint = crypto
     .createHash('sha256')
     .update(workspace + '\0' + (firstUserContent || '_empty_'))
@@ -45,18 +44,31 @@ function deriveConversationId(
 
   if (!isNewThread) {
     const existing = kiroDb.getConversationId(workspace, fingerprint)
-    if (existing) return existing
+    if (existing) {
+      if (!existing.agentContinuationId) {
+        existing.agentContinuationId = crypto.randomUUID()
+        kiroDb.setConversationId(
+          workspace,
+          fingerprint,
+          existing.convId,
+          existing.agentContinuationId
+        )
+      }
+      return existing
+    }
   }
 
-  const id = crypto.randomUUID()
-  kiroDb.setConversationId(workspace, fingerprint, id)
-  return id
+  const convId = crypto.randomUUID()
+  const agentContinuationId = crypto.randomUUID()
+  kiroDb.setConversationId(workspace, fingerprint, convId, agentContinuationId)
+  return { convId, agentContinuationId }
 }
 
 interface TransformResult {
   request: CodeWhispererRequest
   resolved: string
   convId: string
+  agentContinuationId: string
 }
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -74,18 +86,6 @@ function buildCodeWhispererRequest(
   const { messages, tools, system } = req
   if (!messages || messages.length === 0) throw new Error('No messages')
 
-  // Keep the same conversationId across all turns in a thread (including tool calls)
-  // so Kiro treats them as one session. New thread = fresh UUID, continuation = reuse from DB.
-  const nonSystemMessages = messages.filter((m: any) => m.role !== 'system')
-  const isNewThread = nonSystemMessages.length === 1
-  const firstUserMsg = nonSystemMessages.find((m: any) => m.role === 'user')
-  const firstUserContent = firstUserMsg
-    ? typeof firstUserMsg.content === 'string'
-      ? firstUserMsg.content
-      : JSON.stringify(firstUserMsg.content)
-    : ''
-  const convId = deriveConversationId(workspace, firstUserContent, isNewThread)
-  const resolved = resolveKiroModel(model)
   const systemMsgs = messages.filter((m: any) => m.role === 'system')
   const otherMsgs = messages.filter((m: any) => m.role !== 'system')
   let sys = system || ''
@@ -100,6 +100,21 @@ function buildCodeWhispererRequest(
   const msgs = mergeAdjacentMessages([...otherMsgs])
   const lastMsg = msgs[msgs.length - 1]
   if (lastMsg && lastMsg.role === 'assistant' && getContentText(lastMsg) === '{') msgs.pop()
+
+  // isNewThread after merge — consecutive same-role messages collapse into one
+  const isNewThread = msgs.length <= 1
+  const firstUserMsg = msgs.find((m: any) => m.role === 'user')
+  const firstUserContent = firstUserMsg
+    ? typeof firstUserMsg.content === 'string'
+      ? firstUserMsg.content
+      : JSON.stringify(firstUserMsg.content)
+    : ''
+  const { convId, agentContinuationId } = deriveConversationIds(
+    workspace,
+    firstUserContent,
+    isNewThread
+  )
+  const resolved = resolveKiroModel(model)
   const cwTools = tools ? convertToolsToCodeWhisperer(tools) : []
   let history = buildHistory(msgs, resolved)
 
@@ -215,6 +230,8 @@ function buildCodeWhispererRequest(
   }
   const request: CodeWhispererRequest = {
     conversationState: {
+      agentContinuationId,
+      agentTaskType: 'vibe',
       chatTriggerType: KIRO_CONSTANTS.CHAT_TRIGGER_TYPE_MANUAL,
       conversationId: convId,
       currentMessage: {
@@ -306,7 +323,7 @@ function buildCodeWhispererRequest(
     }
   }
 
-  return { request, resolved, convId }
+  return { request, resolved, convId, agentContinuationId }
 }
 
 export function transformToCodeWhisperer(

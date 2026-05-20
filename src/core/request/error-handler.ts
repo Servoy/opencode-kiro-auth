@@ -76,9 +76,11 @@ export class ErrorHandler {
         await this.sleep(delay)
         return { shouldRetry: true }
       } else {
+        account.failCount = 9 // markUnhealthy will increment to 10 and set isHealthy=false
         this.accountManager.markUnhealthy(
           account,
-          `Server Error (500) after 5 attempts: ${errorMessage}`
+          `Server error (500) after 5 attempts: ${errorMessage}`,
+          Date.now() + 1800000 // 30 min recovery
         )
         await this.repository.batchSave(this.accountManager.getAccounts())
         showToast(`500: ${errorMessage}. Marking account as unhealthy and switching...`, 'warning')
@@ -121,14 +123,10 @@ export class ErrorHandler {
         errorReason = 'Account Suspended'
         isPermanent = true
       }
-      if (
-        errorReason.includes('bearer token included in the request is invalid') ||
-        errorReason.includes('The bearer token included in the request is invalid')
-      ) {
-        isPermanent = true
-      }
-      if (isPermanent) {
-        account.failCount = 10
+      if (errorReason.includes('bearer token included in the request is invalid')) {
+        // Force token refresh on next retry
+        account.expiresAt = 0
+        return { shouldRetry: true }
       }
 
       logger.warn(`HTTP ${response.status} on ${account.email}: ${errorReason}`, {
@@ -142,6 +140,12 @@ export class ErrorHandler {
         this.accountManager.markUnhealthy(account, errorReason)
         await this.repository.batchSave(this.accountManager.getAccounts())
         return { shouldRetry: true, switchAccount: true }
+      }
+
+      if (isPermanent) {
+        this.accountManager.markUnhealthy(account, errorReason)
+        await this.repository.batchSave(this.accountManager.getAccounts())
+        return { shouldRetry: false }
       }
 
       if (

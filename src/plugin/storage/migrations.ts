@@ -8,6 +8,18 @@ export function runMigrations(db: Database): void {
   migrateOidcRegionColumn(db)
   migrateDropRefreshTokenUniqueIndex(db)
   migrateConversationsTable(db)
+  migrateReauthLockTable(db)
+  migrateConversationsAgentContinuationId(db)
+}
+
+function migrateReauthLockTable(db: Database): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS reauth_lock (
+      id      INTEGER PRIMARY KEY CHECK (id = 1),
+      pid     INTEGER NOT NULL,
+      acquired_at INTEGER NOT NULL
+    )
+  `)
 }
 
 function migrateConversationsTable(db: Database): void {
@@ -198,5 +210,13 @@ function migrateDropRefreshTokenUniqueIndex(db: Database): void {
     for (const row of rows.slice(1)) {
       db.prepare('DELETE FROM accounts WHERE id = ?').run(row.id)
     }
+  }
+}
+
+function migrateConversationsAgentContinuationId(db: Database): void {
+  const columns = db.prepare('PRAGMA table_info(conversations)').all() as any[]
+  const names = new Set(columns.map((c: any) => c.name))
+  if (!names.has('agent_continuation_id')) {
+    db.run('ALTER TABLE conversations ADD COLUMN agent_continuation_id TEXT')
   }
 }

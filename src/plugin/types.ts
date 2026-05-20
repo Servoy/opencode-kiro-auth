@@ -82,6 +82,8 @@ export interface CodeWhispererMessage {
 
 export interface CodeWhispererRequest {
   conversationState: {
+    agentContinuationId?: string
+    agentTaskType?: string
     chatTriggerType: string
     conversationId: string
     history?: CodeWhispererMessage[]

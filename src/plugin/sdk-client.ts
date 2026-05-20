@@ -21,12 +21,17 @@ export function createSdkClient(
     endpoint: `https://q.${region}.amazonaws.com`,
     token: () => Promise.resolve({ token }),
     maxAttempts: 1,
-    customUserAgent: [[KIRO_CONSTANTS.USER_AGENT]]
+    customUserAgent: [[KIRO_CONSTANTS.USER_AGENT]],
+    requestHandler: {
+      connectionTimeout: 10000,
+      requestTimeout: 120000
+    }
   })
 
   client.middlewareStack.add(
     (next: any) => async (args: any) => {
       args.request.headers['x-amzn-kiro-agent-mode'] = 'vibe'
+      args.request.headers['Connection'] = 'close'
       return next(args)
     },
     { step: 'build', name: 'addKiroHeaders' }

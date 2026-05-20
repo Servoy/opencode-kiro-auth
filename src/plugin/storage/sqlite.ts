@@ -191,37 +191,113 @@ export class KiroDatabase {
     }
   }
 
+  private static readonly REAUTH_LOCK_TTL_MS = 120_000
+
+  acquireReauthLock(): boolean {
+    const now = Date.now()
+    try {
+      this.db.run('BEGIN IMMEDIATE')
+    } catch {
+      // Another write transaction is active — treat as lock held
+      return false
+    }
+    try {
+      const existing = this.db
+        .prepare('SELECT pid, acquired_at FROM reauth_lock WHERE id = 1')
+        .get() as { pid: number; acquired_at: number } | undefined
+
+      if (existing) {
+        const expired = now - existing.acquired_at >= KiroDatabase.REAUTH_LOCK_TTL_MS
+        const dead = (() => {
+          try {
+            process.kill(existing.pid, 0)
+            return false
+          } catch {
+            return true
+          }
+        })()
+        if (expired || dead) {
+          this.db.prepare('DELETE FROM reauth_lock WHERE id = 1').run()
+        } else {
+          this.db.run('ROLLBACK')
+          return false
+        }
+      }
+
+      this.db
+        .prepare('INSERT INTO reauth_lock (id, pid, acquired_at) VALUES (1, ?, ?)')
+        .run(process.pid, now)
+      this.db.run('COMMIT')
+      return true
+    } catch {
+      this.db.run('ROLLBACK')
+      return false
+    }
+  }
+
+  isReauthLockHeld(): boolean {
+    const row = this.db.prepare('SELECT pid FROM reauth_lock WHERE id = 1').get() as
+      | { pid: number }
+      | undefined
+    if (!row) return false
+    try {
+      process.kill(row.pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  releaseReauthLock(): void {
+    this.db.prepare('DELETE FROM reauth_lock WHERE id = 1 AND pid = ?').run(process.pid)
+  }
+
   close() {
     this.db.close()
   }
 
-  getConversationId(workspace: string, fingerprint: string): string | undefined {
+  getConversationId(
+    workspace: string,
+    fingerprint: string
+  ): { convId: string; agentContinuationId: string } | undefined {
     const row = this.db
-      .prepare('SELECT conv_id FROM conversations WHERE workspace = ? AND fingerprint = ?')
-      .get(workspace, fingerprint) as { conv_id: string } | undefined
+      .prepare(
+        'SELECT conv_id, agent_continuation_id FROM conversations WHERE workspace = ? AND fingerprint = ?'
+      )
+      .get(workspace, fingerprint) as
+      | { conv_id: string; agent_continuation_id: string | null }
+      | undefined
     if (row) {
       this.db
         .prepare('UPDATE conversations SET last_used = ? WHERE workspace = ? AND fingerprint = ?')
         .run(Date.now(), workspace, fingerprint)
     }
-    return row?.conv_id
+    return row
+      ? { convId: row.conv_id, agentContinuationId: row.agent_continuation_id || '' }
+      : undefined
   }
 
   /**
-   * Persist a conversationId and clean up entries older than ttlDays (default 7).
+   * Persist a conversationId and agentContinuationId, clean up entries older than ttlDays (default 7).
    */
-  setConversationId(workspace: string, fingerprint: string, convId: string, ttlDays = 7): void {
+  setConversationId(
+    workspace: string,
+    fingerprint: string,
+    convId: string,
+    agentContinuationId: string,
+    ttlDays = 7
+  ): void {
     const now = Date.now()
     const cutoff = now - ttlDays * 24 * 60 * 60 * 1000
     this.db.run('BEGIN TRANSACTION')
     try {
       this.db
         .prepare(
-          `INSERT INTO conversations (workspace, fingerprint, conv_id, last_used)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(workspace, fingerprint) DO UPDATE SET conv_id = excluded.conv_id, last_used = excluded.last_used`
+          `INSERT INTO conversations (workspace, fingerprint, conv_id, agent_continuation_id, last_used)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(workspace, fingerprint) DO UPDATE SET conv_id = excluded.conv_id, agent_continuation_id = excluded.agent_continuation_id, last_used = excluded.last_used`
         )
-        .run(workspace, fingerprint, convId, now)
+        .run(workspace, fingerprint, convId, agentContinuationId, now)
       this.db.prepare('DELETE FROM conversations WHERE last_used < ?').run(cutoff)
       this.db.run('COMMIT')
     } catch (e) {

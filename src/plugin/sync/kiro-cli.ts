@@ -122,8 +122,7 @@ export async function syncFromKiroCli() {
           }
         }
 
-        // If fetchUsageLimits failed, reuse a known real email for this profileArn/clientId
-        // to avoid creating a new placeholder row with a different hash.
+        // Reuse known email for this profileArn to avoid duplicate placeholder rows
         let resolvedEmail: string =
           email || makePlaceholderEmail(authMethod, serviceRegion, clientId, profileArn)
         if (resolvedEmail.startsWith('placeholder-')) {
@@ -223,8 +222,6 @@ export async function syncFromKiroCli() {
           lastSync: Date.now()
         })
 
-        // Remove stale rows for the same logical account that were created with
-        // the old hash key (which included the rotating clientId for IDC accounts).
         if (authMethod === 'idc' && profileArn) {
           await kiroDb.deleteStaleIdcDuplicates(id, resolvedEmail, profileArn)
         }
