@@ -144,7 +144,8 @@ export class RequestHandler {
           sdkResponse,
           model,
           sdkPrep.conversationId,
-          sdkPrep.streaming
+          sdkPrep.streaming,
+          sdkPrep.toolNameMapper
         )
         logger.debug(`[REQ] done convId=${sdkPrep.conversationId}`)
         return result

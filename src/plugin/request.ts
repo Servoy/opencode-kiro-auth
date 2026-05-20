@@ -13,8 +13,10 @@ import {
   mergeAdjacentMessages
 } from '../infrastructure/transformers/message-transformer.js'
 import {
+  buildToolNameMaps,
   convertToolsToCodeWhisperer,
-  deduplicateToolResults
+  deduplicateToolResults,
+  shortenToolName
 } from '../infrastructure/transformers/tool-transformer.js'
 import {
   convertImagesToKiroFormat,
@@ -69,6 +71,7 @@ interface TransformResult {
   resolved: string
   convId: string
   agentContinuationId: string
+  toolNameMapper?: (name: string) => string
 }
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -115,6 +118,7 @@ function buildCodeWhispererRequest(
     isNewThread
   )
   const resolved = resolveKiroModel(model)
+  const toolMaps = tools ? buildToolNameMaps(tools) : undefined
   const cwTools = tools ? convertToolsToCodeWhisperer(tools) : []
   let history = buildHistory(msgs, resolved)
 
@@ -158,7 +162,7 @@ function buildCodeWhispererRequest(
         else if (p.type === 'thinking') th += p.thinking || p.text || ''
         else if (p.type === 'tool_use') {
           if (!arm.toolUses) arm.toolUses = []
-          arm.toolUses.push({ input: p.input, name: p.name, toolUseId: p.id })
+          arm.toolUses.push({ input: p.input, name: shortenToolName(p.name), toolUseId: p.id })
         }
       }
     } else arm.content = getContentText(curMsg)
@@ -170,7 +174,7 @@ function buildCodeWhispererRequest(
             typeof tc.function?.arguments === 'string'
               ? JSON.parse(tc.function.arguments)
               : tc.function?.arguments,
-          name: tc.function?.name,
+          name: shortenToolName(tc.function?.name),
           toolUseId: tc.id
         })
       }
@@ -255,7 +259,7 @@ function buildCodeWhispererRequest(
       if (originalCall) {
         orphanedTrs.push({
           call: {
-            name: originalCall.name || originalCall.function?.name || 'tool',
+            name: shortenToolName(originalCall.name || originalCall.function?.name || 'tool'),
             toolUseId: tr.toolUseId,
             input:
               originalCall.input ||
@@ -323,7 +327,7 @@ function buildCodeWhispererRequest(
     }
   }
 
-  return { request, resolved, convId, agentContinuationId }
+  return { request, resolved, convId, agentContinuationId, toolNameMapper: toolMaps?.fromKiroName }
 }
 
 export function transformToCodeWhisperer(
@@ -382,7 +386,7 @@ export function transformToSdkRequest(
   showToast?: ToastFunction,
   workspace = ''
 ): SdkPreparedRequest {
-  const { request, resolved, convId } = buildCodeWhispererRequest(
+  const { request, resolved, convId, toolNameMapper } = buildCodeWhispererRequest(
     body,
     model,
     auth,
@@ -397,6 +401,7 @@ export function transformToSdkRequest(
     streaming: true,
     effectiveModel: resolved,
     conversationId: convId,
-    region: extractRegionFromArn(auth.profileArn) ?? auth.region
+    region: extractRegionFromArn(auth.profileArn) ?? auth.region,
+    toolNameMapper
   }
 }

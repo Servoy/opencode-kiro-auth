@@ -121,6 +121,7 @@ export interface SdkPreparedRequest {
   effectiveModel: string
   conversationId: string
   region: string
+  toolNameMapper?: (name: string) => string
 }
 
 export type AccountSelectionStrategy = 'sticky' | 'round-robin' | 'lowest-usage'

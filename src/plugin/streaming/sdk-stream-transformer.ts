@@ -1,4 +1,5 @@
 import { parseBracketToolCalls } from '../../infrastructure/transformers/tool-call-parser.js'
+import { deduplicateToolCallsByContent } from '../../infrastructure/transformers/tool-transformer.js'
 import * as logger from '../logger.js'
 import { getContextWindowSize } from '../models.js'
 import { estimateTokens } from '../response.js'
@@ -10,7 +11,8 @@ import { StreamState, THINKING_END_TAG, THINKING_START_TAG, ToolCallState } from
 export async function* transformSdkStream(
   sdkResponse: any,
   model: string,
-  conversationId: string
+  conversationId: string,
+  toolNameMapper?: (name: string) => string
 ): AsyncGenerator<any> {
   const thinkingRequested = true
 
@@ -133,7 +135,7 @@ export async function* transformSdkStream(
             if (currentToolCall) toolCalls.push(currentToolCall)
             currentToolCall = {
               toolUseId: tc.toolUseId,
-              name: tc.name,
+              name: toolNameMapper ? toolNameMapper(tc.name) : tc.name,
               input: tc.input || ''
             }
           }
@@ -194,10 +196,12 @@ export async function* transformSdkStream(
       }
     }
 
-    if (toolCalls.length > 0) {
+    const dedupedToolCalls = deduplicateToolCallsByContent(toolCalls)
+
+    if (dedupedToolCalls.length > 0) {
       const baseIndex = streamState.nextBlockIndex
-      for (let i = 0; i < toolCalls.length; i++) {
-        const tc = toolCalls[i]
+      for (let i = 0; i < dedupedToolCalls.length; i++) {
+        const tc = dedupedToolCalls[i]
         if (!tc) continue
         const blockIndex = baseIndex + i
 
@@ -259,7 +263,7 @@ export async function* transformSdkStream(
     yield convertToOpenAI(
       {
         type: 'message_delta',
-        delta: { stop_reason: toolCalls.length > 0 ? 'tool_use' : 'end_turn' },
+        delta: { stop_reason: dedupedToolCalls.length > 0 ? 'tool_use' : 'end_turn' },
         usage: {
           input_tokens: inputTokens,
           output_tokens: outputTokens,
