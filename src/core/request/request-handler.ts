@@ -6,6 +6,7 @@ import { isPermanentError } from '../../plugin/health'
 import * as logger from '../../plugin/logger'
 import { transformToSdkRequest } from '../../plugin/request'
 import { createSdkClient } from '../../plugin/sdk-client'
+import { kiroDb } from '../../plugin/storage/sqlite'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
 import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../plugin/types'
 import { AccountSelector } from '../account/account-selector'
@@ -19,6 +20,7 @@ type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' |
 
 const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/
 const REAUTH_FAILURE_COOLDOWN_MS = 60000
+const REAUTH_TIMEOUT_MS = 90_000
 
 export class RequestHandler {
   private accountSelector: AccountSelector
@@ -111,6 +113,12 @@ export class RequestHandler {
 
       const sdkPrep = this.prepareSdkRequest(init?.body, model, auth, think, budget, showToast)
 
+      const histLen = (sdkPrep.conversationState as any).history?.length || 0
+      const agentContId = (sdkPrep.conversationState as any).agentContinuationId || 'none'
+      logger.debug(
+        `[REQ] convId=${sdkPrep.conversationId} history=${histLen} agentCont=${agentContId} model=${model}`
+      )
+
       const apiTimestamp = this.config.enable_log_api_request ? logger.getTimestamp() : null
       if (apiTimestamp) {
         this.logSdkRequest(sdkPrep, acc, apiTimestamp)
@@ -132,13 +140,18 @@ export class RequestHandler {
         this.handleSuccessfulRequest(acc)
         this.usageTracker.syncUsage(acc, auth)
 
-        return await this.responseHandler.handleSdkSuccess(
+        const result = await this.responseHandler.handleSdkSuccess(
           sdkResponse,
           model,
           sdkPrep.conversationId,
           sdkPrep.streaming
         )
+        logger.debug(`[REQ] done convId=${sdkPrep.conversationId}`)
+        return result
       } catch (e: any) {
+        logger.warn(
+          `[REQ] error convId=${sdkPrep.conversationId}: ${e?.name || ''} ${e?.message?.slice(0, 200) || String(e).slice(0, 200)}`
+        )
         const httpStatus = e?.$metadata?.httpStatusCode
 
         if (httpStatus) {
@@ -308,9 +321,26 @@ export class RequestHandler {
       return this.reauthInFlight
     }
 
+    if (!kiroDb.acquireReauthLock()) {
+      logger.warn('Reauth lock held by another instance — polling for completion')
+      showToast('Another session is re-authenticating. Please wait...', 'info')
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline) {
+        await this.sleep(1000)
+        if (kiroDb.isReauthLockHeld()) continue
+        this.repository.invalidateCache()
+        const accounts = await this.repository.findAll()
+        for (const acc of accounts) this.accountManager.addAccount(acc)
+        return this.hasUsableAccount(accounts)
+      }
+      showToast('Re-authentication timed out. Please try again.', 'error')
+      return false
+    }
+
     this.reauthInFlight = this.performReauth(showToast)
     const success = await this.reauthInFlight.finally(() => {
       this.reauthInFlight = null
+      kiroDb.releaseReauthLock()
     })
     if (!success) this.lastFailedReauthAt = Date.now()
     return success
@@ -319,15 +349,31 @@ export class RequestHandler {
   private async performReauth(showToast: ToastFunction): Promise<boolean> {
     try {
       showToast('Session expired. Re-authenticating...', 'warning')
-      await this.client.provider.oauth.authorize({
-        path: { id: 'kiro' },
-        body: { method: 0 }
-      })
+      logger.warn('Reauth: starting oauth flow')
 
-      await this.client.provider.oauth.callback({
-        path: { id: 'kiro' },
-        body: { method: 0 }
-      })
+      const withTimeout = <T>(promise: Promise<T>, label: string): Promise<T> => {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        return Promise.race([
+          promise.finally(() => clearTimeout(timer)),
+          new Promise<T>(
+            (_, reject) =>
+              (timer = setTimeout(
+                () => reject(new Error(`Reauth timed out waiting for ${label}`)),
+                REAUTH_TIMEOUT_MS
+              ))
+          )
+        ])
+      }
+
+      await withTimeout(
+        this.client.provider.oauth.authorize({ path: { id: 'kiro' }, body: { method: 0 } }),
+        'oauth.authorize'
+      )
+
+      await withTimeout(
+        this.client.provider.oauth.callback({ path: { id: 'kiro' }, body: { method: 0 } }),
+        'oauth.callback'
+      )
 
       this.repository.invalidateCache()
       const accounts = await this.repository.findAll()
@@ -345,6 +391,12 @@ export class RequestHandler {
       return true
     } catch (e) {
       logger.error('Re-auth failed', e instanceof Error ? e : new Error(String(e)))
+      showToast(
+        e instanceof Error && e.message.includes('timed out')
+          ? 'Re-authentication timed out. Please try again.'
+          : 'Re-authentication failed. Please try again.',
+        'error'
+      )
       return false
     }
   }
