@@ -1,4 +1,5 @@
 import { parseBracketToolCalls } from '../../infrastructure/transformers/tool-call-parser.js'
+import * as logger from '../logger.js'
 import { getContextWindowSize } from '../models.js'
 import { estimateTokens } from '../response.js'
 import { convertToOpenAI } from './openai-converter.js'
@@ -125,10 +126,10 @@ export async function* transformSdkStream(
         if (tc.name) totalContent += tc.name
         if (tc.input) totalContent += tc.input
 
-        if (tc.name && tc.toolUseId) {
+        if (tc.toolUseId) {
           if (currentToolCall && currentToolCall.toolUseId === tc.toolUseId) {
             currentToolCall.input += tc.input || ''
-          } else {
+          } else if (tc.name) {
             if (currentToolCall) toolCalls.push(currentToolCall)
             currentToolCall = {
               toolUseId: tc.toolUseId,
@@ -150,6 +151,11 @@ export async function* transformSdkStream(
         if (cue.contextUsagePercentage) {
           contextUsagePercentage = cue.contextUsagePercentage
         }
+      } else if ((event as any).meteringEvent) {
+        const me = (event as any).meteringEvent
+        logger.debug(
+          `[CREDITS] usage=${me.usage} ${me.unit || 'credit'}${me.usage !== 1 ? 's' : ''}`
+        )
       }
     }
 
@@ -215,6 +221,9 @@ export async function* transformSdkStream(
           const parsed = JSON.parse(tc.input)
           inputJson = JSON.stringify(parsed)
         } catch (e) {
+          logger.debug(
+            `[TOOL_CALL] Invalid JSON for tool "${tc.name}" (id=${tc.toolUseId}): ${tc.input.slice(0, 500)}`
+          )
           inputJson = tc.input
         }
 
@@ -264,6 +273,14 @@ export async function* transformSdkStream(
 
     yield convertToOpenAI({ type: 'message_stop' }, conversationId, model)
   } catch (e) {
+    logger.debug(
+      `[STREAM] Error in transformSdkStream: ${e instanceof Error ? e.message : String(e)}`
+    )
+    if (currentToolCall) {
+      logger.debug(
+        `[STREAM] Incomplete tool call: name=${currentToolCall.name} id=${currentToolCall.toolUseId} inputLen=${currentToolCall.input.length}`
+      )
+    }
     throw e
   }
 }
