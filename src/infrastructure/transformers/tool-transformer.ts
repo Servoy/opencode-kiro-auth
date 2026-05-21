@@ -39,12 +39,37 @@ function sanitizeToolInput(input: any): any {
   return result
 }
 
+function sanitizeSchema(schema: any): any {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema
+  const result: Record<string, any> = {}
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === 'additionalProperties') continue
+    if (key === 'required' && Array.isArray(value) && value.length === 0) continue
+    if (key === 'properties' && typeof value === 'object' && value !== null) {
+      const props: Record<string, any> = {}
+      for (const [pk, pv] of Object.entries(value)) {
+        props[pk] = sanitizeSchema(pv)
+      }
+      result[key] = props
+    } else if ((key === 'anyOf' || key === 'oneOf' || key === 'allOf') && Array.isArray(value)) {
+      result[key] = value.map(sanitizeSchema)
+    } else if (key === 'items' && typeof value === 'object') {
+      result[key] = sanitizeSchema(value)
+    } else {
+      result[key] = value
+    }
+  }
+  return result
+}
+
 export function convertToolsToCodeWhisperer(tools: any[]): any[] {
   return tools.map((t) => ({
     toolSpecification: {
       name: shortenToolName(t.name || t.function?.name || ''),
       description: (t.description || t.function?.description || '').substring(0, 9216),
-      inputSchema: { json: sanitizeToolInput(t.input_schema || t.function?.parameters || {}) }
+      inputSchema: {
+        json: sanitizeSchema(sanitizeToolInput(t.input_schema || t.function?.parameters || {}))
+      }
     }
   }))
 }

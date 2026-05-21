@@ -327,6 +327,21 @@ function buildCodeWhispererRequest(
     }
   }
 
+  // Strip empty toolUses arrays from history (Kiro quirk)
+  for (const h of history) {
+    if (h.assistantResponseMessage?.toolUses && h.assistantResponseMessage.toolUses.length === 0) {
+      delete h.assistantResponseMessage.toolUses
+    }
+  }
+
+  // Trim history if payload exceeds Kiro's ~615KB limit
+  const MAX_PAYLOAD_BYTES = 600_000
+  while (history.length > 2) {
+    const size = JSON.stringify(request).length
+    if (size <= MAX_PAYLOAD_BYTES) break
+    history.splice(0, 2)
+  }
+
   return { request, resolved, convId, agentContinuationId, toolNameMapper: toolMaps?.fromKiroName }
 }
 
