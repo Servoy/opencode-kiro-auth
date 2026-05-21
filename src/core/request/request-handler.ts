@@ -174,13 +174,15 @@ export class RequestHandler {
             e,
             mockResponse,
             acc,
-            { retry },
+            { retry, excludedMs: retryContext.excludedMs },
             showToast
           )
 
           if (errorResult.shouldRetry) {
             if (errorResult.newContext) {
               retry = errorResult.newContext.retry
+              const sleptMs = (errorResult.newContext.excludedMs ?? 0) - retryContext.excludedMs
+              if (sleptMs > 0) this.retryStrategy.markSleep(retryContext, sleptMs)
             }
             if (errorResult.switchAccount) {
               continue

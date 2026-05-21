@@ -224,13 +224,19 @@ export class KiroDatabase {
         }
       }
 
+      // INSERT OR REPLACE handles a race where two instances both saw the
+      // same dead/expired lock and both reach this branch.
       this.db
-        .prepare('INSERT INTO reauth_lock (id, pid, acquired_at) VALUES (1, ?, ?)')
+        .prepare('INSERT OR REPLACE INTO reauth_lock (id, pid, acquired_at) VALUES (1, ?, ?)')
         .run(process.pid, now)
       this.db.run('COMMIT')
       return true
     } catch {
-      this.db.run('ROLLBACK')
+      try {
+        this.db.run('ROLLBACK')
+      } catch {
+        // already rolled back
+      }
       return false
     }
   }

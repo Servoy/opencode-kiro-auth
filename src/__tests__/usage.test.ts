@@ -132,4 +132,56 @@ describe('fetchUsageLimits', () => {
       globalThis.fetch = original
     }
   })
+
+  test('does NOT chain to next param combo on 429 (rate limit)', async () => {
+    let callCount = 0
+    const mockFetch = mock(async () => {
+      callCount++
+      return new Response(JSON.stringify({ message: 'rate limited' }), {
+        status: 429,
+        headers: { 'x-amzn-errortype': 'ThrottlingException' }
+      })
+    })
+    const original = globalThis.fetch
+    globalThis.fetch = mockFetch as any
+    try {
+      await expect(fetchUsageLimits(makeAuth())).rejects.toThrow(/429|Throttling/i)
+      // Old behaviour would call all 4 attempts. New behaviour stops at 1.
+      expect(callCount).toBe(1)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  test('does NOT chain to next param combo on 401', async () => {
+    let callCount = 0
+    const mockFetch = mock(async () => {
+      callCount++
+      return new Response(JSON.stringify({ message: 'unauthorized' }), { status: 401 })
+    })
+    const original = globalThis.fetch
+    globalThis.fetch = mockFetch as any
+    try {
+      await expect(fetchUsageLimits(makeAuth())).rejects.toThrow(/401/)
+      expect(callCount).toBe(1)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  test('does NOT retry on network error across all combos', async () => {
+    let callCount = 0
+    const mockFetch = mock(async () => {
+      callCount++
+      throw new Error('fetch failed: ECONNRESET')
+    })
+    const original = globalThis.fetch
+    globalThis.fetch = mockFetch as any
+    try {
+      await expect(fetchUsageLimits(makeAuth())).rejects.toThrow(/ECONNRESET/)
+      expect(callCount).toBe(1)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
 })

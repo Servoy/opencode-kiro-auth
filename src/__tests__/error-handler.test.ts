@@ -173,6 +173,32 @@ describe('ErrorHandler: 429', () => {
     expect(result.shouldRetry).toBe(true)
     expect(acc.rateLimitResetTime).toBeGreaterThan(Date.now() - 100)
   })
+
+  test('with single account, sleep is excluded from request timeout budget', async () => {
+    const acc = makeAccount()
+    const mgr = new AccountManager([acc])
+    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const res = new Response('', {
+      status: 429,
+      headers: { 'retry-after': '1' } // 1s sleep
+    })
+    const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
+    expect(result.shouldRetry).toBe(true)
+    expect(result.newContext?.excludedMs).toBeGreaterThanOrEqual(1000)
+  })
+
+  test('with multiple accounts, switches without sleeping', async () => {
+    const acc1 = makeAccount({ id: 'a' })
+    const acc2 = makeAccount({ id: 'b' })
+    const mgr = new AccountManager([acc1, acc2])
+    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc1, acc2]))
+    const res = new Response('', { status: 429, headers: { 'retry-after': '60' } })
+    const start = Date.now()
+    const result = await handler.handle(null, res, acc1, { retry: 0 }, noToast)
+    const elapsed = Date.now() - start
+    expect(result.switchAccount).toBe(true)
+    expect(elapsed).toBeLessThan(500) // didn't sleep
+  })
 })
 
 // ── 500 ───────────────────────────────────────────────────────────────────────

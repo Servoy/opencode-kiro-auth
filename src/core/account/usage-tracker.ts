@@ -47,22 +47,34 @@ export class UsageTracker {
       updateAccountQuota(account, u, this.accountManager)
       await this.repository.batchSave(this.accountManager.getAccounts())
     } catch (e: any) {
-      if (attempt < this.config.usage_sync_max_retries) {
+      const msg = e?.message || ''
+
+      // Don't retry rate-limit errors — that just amplifies the problem.
+      const isRateLimit =
+        msg.includes('429') ||
+        msg.includes('ThrottlingException') ||
+        msg.includes('TooManyRequests')
+
+      if (!isRateLimit && attempt < this.config.usage_sync_max_retries) {
         await this.sleep(1000 * Math.pow(2, attempt))
         return this.syncWithRetry(account, auth, attempt + 1)
       }
 
-      if (e.message?.includes('FEATURE_NOT_SUPPORTED')) {
-        // Some IDC profiles don't support getUsageLimits; don't penalize the account.
+      if (msg.includes('FEATURE_NOT_SUPPORTED')) {
+        // Some IDC profiles don't expose getUsageLimits — not an error.
         return
       }
 
-      if (
-        e.message?.includes('403') ||
-        e.message?.includes('invalid') ||
-        e.message?.includes('bearer token')
-      ) {
-        this.accountManager.markUnhealthy(account, e.message)
+      if (isRateLimit) {
+        // Don't penalize the account; the request flow has its own 429 handler.
+        logger.warn('Usage sync rate-limited; skipping until next cooldown', {
+          accountId: account.id
+        })
+        return
+      }
+
+      if (msg.includes('403') || msg.includes('invalid') || msg.includes('bearer token')) {
+        this.accountManager.markUnhealthy(account, msg)
         this.repository.save(account).catch(() => {})
       }
 

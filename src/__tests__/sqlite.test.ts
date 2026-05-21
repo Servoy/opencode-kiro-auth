@@ -156,6 +156,23 @@ describe('KiroDatabase: reauth lock', () => {
     db = new KiroDatabase(dbPath)
     expect(db.acquireReauthLock()).toBe(true)
   })
+
+  test('race-safe: row-replacement when prior dead-pid row exists', () => {
+    // Simulate a row that the SELECT picked up as "expired" but is actually
+    // the same one INSERT will try to write. INSERT OR REPLACE handles this.
+    const { Database } = require('bun:sqlite')
+    const rawDb = new Database(dbPath)
+    rawDb
+      .prepare('INSERT INTO reauth_lock (id, pid, acquired_at) VALUES (1, 9999998, ?)')
+      .run(Date.now() - 200_000)
+    rawDb.close()
+    db.close()
+    db = new KiroDatabase(dbPath)
+    // Should not throw on PRIMARY KEY conflict
+    expect(db.acquireReauthLock()).toBe(true)
+    // The row now belongs to this process
+    expect(db.isReauthLockHeld()).toBe(true)
+  })
 })
 
 // ── conversations ─────────────────────────────────────────────────────────────

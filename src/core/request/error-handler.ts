@@ -7,6 +7,9 @@ type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' |
 
 interface RequestContext {
   retry: number
+  // Time spent in rate-limit sleeps, propagated up so the retry strategy can
+  // exclude it from the request timeout budget.
+  excludedMs?: number
 }
 
 interface ErrorHandlerConfig {
@@ -99,7 +102,11 @@ export class ErrorHandler {
       }
       showToast(`429: Rate limited. Waiting ${Math.ceil(w / 1000)}s...`, 'warning')
       await this.sleep(w)
-      return { shouldRetry: true }
+      // The wait is not request runtime — exclude it from the timeout budget.
+      return {
+        shouldRetry: true,
+        newContext: { ...context, excludedMs: (context.excludedMs ?? 0) + w }
+      }
     }
 
     if (response.status === 402 || response.status === 403) {
