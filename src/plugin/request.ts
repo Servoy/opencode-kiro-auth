@@ -335,12 +335,43 @@ function buildCodeWhispererRequest(
     }
   }
 
-  // Trim history if payload exceeds Kiro's ~615KB limit
+  // Trim history if payload exceeds Kiro's ~615KB limit.
+  // Compute per-entry sizes once and shrink incrementally to avoid O(N²)
+  // re-stringifying the full request on every iteration.
   const MAX_PAYLOAD_BYTES = 600_000
-  while (history.length > 2) {
-    const size = JSON.stringify(request).length
-    if (size <= MAX_PAYLOAD_BYTES) break
-    history.splice(0, 2)
+  if (history.length > 2) {
+    const sizes = history.map((h) => JSON.stringify(h).length + 1)
+    const baseRequest: any = { ...request, conversationState: { ...request.conversationState } }
+    delete baseRequest.conversationState.history
+    let totalSize = JSON.stringify(baseRequest).length + 2 // for `"history":[]`
+    for (const s of sizes) totalSize += s
+
+    while (history.length > 2 && totalSize > MAX_PAYLOAD_BYTES) {
+      // Drop the two oldest entries (typically user + assistant pair).
+      totalSize -= (sizes.shift() || 0) + (sizes.shift() || 0)
+      history.splice(0, 2)
+
+      // Strip leading orphans: assistantResponseMessage can't start the history.
+      while (history.length > 0 && history[0]?.assistantResponseMessage) {
+        totalSize -= sizes.shift() || 0
+        history.shift()
+      }
+
+      // Strip leading toolResult-only userInputMessages whose toolUseIds are gone.
+      const toolUseIds = new Set<string>(
+        history.flatMap(
+          (h) => h.assistantResponseMessage?.toolUses?.map((tu: any) => tu.toolUseId) ?? []
+        )
+      )
+      while (history.length > 0) {
+        const trs = history[0]?.userInputMessage?.userInputMessageContext?.toolResults
+        if (!trs) break
+        const allMatched = trs.every((tr: any) => toolUseIds.has(tr.toolUseId))
+        if (allMatched) break
+        totalSize -= sizes.shift() || 0
+        history.shift()
+      }
+    }
   }
 
   return {

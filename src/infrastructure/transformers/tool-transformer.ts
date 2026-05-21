@@ -2,10 +2,20 @@ import * as crypto from 'crypto'
 
 const MAX_TOOL_NAME_LENGTH = 64
 
+// Slice without breaking surrogate pairs.
+function safeSlice(s: string, end: number): string {
+  if (end <= 0) return ''
+  if (end >= s.length) return s
+  const code = s.charCodeAt(end - 1)
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1
+  return s.slice(0, end)
+}
+
 export function shortenToolName(name: string): string {
   if (!name || name.length <= MAX_TOOL_NAME_LENGTH) return name
   const hash = crypto.createHash('sha256').update(name).digest('hex').slice(0, 12)
-  return `${name.slice(0, MAX_TOOL_NAME_LENGTH - hash.length - 1)}_${hash}`
+  const prefix = safeSlice(name, MAX_TOOL_NAME_LENGTH - hash.length - 1)
+  return `${prefix}_${hash}`
 }
 
 export function buildToolNameMaps(tools: any[]): {
@@ -39,22 +49,40 @@ function sanitizeToolInput(input: any): any {
   return result
 }
 
-function sanitizeSchema(schema: any): any {
+function sanitizeSchema(schema: any, seen: WeakSet<object> = new WeakSet()): any {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema
+  if (seen.has(schema)) return {}
+  seen.add(schema)
+
   const result: Record<string, any> = {}
   for (const [key, value] of Object.entries(schema)) {
     if (key === 'additionalProperties') continue
     if (key === 'required' && Array.isArray(value) && value.length === 0) continue
-    if (key === 'properties' && typeof value === 'object' && value !== null) {
+
+    if (
+      (key === 'properties' ||
+        key === 'patternProperties' ||
+        key === '$defs' ||
+        key === 'definitions') &&
+      typeof value === 'object' &&
+      value !== null &&
+      !Array.isArray(value)
+    ) {
       const props: Record<string, any> = {}
       for (const [pk, pv] of Object.entries(value)) {
-        props[pk] = sanitizeSchema(pv)
+        props[pk] = sanitizeSchema(pv, seen)
       }
       result[key] = props
-    } else if ((key === 'anyOf' || key === 'oneOf' || key === 'allOf') && Array.isArray(value)) {
-      result[key] = value.map(sanitizeSchema)
-    } else if (key === 'items' && typeof value === 'object') {
-      result[key] = sanitizeSchema(value)
+    } else if (
+      (key === 'anyOf' || key === 'oneOf' || key === 'allOf' || key === 'prefixItems') &&
+      Array.isArray(value)
+    ) {
+      result[key] = value.map((v) => sanitizeSchema(v, seen))
+    } else if (
+      (key === 'items' || key === 'not' || key === 'contains') &&
+      typeof value === 'object'
+    ) {
+      result[key] = sanitizeSchema(value, seen)
     } else {
       result[key] = value
     }
@@ -90,7 +118,10 @@ export function deduplicateToolCallsByContent(toolCalls: any[]): any[] {
   const seen = new Set<string>()
   const unique: any[] = []
   for (const tc of toolCalls) {
-    const key = `${tc.name || tc.function?.name}-${tc.input || tc.function?.arguments}`
+    // \x00 as separator (can't appear in a tool name)
+    const name = tc.name || tc.function?.name || ''
+    const input = tc.input || tc.function?.arguments || ''
+    const key = `${name}\x00${typeof input === 'string' ? input : JSON.stringify(input)}`
     if (!seen.has(key)) {
       seen.add(key)
       unique.push(tc)
