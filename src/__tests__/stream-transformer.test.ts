@@ -246,3 +246,60 @@ describe('isNewThread detection after merge', () => {
     expect(merged[1].content).toContain('part2')
   })
 })
+
+// ── Tool name consistency (>64 chars must be shortened everywhere) ───────────
+
+import { shortenToolName } from '../infrastructure/transformers/tool-transformer.js'
+
+describe('tool name >64 chars is shortened consistently in history', () => {
+  const longName =
+    'a_very_long_tool_name_that_definitely_exceeds_the_sixty_four_character_limit_imposed_by_kiro'
+
+  test('buildHistory shortens tool_use names', () => {
+    const msgs = [
+      { role: 'user', content: 'do it' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'calling tool' },
+          { type: 'tool_use', id: 'tu-1', name: longName, input: { x: 1 } }
+        ]
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'done' }]
+      }
+    ]
+    const merged = mergeAdjacentMessages([...msgs])
+    const history = buildHistory(merged, 'auto')
+    const toolUses = history.flatMap((h) => h.assistantResponseMessage?.toolUses || [])
+    expect(toolUses.length).toBeGreaterThan(0)
+    for (const tu of toolUses) {
+      expect(tu.name.length).toBeLessThanOrEqual(64)
+      expect(tu.name).toBe(shortenToolName(longName))
+    }
+  })
+
+  test('buildHistory shortens tool_calls names', () => {
+    const msgs = [
+      { role: 'user', content: 'do it' },
+      {
+        role: 'assistant',
+        content: 'ok',
+        tool_calls: [{ id: 'tc-1', function: { name: longName, arguments: '{"a":1}' } }]
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tc-1', content: 'result' }]
+      }
+    ]
+    const merged = mergeAdjacentMessages([...msgs])
+    const history = buildHistory(merged, 'auto')
+    const toolUses = history.flatMap((h) => h.assistantResponseMessage?.toolUses || [])
+    expect(toolUses.length).toBeGreaterThan(0)
+    for (const tu of toolUses) {
+      expect(tu.name.length).toBeLessThanOrEqual(64)
+      expect(tu.name).toBe(shortenToolName(longName))
+    }
+  })
+})

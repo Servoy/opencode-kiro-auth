@@ -120,6 +120,7 @@ export interface SdkPreparedRequest {
   streaming: boolean
   effectiveModel: string
   conversationId: string
+  conversationKey: { workspace: string; fingerprint: string }
   region: string
   toolNameMapper?: (name: string) => string
 }

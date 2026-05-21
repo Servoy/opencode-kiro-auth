@@ -277,6 +277,12 @@ export class KiroDatabase {
       : undefined
   }
 
+  deleteConversationId(workspace: string, fingerprint: string): void {
+    this.db
+      .prepare('DELETE FROM conversations WHERE workspace = ? AND fingerprint = ?')
+      .run(workspace, fingerprint)
+  }
+
   /**
    * Persist a conversationId and agentContinuationId, clean up entries older than ttlDays (default 7).
    */

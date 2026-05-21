@@ -69,6 +69,7 @@ export class RequestHandler {
 
     let retry = 0
     let consecutiveNullAccounts = 0
+    let forceNewConversation = false
     const retryContext = this.retryStrategy.createContext()
 
     while (true) {
@@ -184,6 +185,16 @@ export class RequestHandler {
             if (errorResult.switchAccount) {
               continue
             }
+            continue
+          }
+
+          if (httpStatus === 400 && e?.name === 'ValidationException' && !forceNewConversation) {
+            const { workspace, fingerprint } = sdkPrep.conversationKey
+            kiroDb.deleteConversationId(workspace, fingerprint)
+            logger.warn(
+              `[REQ] stale conversationId reset, retrying convId=${sdkPrep.conversationId}`
+            )
+            forceNewConversation = true
             continue
           }
 

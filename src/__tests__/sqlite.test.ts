@@ -214,4 +214,15 @@ describe('KiroDatabase: conversations', () => {
       agentContinuationId: 'agent-new'
     })
   })
+
+  test('deleteConversationId removes entry so next lookup returns undefined', () => {
+    db.setConversationId('ws', 'fp', 'conv-del', 'agent-del')
+    expect(db.getConversationId('ws', 'fp')).toBeDefined()
+    db.deleteConversationId('ws', 'fp')
+    expect(db.getConversationId('ws', 'fp')).toBeUndefined()
+  })
+
+  test('deleteConversationId is a no-op for non-existent entry', () => {
+    expect(() => db.deleteConversationId('ws', 'missing')).not.toThrow()
+  })
 })

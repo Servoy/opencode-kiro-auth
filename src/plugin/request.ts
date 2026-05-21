@@ -37,7 +37,7 @@ function deriveConversationIds(
   workspace: string,
   firstUserContent: string,
   isNewThread: boolean
-): { convId: string; agentContinuationId: string } {
+): { convId: string; agentContinuationId: string; fingerprint: string } {
   const fingerprint = crypto
     .createHash('sha256')
     .update(workspace + '\0' + (firstUserContent || '_empty_'))
@@ -56,14 +56,14 @@ function deriveConversationIds(
           existing.agentContinuationId
         )
       }
-      return existing
+      return { ...existing, fingerprint }
     }
   }
 
   const convId = crypto.randomUUID()
   const agentContinuationId = crypto.randomUUID()
   kiroDb.setConversationId(workspace, fingerprint, convId, agentContinuationId)
-  return { convId, agentContinuationId }
+  return { convId, agentContinuationId, fingerprint }
 }
 
 interface TransformResult {
@@ -71,6 +71,7 @@ interface TransformResult {
   resolved: string
   convId: string
   agentContinuationId: string
+  fingerprint: string
   toolNameMapper?: (name: string) => string
 }
 
@@ -112,7 +113,7 @@ function buildCodeWhispererRequest(
       ? firstUserMsg.content
       : JSON.stringify(firstUserMsg.content)
     : ''
-  const { convId, agentContinuationId } = deriveConversationIds(
+  const { convId, agentContinuationId, fingerprint } = deriveConversationIds(
     workspace,
     firstUserContent,
     isNewThread
@@ -342,7 +343,14 @@ function buildCodeWhispererRequest(
     history.splice(0, 2)
   }
 
-  return { request, resolved, convId, agentContinuationId, toolNameMapper: toolMaps?.fromKiroName }
+  return {
+    request,
+    resolved,
+    convId,
+    agentContinuationId,
+    fingerprint,
+    toolNameMapper: toolMaps?.fromKiroName
+  }
 }
 
 export function transformToCodeWhisperer(
@@ -401,7 +409,7 @@ export function transformToSdkRequest(
   showToast?: ToastFunction,
   workspace = ''
 ): SdkPreparedRequest {
-  const { request, resolved, convId, toolNameMapper } = buildCodeWhispererRequest(
+  const { request, resolved, convId, fingerprint, toolNameMapper } = buildCodeWhispererRequest(
     body,
     model,
     auth,
@@ -416,6 +424,7 @@ export function transformToSdkRequest(
     streaming: true,
     effectiveModel: resolved,
     conversationId: convId,
+    conversationKey: { workspace, fingerprint },
     region: extractRegionFromArn(auth.profileArn) ?? auth.region,
     toolNameMapper
   }
