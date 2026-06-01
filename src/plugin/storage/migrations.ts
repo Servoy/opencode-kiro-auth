@@ -1,4 +1,6 @@
-import type { Database } from 'bun:sqlite'
+import type Libsql from 'libsql'
+
+type Database = Libsql.Database
 
 export function runMigrations(db: Database): void {
   migrateToUniqueRefreshToken(db)
@@ -18,7 +20,7 @@ function migrateToUniqueRefreshToken(db: Database): void {
 
   if (hasIndex) return
 
-  db.run('BEGIN TRANSACTION')
+  db.exec('BEGIN TRANSACTION')
   try {
     const duplicates = db
       .prepare(
@@ -64,10 +66,10 @@ function migrateToUniqueRefreshToken(db: Database): void {
       }
     }
 
-    db.run('CREATE UNIQUE INDEX idx_refresh_token_unique ON accounts(refresh_token)')
-    db.run('COMMIT')
+    db.exec('CREATE UNIQUE INDEX idx_refresh_token_unique ON accounts(refresh_token)')
+    db.exec('COMMIT')
   } catch (e) {
-    db.run('ROLLBACK')
+    db.exec('ROLLBACK')
     throw e
   }
 }
@@ -76,12 +78,12 @@ function migrateRealEmailColumn(db: Database): void {
   const columns = db.prepare('PRAGMA table_info(accounts)').all() as any[]
   const names = new Set(columns.map((c) => c.name))
   if (names.has('real_email')) {
-    db.run('BEGIN TRANSACTION')
+    db.exec('BEGIN TRANSACTION')
     try {
-      db.run(
+      db.exec(
         "UPDATE accounts SET email = real_email WHERE real_email IS NOT NULL AND real_email != '' AND email LIKE 'builder-id@aws.amazon.com%'"
       )
-      db.run(`
+      db.exec(`
           CREATE TABLE accounts_new (
             id TEXT PRIMARY KEY, email TEXT NOT NULL, auth_method TEXT NOT NULL,
             region TEXT NOT NULL, oidc_region TEXT, client_id TEXT, client_secret TEXT, profile_arn TEXT,
@@ -92,15 +94,15 @@ function migrateRealEmailColumn(db: Database): void {
             used_count INTEGER DEFAULT 0, limit_count INTEGER DEFAULT 0, last_sync INTEGER DEFAULT 0
           )
         `)
-      db.run(`
+      db.exec(`
           INSERT INTO accounts_new (id, email, auth_method, region, oidc_region, client_id, client_secret, profile_arn, start_url, refresh_token, access_token, expires_at, rate_limit_reset, is_healthy, unhealthy_reason, recovery_time, fail_count, last_used, used_count, limit_count, last_sync)
           SELECT id, email, auth_method, region, NULL, client_id, client_secret, profile_arn, NULL, refresh_token, access_token, expires_at, COALESCE(rate_limit_reset, 0), COALESCE(is_healthy, 1), unhealthy_reason, recovery_time, COALESCE(fail_count, 0), COALESCE(last_used, 0), 0, 0, 0 FROM accounts
         `)
-      db.run('DROP TABLE accounts')
-      db.run('ALTER TABLE accounts_new RENAME TO accounts')
-      db.run('COMMIT')
+      db.exec('DROP TABLE accounts')
+      db.exec('ALTER TABLE accounts_new RENAME TO accounts')
+      db.exec('COMMIT')
     } catch (e) {
-      db.run('ROLLBACK')
+      db.exec('ROLLBACK')
     }
   } else {
     const needed: Record<string, string> = {
@@ -110,7 +112,7 @@ function migrateRealEmailColumn(db: Database): void {
       last_sync: 'INTEGER DEFAULT 0'
     }
     for (const [n, d] of Object.entries(needed)) {
-      if (!names.has(n)) db.run(`ALTER TABLE accounts ADD COLUMN ${n} ${d}`)
+      if (!names.has(n)) db.exec(`ALTER TABLE accounts ADD COLUMN ${n} ${d}`)
     }
   }
 }
@@ -120,13 +122,13 @@ function migrateUsageTable(db: Database): void {
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='usage'")
     .get()
   if (hasUsageTable) {
-    db.run(`
+    db.exec(`
         UPDATE accounts SET 
           used_count = COALESCE((SELECT used_count FROM usage WHERE usage.account_id = accounts.id), used_count),
           limit_count = COALESCE((SELECT limit_count FROM usage WHERE usage.account_id = accounts.id), limit_count),
           last_sync = COALESCE((SELECT last_sync FROM usage WHERE usage.account_id = accounts.id), last_sync)
       `)
-    db.run('DROP TABLE usage')
+    db.exec('DROP TABLE usage')
   }
 }
 
@@ -134,7 +136,7 @@ function migrateStartUrlColumn(db: Database): void {
   const columns = db.prepare('PRAGMA table_info(accounts)').all() as any[]
   const names = new Set(columns.map((c) => c.name))
   if (!names.has('start_url')) {
-    db.run('ALTER TABLE accounts ADD COLUMN start_url TEXT')
+    db.exec('ALTER TABLE accounts ADD COLUMN start_url TEXT')
   }
 }
 
@@ -142,10 +144,10 @@ function migrateOidcRegionColumn(db: Database): void {
   const columns = db.prepare('PRAGMA table_info(accounts)').all() as any[]
   const names = new Set(columns.map((c) => c.name))
   if (!names.has('oidc_region')) {
-    db.run('ALTER TABLE accounts ADD COLUMN oidc_region TEXT')
+    db.exec('ALTER TABLE accounts ADD COLUMN oidc_region TEXT')
   }
   // Backfill: historically `region` was used for both service + OIDC.
-  db.run('UPDATE accounts SET oidc_region = region WHERE oidc_region IS NULL OR oidc_region = \"\"')
+  db.exec("UPDATE accounts SET oidc_region = region WHERE oidc_region IS NULL OR oidc_region = ''")
 }
 
 function migrateDropRefreshTokenUniqueIndex(db: Database): void {
@@ -153,7 +155,7 @@ function migrateDropRefreshTokenUniqueIndex(db: Database): void {
   // upsert mechanics. Now that we use ON CONFLICT(id), this index is unnecessary and actively
   // harmful: duplicate rows (same account, different legacy vs hash id) share the same
   // refresh_token, causing UNIQUE constraint violations on every upsert.
-  db.run('DROP INDEX IF EXISTS idx_refresh_token_unique')
+  db.exec('DROP INDEX IF EXISTS idx_refresh_token_unique')
 
   // Clean up duplicate rows: same email + same refresh_token but different ids.
   // Keep the deterministic hash id (64-char hex), delete legacy kiro-cli-sync-* rows.

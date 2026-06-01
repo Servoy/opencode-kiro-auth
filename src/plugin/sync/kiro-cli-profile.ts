@@ -1,4 +1,4 @@
-import { Database } from 'bun:sqlite'
+import Database from 'libsql'
 import { existsSync } from 'node:fs'
 import { getCliDbPath, safeJsonParse } from './kiro-cli-parser'
 
@@ -6,10 +6,10 @@ export function readActiveProfileArnFromKiroCli(): string | undefined {
   const dbPath = getCliDbPath()
   if (!existsSync(dbPath)) return undefined
 
-  let cliDb: Database | undefined
+  let cliDb: InstanceType<typeof Database> | undefined
   try {
     cliDb = new Database(dbPath, { readonly: true })
-    cliDb.run('PRAGMA busy_timeout = 5000')
+    cliDb.pragma('busy_timeout = 5000')
 
     const row = cliDb
       .prepare('SELECT value FROM state WHERE key = ?')

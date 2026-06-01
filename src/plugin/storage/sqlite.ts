@@ -1,4 +1,5 @@
-import { Database } from 'bun:sqlite'
+import type Libsql from 'libsql'
+import Database from 'libsql'
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -16,7 +17,7 @@ function getBaseDir(): string {
 export const DB_PATH = join(getBaseDir(), 'kiro.db')
 
 export class KiroDatabase {
-  private db: Database
+  private db: Libsql.Database
   private path: string
 
   constructor(path: string = DB_PATH) {
@@ -24,12 +25,12 @@ export class KiroDatabase {
     const dir = join(path, '..')
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     this.db = new Database(path)
-    this.db.run('PRAGMA busy_timeout = 5000')
+    this.db.pragma('busy_timeout = 5000')
     this.init()
   }
   private init() {
-    this.db.run('PRAGMA journal_mode = WAL')
-    this.db.run(`
+    this.db.pragma('journal_mode = WAL')
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY, email TEXT NOT NULL, auth_method TEXT NOT NULL,
         region TEXT NOT NULL, oidc_region TEXT, client_id TEXT, client_secret TEXT, profile_arn TEXT,
@@ -99,14 +100,14 @@ export class KiroDatabase {
       const merged = mergeAccounts(existing, [acc])
       const deduplicated = deduplicateAccounts(merged)
 
-      this.db.run('BEGIN TRANSACTION')
+      this.db.exec('BEGIN TRANSACTION')
       try {
         for (const account of deduplicated) {
           this.upsertAccountInternal(account)
         }
-        this.db.run('COMMIT')
+        this.db.exec('COMMIT')
       } catch (e) {
-        this.db.run('ROLLBACK')
+        this.db.exec('ROLLBACK')
         throw e
       }
     })
@@ -118,14 +119,14 @@ export class KiroDatabase {
       const merged = mergeAccounts(existing, accounts)
       const deduplicated = deduplicateAccounts(merged)
 
-      this.db.run('BEGIN TRANSACTION')
+      this.db.exec('BEGIN TRANSACTION')
       try {
         for (const account of deduplicated) {
           this.upsertAccountInternal(account)
         }
-        this.db.run('COMMIT')
+        this.db.exec('COMMIT')
       } catch (e) {
-        this.db.run('ROLLBACK')
+        this.db.exec('ROLLBACK')
         throw e
       }
     })

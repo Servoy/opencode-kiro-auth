@@ -1,4 +1,4 @@
-import { Database } from 'bun:sqlite'
+import Database from 'libsql'
 import { existsSync } from 'node:fs'
 import { extractRegionFromArn, normalizeRegion } from '../../constants'
 import { createDeterministicAccountId } from '../accounts'
@@ -19,7 +19,7 @@ export async function syncFromKiroCli() {
   if (!existsSync(dbPath)) return
   try {
     const cliDb = new Database(dbPath, { readonly: true })
-    cliDb.run('PRAGMA busy_timeout = 5000')
+    cliDb.pragma('busy_timeout = 5000')
     const rows = cliDb.prepare('SELECT key, value FROM auth_kv').all() as any[]
     let activeProfileArn: string | undefined
     try {
@@ -209,7 +209,7 @@ export async function writeToKiroCli(acc: any) {
   if (!existsSync(dbPath)) return
   try {
     const cliDb = new Database(dbPath)
-    cliDb.run('PRAGMA busy_timeout = 5000')
+    cliDb.pragma('busy_timeout = 5000')
     const rows = cliDb.prepare('SELECT key, value FROM auth_kv').all() as any[]
     const targetKey = acc.authMethod === 'idc' ? 'kirocli:odic:token' : 'kirocli:social:token'
     const row = rows.find((r) => r.key === targetKey || r.key.endsWith(targetKey))
