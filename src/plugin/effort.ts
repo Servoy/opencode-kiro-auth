@@ -96,7 +96,7 @@ export function budgetToEffort(budget: number, kiroModel: string): Effort | unde
  * Get the effective effort level based on config, budget, and model.
  * 
  * Priority:
- * 1. Explicit effort config (if set)
+ * 1. Explicit effort config (if set) - always applied regardless of thinking state
  * 2. Budget-to-effort mapping (if auto_effort_mapping enabled and thinking)
  * 3. 'medium' default (if thinking enabled)
  * 4. undefined (if not thinking)
@@ -112,7 +112,7 @@ export function getEffectiveEffort(
     return undefined
   }
 
-  // Explicit config takes precedence
+  // Explicit config takes precedence - always applied even without thinking
   if (configEffort) {
     return resolveEffort(kiroModel, configEffort)
   }

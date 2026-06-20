@@ -132,6 +132,9 @@ export class RequestHandler {
       if (apiTimestamp) {
         this.logSdkRequest(sdkPrep, acc, apiTimestamp)
       }
+      if (sdkPrep.effort) {
+        logger.log(`[Effort] Resolved effort: ${sdkPrep.effort} for model: ${sdkPrep.effectiveModel}`)
+      }
 
       try {
         const client = createSdkClient(auth, sdkPrep.region, sdkPrep.effort)
