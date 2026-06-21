@@ -67,7 +67,7 @@ export function createSdkClient(
         }
         return next(args)
       },
-      { step: 'build', name: 'addEffortConfig', priority: 'low' }
+      { step: 'build', name: 'addEffortConfig', priority: 'high' }
     )
   }
 
