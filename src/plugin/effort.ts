@@ -9,10 +9,7 @@ export const EFFORT_LEVELS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh
  * Models that support the 5-value effort enum (including xhigh).
  * These models support up to 128k thinking tokens with max effort.
  */
-const XHIGH_CAPABLE_MODELS = new Set([
-  'claude-opus-4.7',
-  'claude-opus-4.8'
-])
+const XHIGH_CAPABLE_MODELS = new Set(['claude-opus-4.7', 'claude-opus-4.8'])
 
 /**
  * Models that support the 4-value effort enum (no xhigh).
@@ -63,13 +60,13 @@ export function resolveEffort(kiroModel: string, requested: Effort): Effort | un
 
 /**
  * Map OpenCode thinking budget to Kiro effort level.
- * 
+ *
  * OpenCode sends thinkingBudget from its variant config. Standard values:
  * - low:    8192
  * - medium: 16384
  * - high:   24576
  * - max:    32768
- * 
+ *
  * We map these ranges to Kiro effort levels:
  * - ≤10000  → low
  * - ≤20000  → medium
@@ -98,7 +95,7 @@ export function budgetToEffort(budget: number, kiroModel: string): Effort | unde
 
 /**
  * Get the effective effort level based on config, budget, and model.
- * 
+ *
  * Priority:
  * 1. Explicit effort config (if set) - always applied regardless of thinking state
  * 2. Budget-to-effort mapping (if auto_effort_mapping enabled and thinking)
