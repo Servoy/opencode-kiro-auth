@@ -3,6 +3,17 @@ import { z } from 'zod'
 export const AccountSelectionStrategySchema = z.enum(['sticky', 'round-robin', 'lowest-usage'])
 export type AccountSelectionStrategy = z.infer<typeof AccountSelectionStrategySchema>
 
+/**
+ * Kiro effort levels control thinking/reasoning depth.
+ * - low: minimal reasoning
+ * - medium: balanced (default when thinking enabled)
+ * - high: deeper reasoning
+ * - xhigh: extended reasoning (opus-4.7, opus-4.8 only)
+ * - max: maximum reasoning depth (128k thinking tokens on opus-4.7/4.8)
+ */
+export const EffortSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max'])
+export type Effort = z.infer<typeof EffortSchema>
+
 export const RegionSchema = z.enum([
   'us-east-1',
   'us-east-2',
@@ -70,7 +81,21 @@ export const KiroConfigSchema = z.object({
 
   usage_tracking_enabled: z.boolean().default(true),
   auto_sync_kiro_cli: z.boolean().default(true),
-  enable_log_api_request: z.boolean().default(false)
+  enable_log_api_request: z.boolean().default(false),
+
+  /**
+   * Default effort level for thinking models. Controls reasoning depth.
+   * When set, this overrides the automatic budget-based mapping.
+   * Values: 'low', 'medium', 'high', 'xhigh' (opus-4.7/4.8 only), 'max'
+   */
+  effort: EffortSchema.optional(),
+
+  /**
+   * Enable automatic effort mapping from OpenCode's thinking budget.
+   * When true (default), maps budget ranges to effort levels.
+   * When false, only uses explicit effort config or falls back to 'medium'.
+   */
+  auto_effort_mapping: z.boolean().default(true)
 })
 
 export type KiroConfig = z.infer<typeof KiroConfigSchema>
@@ -88,5 +113,6 @@ export const DEFAULT_CONFIG: KiroConfig = {
   auth_server_port_range: 10,
   usage_tracking_enabled: true,
   auto_sync_kiro_cli: true,
-  enable_log_api_request: false
+  enable_log_api_request: false,
+  auto_effort_mapping: true
 }

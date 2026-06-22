@@ -16,6 +16,7 @@ import {
   convertToolsToCodeWhisperer,
   deduplicateToolResults
 } from '../infrastructure/transformers/tool-transformer.js'
+import { getEffectiveEffort } from './effort.js'
 import {
   convertImagesToKiroFormat,
   extractAllImages,
@@ -24,6 +25,7 @@ import {
 import { resolveKiroModel } from './models.js'
 import type {
   CodeWhispererRequest,
+  Effort,
   KiroAuthDetails,
   PreparedRequest,
   SdkPreparedRequest
@@ -33,6 +35,11 @@ interface TransformResult {
   request: CodeWhispererRequest
   resolved: string
   convId: string
+}
+
+interface EffortConfig {
+  effort?: Effort
+  autoEffortMapping?: boolean
 }
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -317,7 +324,8 @@ export function transformToSdkRequest(
   auth: KiroAuthDetails,
   think = false,
   budget = 20000,
-  showToast?: ToastFunction
+  showToast?: ToastFunction,
+  effortConfig?: EffortConfig
 ): SdkPreparedRequest {
   const { request, resolved, convId } = buildCodeWhispererRequest(
     body,
@@ -327,12 +335,23 @@ export function transformToSdkRequest(
     budget,
     showToast
   )
+
+  // Resolve effort level based on config and model capabilities
+  const effort = getEffectiveEffort(
+    resolved,
+    think,
+    budget,
+    effortConfig?.effort,
+    effortConfig?.autoEffortMapping ?? true
+  )
+
   return {
     conversationState: request.conversationState,
     profileArn: request.profileArn,
     streaming: true,
     effectiveModel: resolved,
     conversationId: convId,
-    region: extractRegionFromArn(auth.profileArn) ?? auth.region
+    region: extractRegionFromArn(auth.profileArn) ?? auth.region,
+    effort
   }
 }

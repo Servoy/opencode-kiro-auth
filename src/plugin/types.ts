@@ -1,8 +1,9 @@
 import z from 'zod'
-import { RegionSchema } from './config/schema'
+import { EffortSchema, RegionSchema } from './config/schema'
 
 export type KiroAuthMethod = 'idc' | 'desktop'
 export type KiroRegion = z.infer<typeof RegionSchema>
+export type Effort = z.infer<typeof EffortSchema>
 
 export interface KiroAuthDetails {
   refresh: string
@@ -119,6 +120,8 @@ export interface SdkPreparedRequest {
   effectiveModel: string
   conversationId: string
   region: string
+  /** Resolved effort level for thinking models */
+  effort?: Effort
 }
 
 export type AccountSelectionStrategy = 'sticky' | 'round-robin' | 'lowest-usage'

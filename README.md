@@ -21,6 +21,8 @@ models with substantial trial quotas.
   SQLite.
 - **Native Thinking Mode**: Full support for Claude reasoning capabilities via virtual
   model mappings.
+- **Kiro Effort Mapping**: Maps OpenCode thinking budgets to Kiro's native effort
+  levels automatically.
 - **Automated Recovery**: Exponential backoff for rate limits and automated token
   refresh.
 
@@ -46,6 +48,7 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
             "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
@@ -61,6 +64,7 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
             "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
@@ -81,6 +85,7 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
             "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
@@ -96,6 +101,7 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
             "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
@@ -111,6 +117,7 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
             "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
@@ -126,6 +133,7 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
             "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
@@ -146,6 +154,7 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
             "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
@@ -176,6 +185,48 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
   }
 }
 ```
+
+### Thinking Effort Configuration
+
+Configure Kiro effort per model in your OpenCode provider model definitions by setting
+`thinkingConfig.thinkingBudget` on each model variant. The plugin automatically maps
+those budgets to Kiro's native `effort` field for supported Claude models, so you do
+not need to hardcode a global `effort` value in `~/.config/opencode/kiro.json`.
+
+```json
+{
+  "provider": {
+    "kiro": {
+      "models": {
+        "claude-opus-4-7-thinking": {
+          "name": "Claude Opus 4.7 Thinking",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "variants": {
+            "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
+            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
+            "high": { "thinkingConfig": { "thinkingBudget": 24576 } },
+            "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Budget mapping:
+
+| OpenCode budget | Kiro effort |
+| --------------- | ----------- |
+| `<= 10000` | `low` |
+| `<= 20000` | `medium` |
+| `<= 28000` | `high` |
+| `> 28000` | `max` |
+
+Use `~/.config/opencode/kiro.json` for plugin-wide behavior such as auth sync,
+account selection, retry limits, and `auto_effort_mapping`. A top-level `effort`
+setting is a global override for all supported models, not a per-model setting.
 
 ## Setup
 
@@ -294,6 +345,7 @@ Edit `~/.config/opencode/kiro.json`:
   "token_expiry_buffer_ms": 120000,
   "usage_sync_max_retries": 3,
   "usage_tracking_enabled": true,
+  "auto_effort_mapping": true,
   "enable_log_api_request": false
 }
 ```
@@ -318,6 +370,8 @@ Edit `~/.config/opencode/kiro.json`:
 - `auth_server_port_start`: Legacy/ignored (no local auth server).
 - `auth_server_port_range`: Legacy/ignored (no local auth server).
 - `usage_tracking_enabled`: Enable usage tracking and toast notifications.
+- `auto_effort_mapping`: Automatically map OpenCode thinking budgets to Kiro effort
+  levels for supported models (default: `true`).
 - `enable_log_api_request`: Enable detailed API request logging.
 
 ## Storage
