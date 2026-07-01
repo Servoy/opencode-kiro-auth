@@ -6,6 +6,10 @@ import { AccountRepository } from './infrastructure/database/account-repository.
 import { AccountManager } from './plugin/accounts.js'
 import { bootstrapAuthIfNeeded } from './plugin/auth-bootstrap.js'
 import { loadConfig } from './plugin/config/index.js'
+import { imageCache } from './plugin/image-cache.js'
+import * as logger from './plugin/logger.js'
+import { clearSdkClientCache } from './plugin/sdk-client.js'
+import { kiroDb } from './plugin/storage/sqlite.js'
 
 type ToastFunction = (message: string, variant: string) => void
 
@@ -27,7 +31,7 @@ export const createKiroPlugin =
     const accountManager = await AccountManager.loadFromDisk(config.account_selection_strategy)
     authHandler.setAccountManager(accountManager)
 
-    const requestHandler = new RequestHandler(accountManager, config, repository, client)
+    const requestHandler = new RequestHandler(accountManager, config, repository, client, directory)
 
     // Compute the base URL once so both the config hook and auth loader use the same value
     const baseURL = KIRO_CONSTANTS.BASE_URL.replace('/generateAssistantResponse', '').replace(
@@ -176,6 +180,19 @@ export const createKiroPlugin =
 
           return normalized
         }
+      },
+      dispose: async () => {
+        logger.debug('[DISPOSE] Kiro plugin shutting down')
+        try {
+          clearSdkClientCache()
+        } catch {}
+        try {
+          imageCache.clear()
+        } catch {}
+        try {
+          kiroDb.close()
+        } catch {}
+        logger.debug('[DISPOSE] Kiro plugin shutdown complete')
       }
     }
   }
