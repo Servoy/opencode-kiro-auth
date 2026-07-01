@@ -1,11 +1,14 @@
 import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client'
+import { THINKING_BUDGETS } from '../../constants'
 import type { AccountRepository } from '../../infrastructure/database/account-repository'
 import type { AccountManager } from '../../plugin/accounts'
 import type { KiroConfig } from '../../plugin/config'
 import { isPermanentError } from '../../plugin/health'
+import { imageCache } from '../../plugin/image-cache'
 import * as logger from '../../plugin/logger'
 import { transformToSdkRequest } from '../../plugin/request'
 import { createSdkClient } from '../../plugin/sdk-client'
+import { kiroDb } from '../../plugin/storage/sqlite'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
 import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../plugin/types'
 import { AccountSelector } from '../account/account-selector'
@@ -17,8 +20,17 @@ import { RetryStrategy } from './retry-strategy'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
-const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/
+// Matches both the standard q.amazonaws.com endpoint and the Pro runtime.kiro.dev endpoint
+const KIRO_API_PATTERN =
+  /^(https?:\/\/)?(q\.[a-z0-9-]+\.amazonaws\.com|runtime\.[a-z0-9-]+\.kiro\.dev)/
 const REAUTH_FAILURE_COOLDOWN_MS = 60000
+const REAUTH_TIMEOUT_MS = 90_000
+
+function extractSessionId(headers: unknown): string | undefined {
+  if (!headers) return undefined
+  const h = headers as Record<string, string>
+  return h['x-session-id'] ?? h['x-session-affinity']
+}
 
 export class RequestHandler {
   private accountSelector: AccountSelector
@@ -29,13 +41,13 @@ export class RequestHandler {
   private retryStrategy: RetryStrategy
   private reauthInFlight: Promise<boolean> | null = null
   private lastFailedReauthAt = 0
-  private static kiroRequestQueue: Promise<void> = Promise.resolve()
 
   constructor(
     private accountManager: AccountManager,
     private config: KiroConfig,
     private repository: AccountRepository,
-    private client?: any
+    private client?: any,
+    private workspace = ''
   ) {
     this.accountSelector = new AccountSelector(accountManager, config, syncFromKiroCli, repository)
     this.tokenRefresher = new TokenRefresher(config, accountManager, syncFromKiroCli, repository)
@@ -52,43 +64,46 @@ export class RequestHandler {
       return fetch(input, init)
     }
 
-    return this.enqueueKiroRequest(() => this.handleKiroRequest(url, init, showToast))
-  }
+    const sessionId = extractSessionId(init?.headers)
 
-  private async enqueueKiroRequest<T>(run: () => Promise<T>): Promise<T> {
-    const previous = RequestHandler.kiroRequestQueue
-    let release!: () => void
-
-    RequestHandler.kiroRequestQueue = new Promise((resolve) => {
-      release = resolve
-    })
-
-    await previous.catch(() => {})
-
-    try {
-      return await run()
-    } finally {
-      release()
-    }
+    return this.handleKiroRequest(url, init, showToast, sessionId)
   }
 
   private async handleKiroRequest(
     url: string,
     init: any,
-    showToast: ToastFunction
+    showToast: ToastFunction,
+    sessionId?: string
   ): Promise<Response> {
     const body = init?.body ? JSON.parse(init.body) : {}
     const model = this.extractModel(url) || body.model || 'claude-sonnet-4-5'
-    const think =
-      model.endsWith('-thinking') || !!body.providerOptions?.thinkingConfig || !!body.thinkingConfig
-    const budget =
-      body.providerOptions?.thinkingConfig?.thinkingBudget ||
-      body.thinkingConfig?.thinkingBudget ||
-      body.thinkingConfig?.budget_tokens ||
-      20000
+
+    // Resolve thinking mode + budget.
+    //
+    // Priority order:
+    //   1. Model ID ends with '-thinking'  → adaptive thinking, default budget
+    //   2. providerOptions["kiro"].reasoningEffort  → adaptive mode, effort-based budget
+    //      (OpenCode sends this when the user picks low/medium/high in the UI)
+    //   3. providerOptions.thinkingConfig.thinkingBudget → explicit budget (legacy)
+    //
+    // Budget mapping (Kiro max = 200 000 tokens):
+    //   low → 10 000 | medium → 24 000 | high → 200 000 | default → 16 000
+    const provOpts = body.providerOptions?.['kiro'] ?? body.providerOptions ?? {}
+    const reasoningEffort: string | undefined = provOpts.reasoningEffort
+    const thinkingConfig = body.providerOptions?.thinkingConfig
+
+    const think = model.endsWith('-thinking') || !!reasoningEffort || !!thinkingConfig
+
+    let uiEffort: 'low' | 'medium' | 'high' | 'default' = 'default'
+    if (reasoningEffort === 'low') uiEffort = 'low'
+    else if (reasoningEffort === 'medium') uiEffort = 'medium'
+    else if (reasoningEffort === 'high') uiEffort = 'high'
+
+    const budget: number = thinkingConfig?.thinkingBudget || THINKING_BUDGETS[uiEffort]
 
     let retry = 0
     let consecutiveNullAccounts = 0
+    let forceNewConversation = false
     const retryContext = this.retryStrategy.createContext()
 
     while (true) {
@@ -131,12 +146,28 @@ export class RequestHandler {
         continue
       }
 
-      const sdkPrep = this.prepareSdkRequest(init?.body, model, auth, think, budget, showToast)
+      const sdkPrep = this.prepareSdkRequest(
+        body,
+        model,
+        auth,
+        think,
+        budget,
+        showToast,
+        uiEffort,
+        sessionId
+      )
+
+      const histLen = (sdkPrep.conversationState as any).history?.length || 0
+      const agentContId = (sdkPrep.conversationState as any).agentContinuationId || 'none'
+      logger.debug(
+        `[REQ] convId=${sdkPrep.conversationId} history=${histLen} agentCont=${agentContId} model=${model}`
+      )
 
       const apiTimestamp = this.config.enable_log_api_request ? logger.getTimestamp() : null
       if (apiTimestamp) {
         this.logSdkRequest(sdkPrep, acc, apiTimestamp)
       }
+
       try {
         const client = createSdkClient(auth, sdkPrep.region, sdkPrep.effort)
         const command = new GenerateAssistantResponseCommand({
@@ -153,13 +184,20 @@ export class RequestHandler {
         this.handleSuccessfulRequest(acc)
         this.usageTracker.syncUsage(acc, auth)
 
-        return await this.responseHandler.handleSdkSuccess(
+        const result = await this.responseHandler.handleSdkSuccess(
           sdkResponse,
           model,
           sdkPrep.conversationId,
-          sdkPrep.streaming
+          sdkPrep.streaming,
+          sdkPrep.toolNameMapper,
+          think
         )
+        logger.debug(`[REQ] done convId=${sdkPrep.conversationId}`)
+        return result
       } catch (e: any) {
+        logger.warn(
+          `[REQ] error convId=${sdkPrep.conversationId}: ${e?.name || ''} ${e?.message?.slice(0, 200) || String(e).slice(0, 200)}`
+        )
         const httpStatus = e?.$metadata?.httpStatusCode
 
         if (httpStatus) {
@@ -180,18 +218,38 @@ export class RequestHandler {
             e,
             mockResponse,
             acc,
-            { retry },
+            { retry, excludedMs: retryContext.excludedMs },
             showToast
           )
 
           if (errorResult.shouldRetry) {
             if (errorResult.newContext) {
               retry = errorResult.newContext.retry
+              const sleptMs = (errorResult.newContext.excludedMs ?? 0) - retryContext.excludedMs
+              if (sleptMs > 0) this.retryStrategy.markSleep(retryContext, sleptMs)
             }
             if (errorResult.switchAccount) {
               continue
             }
             continue
+          }
+
+          if (httpStatus === 400 && e?.name === 'ValidationException' && !forceNewConversation) {
+            const { workspace, fingerprint } = sdkPrep.conversationKey
+            kiroDb.deleteConversationId(workspace, fingerprint)
+            // The conversation is starting fresh — drop any carried-forward
+            // images too so the new convId doesn't inherit stale state.
+            imageCache.delete(workspace, fingerprint)
+            logger.warn(
+              `[REQ] stale conversationId reset, retrying convId=${sdkPrep.conversationId}`
+            )
+            forceNewConversation = true
+            continue
+          }
+
+          if (this.allAccountsPermanentlyUnhealthy()) {
+            const reauthed = await this.triggerReauth(showToast)
+            if (reauthed) continue
           }
 
           throw new Error(`Kiro Error: ${httpStatus}`)
@@ -221,30 +279,41 @@ export class RequestHandler {
     auth: KiroAuthDetails,
     think: boolean,
     budget: number,
-    showToast?: (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
+    showToast?: (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void,
+    _uiEffort: 'low' | 'medium' | 'high' | 'default' = 'default',
+    sessionId?: string
   ): SdkPreparedRequest {
-    return transformToSdkRequest(body, model, auth, think, budget, showToast, {
-      effort: this.config.effort,
-      autoEffortMapping: this.config.auto_effort_mapping
-    })
+    return transformToSdkRequest(
+      body,
+      model,
+      auth,
+      think,
+      budget,
+      showToast,
+      this.workspace,
+      this.config.image_carry_forward,
+      sessionId,
+      { effort: this.config.effort, autoEffortMapping: this.config.auto_effort_mapping }
+    )
   }
 
   private handleSuccessfulRequest(acc: ManagedAccount): void {
-    if (acc.failCount && acc.failCount > 0) {
-      if (!isPermanentError(acc.unhealthyReason)) {
-        acc.failCount = 0
-        acc.isHealthy = true
-        delete acc.unhealthyReason
-        delete acc.recoveryTime
-        this.repository.save(acc).catch(() => {})
-      }
+    // Only write to DB if the account was actually degraded — avoids a
+    // withDatabaseLock + full merge/dedup round-trip on every healthy request.
+    if (acc.failCount && acc.failCount > 0 && !isPermanentError(acc.unhealthyReason)) {
+      acc.failCount = 0
+      acc.isHealthy = true
+      delete acc.unhealthyReason
+      delete acc.recoveryTime
+      this.repository.save(acc).catch(() => {})
     }
   }
 
   private logSdkRequest(prep: SdkPreparedRequest, acc: ManagedAccount, timestamp: string): void {
+    this.logImageDiagnostic(prep)
     logger.logApiRequest(
       {
-        url: `https://q.${prep.region}.amazonaws.com/generateAssistantResponse`,
+        url: `${prep.endpoint}/generateAssistantResponse`,
         method: 'POST',
         headers: { 'x-amzn-kiro-agent-mode': 'vibe' },
         body: {
@@ -261,6 +330,32 @@ export class RequestHandler {
         email: acc.email
       },
       timestamp
+    )
+  }
+
+  private logImageDiagnostic(prep: SdkPreparedRequest): void {
+    const kb = (bytes: number): number => Math.round(bytes / 1024)
+    const sumBytes = (imgs: { source?: { bytes?: { byteLength?: number } } }[]): number =>
+      imgs.reduce((n, im) => n + (im.source?.bytes?.byteLength ?? 0), 0)
+
+    const cmImgs = prep.conversationState.currentMessage?.userInputMessage?.images ?? []
+    const history = (prep.conversationState as any).history ?? []
+    const histDetail: string[] = []
+    let histImgs = 0
+    let histKb = 0
+    for (let i = 0; i < history.length; i++) {
+      const imgs = history[i]?.userInputMessage?.images ?? []
+      if (imgs.length === 0) continue
+      const entryKb = kb(sumBytes(imgs))
+      histDetail.push(`i=${i}:user:${imgs.length}(${entryKb}KB)`)
+      histImgs += imgs.length
+      histKb += entryKb
+    }
+
+    const detail = histDetail.length ? ` detail=[${histDetail.join(',')}]` : ''
+    logger.log(
+      `[IMG] convId=${prep.conversationId} cur=${cmImgs.length}(${kb(sumBytes(cmImgs))}KB)` +
+        ` hist=${histImgs}/${history.length}(${histKb}KB)${detail}`
     )
   }
 
@@ -295,7 +390,7 @@ export class RequestHandler {
     if (!this.config.enable_log_api_request) {
       logger.logApiError(
         {
-          url: `https://q.${prep.region}.amazonaws.com/generateAssistantResponse`,
+          url: `${prep.endpoint}/generateAssistantResponse`,
           method: 'POST',
           headers: {},
           body: null,
@@ -327,9 +422,26 @@ export class RequestHandler {
       return this.reauthInFlight
     }
 
+    if (!kiroDb.acquireReauthLock()) {
+      logger.warn('Reauth lock held by another instance — polling for completion')
+      showToast('Another session is re-authenticating. Please wait...', 'info')
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline) {
+        await this.sleep(1000)
+        if (kiroDb.isReauthLockHeld()) continue
+        this.repository.invalidateCache()
+        const accounts = await this.repository.findAll()
+        for (const acc of accounts) this.accountManager.addAccount(acc)
+        return this.hasUsableAccount(accounts)
+      }
+      showToast('Re-authentication timed out. Please try again.', 'error')
+      return false
+    }
+
     this.reauthInFlight = this.performReauth(showToast)
     const success = await this.reauthInFlight.finally(() => {
       this.reauthInFlight = null
+      kiroDb.releaseReauthLock()
     })
     if (!success) this.lastFailedReauthAt = Date.now()
     return success
@@ -338,15 +450,31 @@ export class RequestHandler {
   private async performReauth(showToast: ToastFunction): Promise<boolean> {
     try {
       showToast('Session expired. Re-authenticating...', 'warning')
-      await this.client.provider.oauth.authorize({
-        path: { id: 'kiro' },
-        body: { method: 0 }
-      })
+      logger.warn('Reauth: starting oauth flow')
 
-      await this.client.provider.oauth.callback({
-        path: { id: 'kiro' },
-        body: { method: 0 }
-      })
+      const withTimeout = <T>(promise: Promise<T>, label: string): Promise<T> => {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        return Promise.race([
+          promise.finally(() => clearTimeout(timer)),
+          new Promise<T>(
+            (_, reject) =>
+              (timer = setTimeout(
+                () => reject(new Error(`Reauth timed out waiting for ${label}`)),
+                REAUTH_TIMEOUT_MS
+              ))
+          )
+        ])
+      }
+
+      await withTimeout(
+        this.client.provider.oauth.authorize({ path: { id: 'kiro' }, body: { method: 0 } }),
+        'oauth.authorize'
+      )
+
+      await withTimeout(
+        this.client.provider.oauth.callback({ path: { id: 'kiro' }, body: { method: 0 } }),
+        'oauth.callback'
+      )
 
       this.repository.invalidateCache()
       const accounts = await this.repository.findAll()
@@ -364,6 +492,12 @@ export class RequestHandler {
       return true
     } catch (e) {
       logger.error('Re-auth failed', e instanceof Error ? e : new Error(String(e)))
+      showToast(
+        e instanceof Error && e.message.includes('timed out')
+          ? 'Re-authentication timed out. Please try again.'
+          : 'Re-authentication failed. Please try again.',
+        'error'
+      )
       return false
     }
   }
