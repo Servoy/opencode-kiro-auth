@@ -293,7 +293,8 @@ export class RequestHandler {
       this.workspace,
       this.config.image_carry_forward,
       sessionId,
-      { effort: this.config.effort, autoEffortMapping: this.config.auto_effort_mapping }
+      { effort: this.config.effort, autoEffortMapping: this.config.auto_effort_mapping },
+      this.config.max_payload_bytes
     )
   }
 

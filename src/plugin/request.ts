@@ -97,7 +97,8 @@ function buildCodeWhispererRequest(
   showToast?: ToastFunction,
   workspace = '',
   carryForward = true,
-  sessionId?: string
+  sessionId?: string,
+  maxPayloadBytes = 4_000_000
 ): TransformResult {
   const req = typeof body === 'string' ? JSON.parse(body) : body
   const { messages, tools, system } = req
@@ -351,16 +352,24 @@ function buildCodeWhispererRequest(
     }
   }
 
-  // Trim history if payload exceeds Kiro's ~615KB limit.
+  // Trim history if the payload approaches Kiro's request-size limit.
+  // Kiro rejects oversized payloads with CONTENT_LENGTH_EXCEEDS_THRESHOLD. The
+  // hard limit is structure-dependent (verified against the live API): a single
+  // message survives up to ~7.6MB, but many-entry histories are rejected as low
+  // as ~5.9MB. The configurable maxPayloadBytes (default 4MB) stays safely below
+  // the lowest observed failure regardless of history shape.
   // Compute per-entry sizes once and shrink incrementally to avoid O(N²)
   // re-stringifying the full request on every iteration.
-  const MAX_PAYLOAD_BYTES = 600_000
+  const MAX_PAYLOAD_BYTES = maxPayloadBytes
+  const trimStartLen = history.length
+  let trimSizeBefore = 0
   if (history.length > 2) {
     const sizes = history.map((h) => JSON.stringify(h).length + 1)
     const baseRequest: any = { ...request, conversationState: { ...request.conversationState } }
     delete baseRequest.conversationState.history
     let totalSize = JSON.stringify(baseRequest).length + 2 // for `"history":[]`
     for (const s of sizes) totalSize += s
+    trimSizeBefore = totalSize
 
     while (history.length > 2 && totalSize > MAX_PAYLOAD_BYTES) {
       // Drop the two oldest entries (typically user + assistant pair).
@@ -388,6 +397,12 @@ function buildCodeWhispererRequest(
         history.shift()
       }
     }
+  }
+
+  if (trimStartLen !== history.length) {
+    logger.debug(
+      `[TRIM] history ${trimStartLen}→${history.length} entries, ~${Math.round(trimSizeBefore / 1024)}KB exceeded ${Math.round(MAX_PAYLOAD_BYTES / 1024)}KB cap`
+    )
   }
 
   // After trimming, drop any current-message toolResults whose tool_use was
@@ -515,7 +530,8 @@ export function transformToSdkRequest(
   workspace = '',
   carryForward = true,
   sessionId?: string,
-  effortConfig?: EffortConfig
+  effortConfig?: EffortConfig,
+  maxPayloadBytes = 4_000_000
 ): SdkPreparedRequest {
   const { request, resolved, convId, fingerprint, toolNameMapper } = buildCodeWhispererRequest(
     body,
@@ -526,7 +542,8 @@ export function transformToSdkRequest(
     showToast,
     workspace,
     carryForward,
-    sessionId
+    sessionId,
+    maxPayloadBytes
   )
 
   // Resolve effort level based on config and model capabilities
@@ -544,6 +561,12 @@ export function transformToSdkRequest(
   const endpointFull = resolveKiroEndpoint(auth)
   const endpoint = endpointFull.replace(/\/generateAssistantResponse$/, '')
   const workspaceKey = sessionId ? `sess:${sessionId}` : workspace
+  if (process.env.DEBUG || process.env.OPENCODE_LOG_LEVEL === 'debug') {
+    const finalBytes = JSON.stringify(request.conversationState).length
+    logger.debug(
+      `[PAYLOAD] convId=${convId} ~${Math.round(finalBytes / 1024)}KB history=${request.conversationState.history?.length ?? 0} entries`
+    )
+  }
   return {
     conversationState: request.conversationState,
     profileArn: request.profileArn,
