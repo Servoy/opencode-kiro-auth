@@ -277,9 +277,10 @@ describe('sanitizeSchema via convertToolsToCodeWhisperer', () => {
 })
 
 describe('payload trim preserves valid structure', () => {
-  test('large payload trimmed to ≤600KB', () => {
+  test('oversized payload trimmed below Kiro threshold', () => {
     const messages: any[] = []
-    for (let i = 0; i < 80; i++) {
+    // ~9MB of raw history so trimming must kick in (default cap is 4MB).
+    for (let i = 0; i < 300; i++) {
       messages.push({ role: 'user', content: 'x'.repeat(10000) })
       messages.push({
         role: 'assistant',
@@ -291,7 +292,7 @@ describe('payload trim preserves valid structure', () => {
     }
     messages.push({
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'tool-79', content: 'result' }]
+      content: [{ type: 'tool_result', tool_use_id: 'tool-299', content: 'result' }]
     })
     messages.push({ role: 'user', content: 'final question' })
 
@@ -301,7 +302,33 @@ describe('payload trim preserves valid structure', () => {
     }
     const result = transformToSdkRequest(body, 'auto', auth)
     const payload = JSON.stringify(result.conversationState)
-    expect(payload.length).toBeLessThanOrEqual(600_000)
+    expect(payload.length).toBeLessThanOrEqual(4_000_000)
+  })
+
+  test('respects a custom max_payload_bytes override', () => {
+    const messages: any[] = []
+    for (let i = 0; i < 80; i++) {
+      messages.push({ role: 'user', content: 'x'.repeat(10000) })
+      messages.push({ role: 'assistant', content: 'y'.repeat(10000) })
+    }
+    messages.push({ role: 'user', content: 'final question' })
+
+    // Force a tight 500KB cap via the maxPayloadBytes argument.
+    const result = transformToSdkRequest(
+      { messages },
+      'auto',
+      auth,
+      false,
+      20000,
+      undefined,
+      '',
+      true,
+      undefined,
+      undefined,
+      500_000
+    )
+    const payload = JSON.stringify(result.conversationState)
+    expect(payload.length).toBeLessThanOrEqual(500_000)
   })
 
   test('history starts with userInputMessage after trim', () => {
@@ -810,10 +837,10 @@ describe('image carry-forward: no images on tool-result turns', () => {
 
 describe('payload trim performance', () => {
   test('trims very large history in <50ms', () => {
-    // 200 user/asst pairs of 10KB each = ~4MB raw — would be O(N²) without
-    // the incremental size accounting.
+    // 500 user/asst pairs of 10KB each = ~10MB raw — over the 4MB default cap,
+    // so trimming runs and would be O(N²) without the incremental accounting.
     const messages: any[] = []
-    for (let i = 0; i < 200; i++) {
+    for (let i = 0; i < 500; i++) {
       messages.push({ role: 'user', content: 'u'.repeat(10000) })
       messages.push({ role: 'assistant', content: 'a'.repeat(10000) })
     }
@@ -825,7 +852,7 @@ describe('payload trim performance', () => {
 
     // Result must still be under the limit.
     const size = JSON.stringify(result.conversationState).length
-    expect(size).toBeLessThanOrEqual(600_000)
+    expect(size).toBeLessThanOrEqual(4_000_000)
     // Allow 100ms on slow CI; fail if we regress to seconds (O(N²)).
     expect(elapsed).toBeLessThan(100)
   })
