@@ -95,7 +95,15 @@ export const KiroConfigSchema = z.object({
    * When true (default), maps budget ranges to effort levels.
    * When false, only uses explicit effort config or falls back to 'medium'.
    */
-  auto_effort_mapping: z.boolean().default(true)
+  auto_effort_mapping: z.boolean().default(true),
+
+  // OpenCode strips image parts from conversation state across agentic turns.
+  // When true, the plugin caches converted images per conversation and re-attaches
+  // them to currentMessage on later turns so the model keeps "seeing" them.
+  // Kiro bills per session (request), not per token, so re-sending the same
+  // images each turn has no billing impact. Only disable if you hit the
+  // per-request 3.75MB image-payload cap on conversations with many heavy images.
+  image_carry_forward: z.boolean().default(true)
 })
 
 export type KiroConfig = z.infer<typeof KiroConfigSchema>
@@ -114,5 +122,6 @@ export const DEFAULT_CONFIG: KiroConfig = {
   usage_tracking_enabled: true,
   auto_sync_kiro_cli: true,
   enable_log_api_request: false,
-  auto_effort_mapping: true
+  auto_effort_mapping: true,
+  image_carry_forward: true
 }
