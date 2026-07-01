@@ -54,6 +54,18 @@ export const KIRO_CONSTANTS = {
   ORIGIN_AI_EDITOR: 'AI_EDITOR'
 }
 
+// Thinking budgets per effort level (tokens).
+// Kiro's max_thinking_length cap is 200 000.
+export const THINKING_BUDGETS = {
+  low: 10_000,
+  medium: 24_000,
+  high: 200_000,
+  // Default when thinking is on but no effort level is specified (-thinking suffix)
+  default: 16_000
+} as const
+
+export type ThinkingEffort = keyof typeof THINKING_BUDGETS
+
 export const MODEL_MAPPING: Record<string, string> = {
   // Claude Haiku
   'claude-haiku-4-5': 'claude-haiku-4.5',
