@@ -1,11 +1,15 @@
 import type { AccountRepository } from '../../infrastructure/database/account-repository'
 import type { AccountManager } from '../../plugin/accounts'
+import * as logger from '../../plugin/logger'
 import type { ManagedAccount } from '../../plugin/types'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
 interface RequestContext {
   retry: number
+  // Time spent in rate-limit sleeps, propagated up so the retry strategy can
+  // exclude it from the request timeout budget.
+  excludedMs?: number
 }
 
 interface ErrorHandlerConfig {
@@ -38,12 +42,16 @@ export class ErrorHandler {
 
     if (response.status === 400) {
       const reason = await readBody()
+      logger.warn(`HTTP 400 on ${account.email}: ${reason || 'unknown'}`)
       showToast(`400: ${reason || 'unknown'}`, 'error')
       return { shouldRetry: false }
     }
 
     if (response.status === 401 && context.retry < this.config.rate_limit_max_retries) {
       const reason = await readBody()
+      logger.warn(
+        `HTTP 401 on ${account.email} (retry ${context.retry}): ${reason || 'Unauthorized'}`
+      )
       showToast(`401: ${reason || 'Unauthorized'}. Retrying...`, 'warning')
       return {
         shouldRetry: true,
@@ -64,15 +72,18 @@ export class ErrorHandler {
         }
       } catch (e) {}
 
+      logger.warn(`HTTP 500 on ${account.email} (failCount ${account.failCount}): ${errorMessage}`)
       if (account.failCount < 5) {
         const delay = 1000 * Math.pow(2, account.failCount - 1)
         showToast(`500: ${errorMessage}. Retrying in ${Math.ceil(delay / 1000)}s...`, 'warning')
         await this.sleep(delay)
         return { shouldRetry: true }
       } else {
+        account.failCount = 9 // markUnhealthy will increment to 10 and set isHealthy=false
         this.accountManager.markUnhealthy(
           account,
-          `Server Error (500) after 5 attempts: ${errorMessage}`
+          `Server error (500) after 5 attempts: ${errorMessage}`,
+          Date.now() + 1800000 // 30 min recovery
         )
         await this.repository.batchSave(this.accountManager.getAccounts())
         showToast(`500: ${errorMessage}. Marking account as unhealthy and switching...`, 'warning')
@@ -82,6 +93,7 @@ export class ErrorHandler {
 
     if (response.status === 429) {
       const w = parseInt(response.headers.get('retry-after') || '60') * 1000
+      logger.warn(`HTTP 429 on ${account.email}: rate limited, retry-after=${Math.ceil(w / 1000)}s`)
       this.accountManager.markRateLimited(account, w)
       await this.repository.batchSave(this.accountManager.getAccounts())
       const count = this.accountManager.getAccountCount()
@@ -90,7 +102,11 @@ export class ErrorHandler {
       }
       showToast(`429: Rate limited. Waiting ${Math.ceil(w / 1000)}s...`, 'warning')
       await this.sleep(w)
-      return { shouldRetry: true }
+      // The wait is not request runtime — exclude it from the timeout budget.
+      return {
+        shouldRetry: true,
+        newContext: { ...context, excludedMs: (context.excludedMs ?? 0) + w }
+      }
     }
 
     if (response.status === 402 || response.status === 403) {
@@ -114,21 +130,29 @@ export class ErrorHandler {
         errorReason = 'Account Suspended'
         isPermanent = true
       }
-      if (
-        errorReason.includes('bearer token included in the request is invalid') ||
-        errorReason.includes('The bearer token included in the request is invalid')
-      ) {
-        isPermanent = true
+      if (errorReason.includes('bearer token included in the request is invalid')) {
+        // Force token refresh on next retry
+        account.expiresAt = 0
+        return { shouldRetry: true }
       }
-      if (isPermanent) {
-        account.failCount = 10
-      }
+
+      logger.warn(`HTTP ${response.status} on ${account.email}: ${errorReason}`, {
+        isPermanent,
+        retry: context.retry,
+        reason: errorData?.reason
+      })
 
       if (this.accountManager.getAccountCount() > 1) {
         showToast(`${response.status}: ${errorReason}. Switching account...`, 'warning')
         this.accountManager.markUnhealthy(account, errorReason)
         await this.repository.batchSave(this.accountManager.getAccounts())
         return { shouldRetry: true, switchAccount: true }
+      }
+
+      if (isPermanent) {
+        this.accountManager.markUnhealthy(account, errorReason)
+        await this.repository.batchSave(this.accountManager.getAccounts())
+        return { shouldRetry: false }
       }
 
       if (
@@ -150,6 +174,7 @@ export class ErrorHandler {
     }
 
     const reason = await readBody()
+    logger.warn(`HTTP ${response.status} on ${account.email}: ${reason || response.statusText}`)
     showToast(`${response.status}: ${reason || response.statusText}`, 'error')
     return { shouldRetry: false }
   }
