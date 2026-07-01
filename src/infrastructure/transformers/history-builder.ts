@@ -6,7 +6,7 @@ import {
 } from '../../plugin/image-handler.js'
 import type { CodeWhispererMessage } from '../../plugin/types'
 import { getContentText } from './message-transformer.js'
-import { deduplicateToolResults } from './tool-transformer.js'
+import { deduplicateToolResults, shortenToolName } from './tool-transformer.js'
 
 /**
  * Collapse agentic loop sequences in the built history.
@@ -154,7 +154,7 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
           if (p.type === 'text') arm.content += p.text || ''
           else if (p.type === 'thinking') th += p.thinking || p.text || ''
           else if (p.type === 'tool_use')
-            tus.push({ input: p.input, name: p.name, toolUseId: p.id })
+            tus.push({ input: p.input, name: shortenToolName(p.name), toolUseId: p.id })
         }
       } else arm.content = getContentText(m)
       if (m.tool_calls && Array.isArray(m.tool_calls)) {
@@ -164,7 +164,7 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
               typeof tc.function?.arguments === 'string'
                 ? JSON.parse(tc.function.arguments)
                 : tc.function?.arguments,
-            name: tc.function?.name,
+            name: shortenToolName(tc.function?.name),
             toolUseId: tc.id
           })
         }
