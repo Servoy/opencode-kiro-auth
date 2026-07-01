@@ -34,7 +34,9 @@ export class TokenRefresher {
     try {
       const newAuth = await refreshAccessToken(auth)
       this.accountManager.updateFromAuth(account, newAuth)
-      await this.repository.batchSave(this.accountManager.getAccounts())
+      // Persist only the updated account instead of all accounts — avoids
+      // invalidating the whole AccountCache on every token refresh.
+      await this.repository.save(account)
       return { account, shouldContinue: false }
     } catch (e: any) {
       return await this.handleRefreshError(e, account, showToast)
@@ -81,7 +83,7 @@ export class TokenRefresher {
         error.message.includes('Invalid grant provided') ||
         error.message.includes('Client is expired'))
     ) {
-      this.accountManager.markUnhealthy(account, error.message)
+      this.accountManager.markUnhealthy(account, error.code || error.message)
       await this.repository.batchSave(this.accountManager.getAccounts())
       return { account, shouldContinue: true }
     }
