@@ -88,6 +88,7 @@ export class RequestHandler {
       20000
 
     let retry = 0
+    let bearerRetried = false
     let consecutiveNullAccounts = 0
     const retryContext = this.retryStrategy.createContext()
 
@@ -162,11 +163,20 @@ export class RequestHandler {
       } catch (e: any) {
         const httpStatus = e?.$metadata?.httpStatusCode
 
-        if (httpStatus) {
-          if (apiTimestamp) {
-            this.logSdkError(sdkPrep, e, acc, apiTimestamp)
+        if (httpStatus === 403 && !bearerRetried) {
+          const msg = e?.message || ''
+          if (
+            msg.includes('bearer token included in the request is invalid') ||
+            msg.includes('The bearer token included in the request is invalid')
+          ) {
+            bearerRetried = true
+            logger.warn('403 bearer invalid on first attempt, forcing token refresh and retrying')
+            await this.tokenRefresher.forceRefresh(acc, this.accountManager.toAuthDetails(acc))
+            continue
           }
+        }
 
+        if (httpStatus) {
           const mockResponse = new Response(
             JSON.stringify({ message: e.message, __type: e.name }),
             {
@@ -188,10 +198,17 @@ export class RequestHandler {
             if (errorResult.newContext) {
               retry = errorResult.newContext.retry
             }
+            if (errorResult.forceRefresh) {
+              await this.tokenRefresher.forceRefresh(acc, this.accountManager.toAuthDetails(acc))
+            }
             if (errorResult.switchAccount) {
               continue
             }
             continue
+          }
+
+          if (apiTimestamp) {
+            this.logSdkError(sdkPrep, e, acc, apiTimestamp)
           }
 
           throw new Error(`Kiro Error: ${httpStatus}`)

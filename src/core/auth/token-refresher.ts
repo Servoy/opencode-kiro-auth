@@ -41,6 +41,34 @@ export class TokenRefresher {
     }
   }
 
+  async forceRefresh(account: ManagedAccount, auth: KiroAuthDetails): Promise<void> {
+    if (this.config.auto_sync_kiro_cli) {
+      await this.syncFromKiroCli()
+    }
+
+    this.repository.invalidateCache()
+    const accounts = await this.repository.findAll()
+    const synced = accounts.find((a: ManagedAccount) => a.id === account.id)
+
+    if (synced && synced.accessToken !== account.accessToken) {
+      this.accountManager.updateFromAuth(account, this.accountManager.toAuthDetails(synced))
+      await this.repository.batchSave(this.accountManager.getAccounts())
+      logger.debug('Force refresh: recovered newer token from CLI sync')
+      return
+    }
+
+    try {
+      const newAuth = await refreshAccessToken(auth)
+      this.accountManager.updateFromAuth(account, newAuth)
+      await this.repository.batchSave(this.accountManager.getAccounts())
+      logger.debug('Force refresh: token refreshed via OIDC')
+    } catch (e: any) {
+      logger.warn('Force refresh failed, will retry with current token', {
+        message: e instanceof Error ? e.message : String(e)
+      })
+    }
+  }
+
   private async handleRefreshError(
     error: any,
     account: ManagedAccount,
