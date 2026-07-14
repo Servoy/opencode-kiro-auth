@@ -1,8 +1,8 @@
-import Database from 'libsql'
 import { existsSync } from 'node:fs'
 import { extractRegionFromArn, normalizeRegion } from '../../constants'
 import { createDeterministicAccountId } from '../accounts'
 import * as logger from '../logger'
+import { openDatabase } from '../storage/database-driver'
 import { kiroDb } from '../storage/sqlite'
 import { fetchUsageLimits } from '../usage'
 import {
@@ -23,8 +23,8 @@ export async function syncFromKiroCli() {
   const dbPath = getCliDbPath()
   if (!existsSync(dbPath)) return
   try {
-    const cliDb = new Database(dbPath, { readonly: true })
-    cliDb.pragma('busy_timeout = 5000')
+    const cliDb = openDatabase(dbPath, { readonly: true })
+    cliDb.exec('PRAGMA busy_timeout = 5000')
     const rows = cliDb.prepare('SELECT key, value FROM auth_kv').all() as any[]
     let activeProfileArn: string | undefined
     try {
@@ -260,8 +260,8 @@ export async function writeToKiroCli(acc: any) {
   const dbPath = getCliDbPath()
   if (!existsSync(dbPath)) return
   try {
-    const cliDb = new Database(dbPath)
-    cliDb.pragma('busy_timeout = 5000')
+    const cliDb = openDatabase(dbPath)
+    cliDb.exec('PRAGMA busy_timeout = 5000')
     const rows = cliDb.prepare('SELECT key, value FROM auth_kv').all() as any[]
     const targetKey = acc.authMethod === 'idc' ? 'kirocli:odic:token' : 'kirocli:social:token'
     const row = rows.find((r) => r.key === targetKey || r.key.endsWith(targetKey))
