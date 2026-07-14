@@ -1,8 +1,6 @@
-import type Libsql from 'libsql'
+import type { SqliteDatabase } from './database-driver'
 
-type Database = Libsql.Database
-
-export function runMigrations(db: Database): void {
+export function runMigrations(db: SqliteDatabase): void {
   migrateToUniqueRefreshToken(db)
   migrateRealEmailColumn(db)
   migrateUsageTable(db)
@@ -14,7 +12,7 @@ export function runMigrations(db: Database): void {
   migrateConversationsAgentContinuationId(db)
 }
 
-function migrateConversationsTable(db: Database): void {
+function migrateConversationsTable(db: SqliteDatabase): void {
   const hasTable = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'")
     .get()
@@ -32,7 +30,7 @@ function migrateConversationsTable(db: Database): void {
   db.exec('CREATE INDEX idx_conversations_last_used ON conversations(last_used)')
 }
 
-function migrateReauthLockTable(db: Database): void {
+function migrateReauthLockTable(db: SqliteDatabase): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS reauth_lock (
       id      INTEGER PRIMARY KEY CHECK (id = 1),
@@ -42,7 +40,7 @@ function migrateReauthLockTable(db: Database): void {
   `)
 }
 
-function migrateConversationsAgentContinuationId(db: Database): void {
+function migrateConversationsAgentContinuationId(db: SqliteDatabase): void {
   const columns = db.prepare('PRAGMA table_info(conversations)').all() as any[]
   const names = new Set(columns.map((c: any) => c.name))
   if (!names.has('agent_continuation_id')) {
@@ -50,7 +48,7 @@ function migrateConversationsAgentContinuationId(db: Database): void {
   }
 }
 
-function migrateToUniqueRefreshToken(db: Database): void {
+function migrateToUniqueRefreshToken(db: SqliteDatabase): void {
   const hasIndex = db
     .prepare(
       "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_refresh_token_unique'"
@@ -113,7 +111,7 @@ function migrateToUniqueRefreshToken(db: Database): void {
   }
 }
 
-function migrateRealEmailColumn(db: Database): void {
+function migrateRealEmailColumn(db: SqliteDatabase): void {
   const columns = db.prepare('PRAGMA table_info(accounts)').all() as any[]
   const names = new Set(columns.map((c) => c.name))
   if (names.has('real_email')) {
@@ -156,7 +154,7 @@ function migrateRealEmailColumn(db: Database): void {
   }
 }
 
-function migrateUsageTable(db: Database): void {
+function migrateUsageTable(db: SqliteDatabase): void {
   const hasUsageTable = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='usage'")
     .get()
@@ -171,7 +169,7 @@ function migrateUsageTable(db: Database): void {
   }
 }
 
-function migrateStartUrlColumn(db: Database): void {
+function migrateStartUrlColumn(db: SqliteDatabase): void {
   const columns = db.prepare('PRAGMA table_info(accounts)').all() as any[]
   const names = new Set(columns.map((c) => c.name))
   if (!names.has('start_url')) {
@@ -179,7 +177,7 @@ function migrateStartUrlColumn(db: Database): void {
   }
 }
 
-function migrateOidcRegionColumn(db: Database): void {
+function migrateOidcRegionColumn(db: SqliteDatabase): void {
   const columns = db.prepare('PRAGMA table_info(accounts)').all() as any[]
   const names = new Set(columns.map((c) => c.name))
   if (!names.has('oidc_region')) {
@@ -189,7 +187,7 @@ function migrateOidcRegionColumn(db: Database): void {
   db.exec("UPDATE accounts SET oidc_region = region WHERE oidc_region IS NULL OR oidc_region = ''")
 }
 
-function migrateDropRefreshTokenUniqueIndex(db: Database): void {
+function migrateDropRefreshTokenUniqueIndex(db: SqliteDatabase): void {
   // Drop the UNIQUE index on refresh_token — it was only needed for ON CONFLICT(refresh_token)
   // upsert mechanics. Now that we use ON CONFLICT(id), this index is unnecessary and actively
   // harmful: duplicate rows (same account, different legacy vs hash id) share the same
