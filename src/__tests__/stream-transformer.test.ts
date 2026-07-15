@@ -221,6 +221,28 @@ describe('transformSdkStream: tool call streaming', () => {
     expect(toolBlocks.length).toBeGreaterThan(0)
   })
 
+  test('no-param tool call without stop event is treated as complete (not truncated)', async () => {
+    const events = [
+      { toolUseEvent: { toolUseId: 't-noarg', name: 'time_currentTime' } },
+      { toolUseEvent: { toolUseId: 't-noarg', name: 'time_currentTime', input: '' } }
+    ]
+    const sdk = makeSdkResponse(events)
+    const result = await collectSdk(transformSdkStream(sdk, 'auto', 'conv-1'))
+
+    const allText = result
+      .filter((e) => e.choices?.[0]?.delta?.content)
+      .map((e: any) => e.choices[0].delta.content)
+      .join('')
+    expect(allText).not.toContain('truncated')
+
+    const toolBlocks = result.filter((e) => e.choices?.[0]?.delta?.tool_calls?.[0]?.function?.name)
+    expect(toolBlocks.length).toBe(1)
+    expect(toolBlocks[0]!.choices[0].delta.tool_calls[0].function.name).toBe('time_currentTime')
+
+    const stopReason = result.find((e) => e.choices?.[0]?.finish_reason)
+    expect(stopReason.choices[0].finish_reason).toBe('tool_calls')
+  })
+
   test('truncated tool call (no stop event) closes the block and emits error text', async () => {
     // Simulates Kiro cutting the stream mid-tool-call (large .frm JSON that
     // exceeds the response size limit).
