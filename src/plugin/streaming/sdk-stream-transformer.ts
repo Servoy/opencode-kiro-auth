@@ -230,9 +230,18 @@ export async function* transformSdkStream(
     }
 
     if (activeToolCalls.size > 0) {
-      // Stream cut off mid-tool-call(s). Tell the model to retry with smaller
-      // chunks so it can self-correct on the next turn.
-      for (const truncated of activeToolCalls.values()) {
+      const trulyTruncated: ToolCallState[] = []
+      for (const pending of activeToolCalls.values()) {
+        if (pending.input.length === 0) {
+          pending.stopped = true
+          toolCalls.push(pending)
+        } else {
+          trulyTruncated.push(pending)
+        }
+      }
+      activeToolCalls.clear()
+
+      for (const truncated of trulyTruncated) {
         logger.debug(
           `[STREAM] Truncated tool call: name=${truncated.name} id=${truncated.toolUseId} inputLen=${truncated.input.length}`
         )
@@ -244,7 +253,6 @@ export async function* transformSdkStream(
           if (_c !== null) yield _c
         }
       }
-      activeToolCalls.clear()
     }
 
     if (thinkingRequested && streamState.buffer) {
