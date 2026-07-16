@@ -1,6 +1,6 @@
 import { CodeWhispererStreamingClient } from '@aws/codewhisperer-streaming-client'
 import * as crypto from 'crypto'
-import { KIRO_CONSTANTS, buildUrl } from '../constants.js'
+import { KIRO_CONSTANTS, buildUrl, extractRegionFromArn } from '../constants.js'
 import type { Effort, KiroAuthDetails } from './types'
 
 const KIRO_VERSION = '0.11.63'
@@ -21,9 +21,12 @@ function getMachineId(auth: KiroAuthDetails): string {
  * - Accounts without a profileArn (free AWS Builder ID) → q.amazonaws.com
  *   This endpoint accepts the same token + request shape but only serves
  *   Claude-family models. Using runtime.kiro.dev here causes a 400.
+ *
+ * Region must match transformToSdkRequest's signing region (same fallback
+ * order) — SSO home region and profile ARN region can differ for IDC accounts.
  */
 export function resolveKiroEndpoint(auth: KiroAuthDetails): string {
-  const region = auth.region || 'us-east-1'
+  const region = extractRegionFromArn(auth.profileArn) ?? auth.region ?? 'us-east-1'
   if (auth.profileArn) {
     return buildUrl(KIRO_CONSTANTS.RUNTIME_URL, region as any)
   }

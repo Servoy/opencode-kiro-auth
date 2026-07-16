@@ -30,7 +30,8 @@ export class ErrorHandler {
     response: Response,
     account: ManagedAccount,
     context: RequestContext,
-    showToast: ToastFunction
+    showToast: ToastFunction,
+    model?: string
   ): Promise<{
     shouldRetry: boolean
     newContext?: RequestContext
@@ -48,8 +49,9 @@ export class ErrorHandler {
 
     if (response.status === 400) {
       const reason = await readBody()
-      logger.warn(`HTTP 400 on ${account.email}: ${reason || 'unknown'}`)
-      showToast(`400: ${reason || 'unknown'}`, 'error')
+      const message = this.enrichIfInvalidModel(reason, account, model)
+      logger.warn(`HTTP 400 on ${account.email}: ${message || 'unknown'}`)
+      showToast(`400: ${message || 'unknown'}`, 'error')
       return { shouldRetry: false }
     }
 
@@ -214,6 +216,21 @@ export class ErrorHandler {
       }
     }
     return { shouldRetry: false }
+  }
+
+  // Kiro rolls out model availability per region gradually; reword its bare
+  // "Invalid model ID" into something actionable without guessing at regions.
+  private enrichIfInvalidModel(reason: string, account: ManagedAccount, model?: string): string {
+    if (!reason || !/invalid model id/i.test(reason)) {
+      return reason
+    }
+    const region = account.region || 'your account\u2019s region'
+    const modelPart = model ? `Model "${model}"` : 'This model'
+    return (
+      `${modelPart} is not available via region "${region}". Kiro rolls out model ` +
+      `availability gradually per region — check https://kiro.dev/docs/models/ for current ` +
+      `availability. (${reason})`
+    )
   }
 
   private isNetworkError(e: any): boolean {
