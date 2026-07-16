@@ -219,7 +219,8 @@ export class RequestHandler {
             mockResponse,
             acc,
             { retry, excludedMs: retryContext.excludedMs },
-            showToast
+            showToast,
+            model
           )
 
           if (errorResult.shouldRetry) {
