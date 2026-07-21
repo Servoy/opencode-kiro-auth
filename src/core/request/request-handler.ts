@@ -190,13 +190,14 @@ export class RequestHandler {
             e,
             mockResponse,
             acc,
-            { retry },
+            { retry, bearerRetried },
             showToast
           )
 
           if (errorResult.shouldRetry) {
             if (errorResult.newContext) {
               retry = errorResult.newContext.retry
+              bearerRetried = errorResult.newContext.bearerRetried ?? bearerRetried
             }
             if (errorResult.forceRefresh) {
               await this.tokenRefresher.forceRefresh(acc, this.accountManager.toAuthDetails(acc))
