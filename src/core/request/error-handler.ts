@@ -6,6 +6,7 @@ type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' |
 
 interface RequestContext {
   retry: number
+  bearerRetried?: boolean
 }
 
 interface ErrorHandlerConfig {
@@ -26,7 +27,12 @@ export class ErrorHandler {
     account: ManagedAccount,
     context: RequestContext,
     showToast: ToastFunction
-  ): Promise<{ shouldRetry: boolean; newContext?: RequestContext; switchAccount?: boolean }> {
+  ): Promise<{
+    shouldRetry: boolean
+    newContext?: RequestContext
+    switchAccount?: boolean
+    forceRefresh?: boolean
+  }> {
     const readBody = async (): Promise<string> => {
       try {
         const body = JSON.parse(await response.clone().text())
@@ -114,10 +120,20 @@ export class ErrorHandler {
         errorReason = 'Account Suspended'
         isPermanent = true
       }
-      if (
+      const isBearerInvalid =
         errorReason.includes('bearer token included in the request is invalid') ||
         errorReason.includes('The bearer token included in the request is invalid')
-      ) {
+
+      if (isBearerInvalid && !context.bearerRetried) {
+        showToast('403: Bearer token stale after idle. Refreshing and retrying...', 'warning')
+        return {
+          shouldRetry: true,
+          newContext: { ...context, retry: context.retry + 1, bearerRetried: true },
+          forceRefresh: true
+        }
+      }
+
+      if (isBearerInvalid) {
         isPermanent = true
       }
       if (isPermanent) {
