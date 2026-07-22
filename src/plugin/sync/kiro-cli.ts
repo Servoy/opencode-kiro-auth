@@ -52,10 +52,12 @@ export async function syncFromKiroCli() {
 
         const isIdc = row.key.includes('odic')
         const authMethod = isIdc ? 'idc' : 'desktop'
-        const oidcRegion = normalizeRegion(data.region)
         let profileArn: string | undefined = data.profile_arn || data.profileArn
         if (!profileArn && isIdc) profileArn = activeProfileArn || readActiveProfileArnFromKiroCli()
-        const serviceRegion = extractRegionFromArn(profileArn) || oidcRegion
+        // serviceRegion wins over data.region: kiro-cli stores data.region as the
+        // OIDC region (often us-east-1) regardless of where the account actually lives.
+        const serviceRegion = extractRegionFromArn(profileArn) || normalizeRegion(data.region)
+        const oidcRegion = serviceRegion
         const startUrl: string | undefined =
           typeof data.start_url === 'string'
             ? data.start_url
@@ -128,8 +130,33 @@ export async function syncFromKiroCli() {
           }
         }
 
-        const resolvedEmail =
+        // Reuse known email for this profileArn to avoid duplicate placeholder rows
+        let resolvedEmail: string =
           email || makePlaceholderEmail(authMethod, serviceRegion, clientId, profileArn)
+        if (resolvedEmail.startsWith('placeholder-')) {
+          let existingReal: any | undefined
+          if (profileArn) {
+            existingReal = all.find(
+              (a) =>
+                a.auth_method === authMethod &&
+                a.profile_arn === profileArn &&
+                a.email &&
+                !a.email.startsWith('placeholder-')
+            )
+          }
+          if (!existingReal && authMethod === 'idc' && clientId) {
+            existingReal = all.find(
+              (a) =>
+                a.auth_method === 'idc' &&
+                a.client_id === clientId &&
+                a.email &&
+                !a.email.startsWith('placeholder-')
+            )
+          }
+          if (existingReal) {
+            resolvedEmail = existingReal.email
+          }
+        }
 
         const id = createDeterministicAccountId(resolvedEmail, authMethod, clientId, profileArn)
         const existingById = all.find((a) => a.id === id)
@@ -210,6 +237,10 @@ export async function syncFromKiroCli() {
           clientId,
           profileArn
         })
+
+        if (authMethod === 'idc' && profileArn) {
+          await kiroDb.deleteStaleIdcDuplicates(id, resolvedEmail, profileArn)
+        }
       }
     }
 

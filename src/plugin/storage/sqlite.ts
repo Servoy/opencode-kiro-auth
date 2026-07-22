@@ -171,6 +171,54 @@ export class KiroDatabase {
     })
   }
 
+  async cleanupTestAndStaleAccounts(staleDays = 30): Promise<number> {
+    const cutoffMs = Date.now() - staleDays * 24 * 60 * 60 * 1000
+    return withDatabaseLock(this.path, async () => {
+      const before = (this.db.prepare('SELECT COUNT(*) AS n FROM accounts').get() as { n: number })
+        .n
+      this.db
+        .prepare(
+          `DELETE FROM accounts
+           WHERE email = 'test@example.com'
+              OR email LIKE 'placeholder-%@awsapps.local'
+              OR (is_healthy = 0
+                  AND unhealthy_reason IN ('Account Suspended', 'ExpiredTokenException')
+                  AND (recovery_time IS NULL OR recovery_time < ?))`
+        )
+        .run(cutoffMs)
+      const after = (this.db.prepare('SELECT COUNT(*) AS n FROM accounts').get() as { n: number }).n
+      return before - after
+    })
+  }
+
+  async deleteStaleIdcDuplicates(
+    canonicalId: string,
+    email: string,
+    profileArn: string
+  ): Promise<void> {
+    await withDatabaseLock(this.path, async () => {
+      this.db
+        .prepare(
+          `DELETE FROM accounts
+           WHERE auth_method = 'idc'
+             AND email = ?
+             AND profile_arn = ?
+             AND id != ?`
+        )
+        .run(email, profileArn, canonicalId)
+      // Also clean up placeholder rows for the same profileArn.
+      this.db
+        .prepare(
+          `DELETE FROM accounts
+           WHERE auth_method = 'idc'
+             AND profile_arn = ?
+             AND email LIKE 'placeholder-%'
+             AND id != ?`
+        )
+        .run(profileArn, canonicalId)
+    })
+  }
+
   private rowToAccount(row: any): ManagedAccount {
     return {
       id: row.id,

@@ -1,5 +1,5 @@
 import type { AuthOuathResult } from '@opencode-ai/plugin'
-import { exec } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { extractRegionFromArn, normalizeRegion } from '../../constants.js'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
 import { authorizeKiroIDC, pollKiroIDCToken } from '../../kiro/oauth-idc.js'
@@ -11,15 +11,14 @@ import type { KiroRegion, ManagedAccount } from '../../plugin/types.js'
 import { fetchUsageLimits } from '../../plugin/usage.js'
 
 const openBrowser = (url: string) => {
-  const escapedUrl = url.replace(/"/g, '\\"')
   const platform = process.platform
-  const cmd =
+  const [bin, ...args] =
     platform === 'win32'
-      ? `cmd /c start "" "${escapedUrl}"`
+      ? ['cmd', '/c', 'start', '', url]
       : platform === 'darwin'
-        ? `open "${escapedUrl}"`
-        : `xdg-open "${escapedUrl}"`
-  exec(cmd, (error) => {
+        ? ['open', url]
+        : ['xdg-open', url]
+  execFile(bin!, args, (error) => {
     if (error) logger.warn(`Browser error: ${error.message}`)
   })
 }
@@ -62,8 +61,14 @@ export class IdcAuthMethod {
     const invokedWithoutPrompts = !inputs || Object.keys(inputs).length === 0
 
     const startUrl = normalizeStartUrl(inputs?.start_url || this.config.idc_start_url) || undefined
-    const oidcRegion: KiroRegion = normalizeRegion(inputs?.idc_region || this.config.idc_region)
+    // For the OIDC device-code flow, prefer explicit idc_region, then fall back to
+    // the region from a pre-configured profileArn, then default_region. This ensures
+    // accounts with a eu-central-1 profileArn don't hit oidc.us-east-1.amazonaws.com.
     const configuredProfileArn = this.config.idc_profile_arn
+    const arnRegion = extractRegionFromArn(configuredProfileArn)
+    const oidcRegion: KiroRegion = normalizeRegion(
+      inputs?.idc_region || this.config.idc_region || arnRegion || configuredServiceRegion
+    )
     logger.log('IDC authorize: resolved defaults', {
       hasInputs: !!inputs && Object.keys(inputs).length > 0,
       invokedWithoutPrompts,
@@ -161,7 +166,7 @@ export class IdcAuthMethod {
             email,
             authMethod: 'idc',
             region: serviceRegion,
-            oidcRegion,
+            oidcRegion: oidcRegion,
             clientId: token.clientId,
             clientSecret: token.clientSecret,
             profileArn,
