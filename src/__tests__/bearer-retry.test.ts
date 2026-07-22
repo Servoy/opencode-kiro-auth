@@ -1,6 +1,20 @@
 import { describe, expect, mock, test } from 'bun:test'
 
 let sendCalls = 0
+let apiResponseLogCalls = 0
+
+mock.module('../plugin/logger.js', () => ({
+  debug: () => {},
+  error: () => {},
+  getTimestamp: () => '2026-07-22T00:00:00.000Z',
+  log: () => {},
+  logApiError: () => {},
+  logApiRequest: () => {},
+  logApiResponse: () => {
+    apiResponseLogCalls++
+  },
+  warn: () => {}
+}))
 
 mock.module('../plugin/sdk-client.js', () => ({
   createSdkClient: () => ({
@@ -19,6 +33,7 @@ const { RequestHandler } = await import('../core/request/request-handler.js')
 describe('RequestHandler bearer-invalid recovery', () => {
   test('forces one refresh, retries once, then applies permanent failure handling', async () => {
     sendCalls = 0
+    apiResponseLogCalls = 0
 
     const account: any = {
       id: 'account-1',
@@ -62,7 +77,7 @@ describe('RequestHandler bearer-invalid recovery', () => {
       token_expiry_buffer_ms: 0,
       auto_sync_kiro_cli: false,
       account_selection_strategy: 'sticky',
-      enable_log_api_request: false
+      enable_log_api_request: true
     }
 
     const handler: any = new RequestHandler(accountManager, config, repository)
@@ -97,5 +112,6 @@ describe('RequestHandler bearer-invalid recovery', () => {
 
     expect(sendCalls).toBe(2)
     expect(forceRefreshCalls).toBe(1)
+    expect(apiResponseLogCalls).toBe(2)
   })
 })

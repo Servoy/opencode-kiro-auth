@@ -163,6 +163,10 @@ export class RequestHandler {
       } catch (e: any) {
         const httpStatus = e?.$metadata?.httpStatusCode
 
+        if (httpStatus && apiTimestamp) {
+          this.logSdkError(sdkPrep, e, acc, apiTimestamp)
+        }
+
         if (httpStatus === 403 && !bearerRetried) {
           const msg = e?.message || ''
           if (
@@ -206,10 +210,6 @@ export class RequestHandler {
               continue
             }
             continue
-          }
-
-          if (apiTimestamp) {
-            this.logSdkError(sdkPrep, e, acc, apiTimestamp)
           }
 
           throw new Error(`Kiro Error: ${httpStatus}`)
