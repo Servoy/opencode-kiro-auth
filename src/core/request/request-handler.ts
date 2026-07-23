@@ -212,7 +212,23 @@ export class RequestHandler {
             continue
           }
 
-          throw new Error(`Kiro Error: ${httpStatus}`)
+          const errMsg = e?.message || `Kiro Error: ${httpStatus}`
+          if (/input is too long/i.test(errMsg)) {
+            return new Response(
+              JSON.stringify({
+                error: {
+                  message: 'input is too long for requested model',
+                  type: 'invalid_request_error',
+                  code: 'context_length_exceeded'
+                }
+              }),
+              {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+              }
+            )
+          }
+          throw new Error(errMsg)
         }
 
         const networkResult = await this.errorHandler.handleNetworkError(e, { retry }, showToast)
