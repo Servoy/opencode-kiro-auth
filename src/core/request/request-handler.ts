@@ -228,7 +228,7 @@ export class RequestHandler {
               }
             )
           }
-          throw new Error(errMsg)
+          throw new Error(`Kiro Error: ${httpStatus}`)
         }
 
         const networkResult = await this.errorHandler.handleNetworkError(e, { retry }, showToast)
