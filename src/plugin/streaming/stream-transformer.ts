@@ -1,6 +1,8 @@
 import { parseBracketToolCalls } from '../../infrastructure/transformers/tool-call-parser.js'
+import { restoreToolName } from '../../infrastructure/transformers/tool-transformer.js'
 import { getContextWindowSize } from '../models.js'
 import { estimateTokens } from '../response.js'
+import type { ToolNameMap } from '../types.js'
 import { convertToOpenAI } from './openai-converter.js'
 import { findRealTag, parseStreamBuffer } from './stream-parser.js'
 import { createTextDeltaEvents, createThinkingDeltaEvents, stopBlock } from './stream-state.js'
@@ -9,7 +11,8 @@ import { StreamState, THINKING_END_TAG, THINKING_START_TAG, ToolCallState } from
 export async function* transformKiroStream(
   response: Response,
   model: string,
-  conversationId: string
+  conversationId: string,
+  toolNameMap?: ToolNameMap
 ): AsyncGenerator<any> {
   const thinkingRequested = true
 
@@ -162,7 +165,7 @@ export async function* transformKiroStream(
               }
               currentToolCall = {
                 toolUseId: tc.toolUseId,
-                name: tc.name,
+                name: restoreToolName(tc.name, toolNameMap),
                 input: tc.input || ''
               }
             }
@@ -227,7 +230,7 @@ export async function* transformKiroStream(
       for (const btc of bracketToolCalls) {
         toolCalls.push({
           toolUseId: btc.toolUseId,
-          name: btc.name,
+          name: restoreToolName(btc.name, toolNameMap),
           input: typeof btc.input === 'string' ? btc.input : JSON.stringify(btc.input)
         })
       }

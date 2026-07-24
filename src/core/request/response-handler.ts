@@ -1,38 +1,49 @@
+import { restoreToolName } from '../../infrastructure/transformers/tool-transformer.js'
 import { parseEventStream } from '../../plugin/response'
 import { transformKiroStream } from '../../plugin/streaming/index.js'
 import { transformSdkStream } from '../../plugin/streaming/sdk-stream-transformer.js'
+import type { ToolNameMap } from '../../plugin/types.js'
+
+interface AccumulatedToolCall {
+  toolUseId: string
+  name?: string
+  input: string
+}
 
 export class ResponseHandler {
   async handleSuccess(
     response: Response,
     model: string,
     conversationId: string,
-    streaming: boolean
+    streaming: boolean,
+    toolNameMap?: ToolNameMap
   ): Promise<Response> {
     if (streaming) {
-      return this.handleStreaming(response, model, conversationId)
+      return this.handleStreaming(response, model, conversationId, toolNameMap)
     }
-    return this.handleNonStreaming(response, model, conversationId)
+    return this.handleNonStreaming(response, model, conversationId, toolNameMap)
   }
 
   async handleSdkSuccess(
     sdkResponse: any,
     model: string,
     conversationId: string,
-    streaming: boolean
+    streaming: boolean,
+    toolNameMap?: ToolNameMap
   ): Promise<Response> {
     if (streaming) {
-      return this.handleSdkStreaming(sdkResponse, model, conversationId)
+      return this.handleSdkStreaming(sdkResponse, model, conversationId, toolNameMap)
     }
-    return this.handleSdkNonStreaming(sdkResponse, model, conversationId)
+    return this.handleSdkNonStreaming(sdkResponse, model, conversationId, toolNameMap)
   }
 
   private async handleStreaming(
     response: Response,
     model: string,
-    conversationId: string
+    conversationId: string,
+    toolNameMap?: ToolNameMap
   ): Promise<Response> {
-    const s = transformKiroStream(response, model, conversationId)
+    const s = transformKiroStream(response, model, conversationId, toolNameMap)
     return new Response(
       new ReadableStream({
         async start(c) {
@@ -53,9 +64,10 @@ export class ResponseHandler {
   private async handleSdkStreaming(
     sdkResponse: any,
     model: string,
-    conversationId: string
+    conversationId: string,
+    toolNameMap?: ToolNameMap
   ): Promise<Response> {
-    const s = transformSdkStream(sdkResponse, model, conversationId)
+    const s = transformSdkStream(sdkResponse, model, conversationId, toolNameMap)
     return new Response(
       new ReadableStream({
         async start(c) {
@@ -76,7 +88,8 @@ export class ResponseHandler {
   private async handleNonStreaming(
     response: Response,
     model: string,
-    conversationId: string
+    conversationId: string,
+    toolNameMap?: ToolNameMap
   ): Promise<Response> {
     const text = await response.text()
     const p = parseEventStream(text, model)
@@ -104,7 +117,7 @@ export class ResponseHandler {
         id: tc.toolUseId,
         type: 'function',
         function: {
-          name: tc.name,
+          name: restoreToolName(tc.name, toolNameMap),
           arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input)
         }
       }))
@@ -118,11 +131,13 @@ export class ResponseHandler {
   private async handleSdkNonStreaming(
     sdkResponse: any,
     model: string,
-    conversationId: string
+    conversationId: string,
+    toolNameMap?: ToolNameMap
   ): Promise<Response> {
     // For non-streaming SDK responses, collect all events
     let content = ''
-    const toolCalls: any[] = []
+    const toolCallFragments = new Map<string, AccumulatedToolCall>()
+    const toolCallOrder: string[] = []
     let inputTokens = 0
     let outputTokens = 0
 
@@ -133,7 +148,25 @@ export class ResponseHandler {
           content += event.assistantResponseEvent.content
         }
         if (event.toolUseEvent) {
-          toolCalls.push(event.toolUseEvent)
+          const fragment = event.toolUseEvent
+          const toolUseId = fragment.toolUseId
+          if (typeof toolUseId === 'string' && toolUseId.length > 0) {
+            let accumulated = toolCallFragments.get(toolUseId)
+            if (!accumulated) {
+              accumulated = { toolUseId, input: '' }
+              toolCallFragments.set(toolUseId, accumulated)
+              toolCallOrder.push(toolUseId)
+            }
+            if (typeof fragment.name === 'string' && fragment.name.length > 0) {
+              accumulated.name = fragment.name
+            }
+            if (fragment.input !== undefined) {
+              accumulated.input +=
+                typeof fragment.input === 'string'
+                  ? fragment.input
+                  : (JSON.stringify(fragment.input) ?? '')
+            }
+          }
         }
         if (event.metadataEvent?.tokenUsage) {
           inputTokens = event.metadataEvent.tokenUsage.inputTokens || 0
@@ -141,6 +174,13 @@ export class ResponseHandler {
         }
       }
     }
+
+    const toolCalls = toolCallOrder
+      .map((toolUseId) => toolCallFragments.get(toolUseId))
+      .filter(
+        (toolCall): toolCall is AccumulatedToolCall & { name: string } =>
+          typeof toolCall?.name === 'string'
+      )
 
     const oai: any = {
       id: conversationId,
@@ -166,7 +206,7 @@ export class ResponseHandler {
         id: tc.toolUseId,
         type: 'function',
         function: {
-          name: tc.name,
+          name: restoreToolName(tc.name, toolNameMap),
           arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input)
         }
       }))

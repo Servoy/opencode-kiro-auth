@@ -1,15 +1,24 @@
 import { parseBracketToolCalls } from '../../infrastructure/transformers/tool-call-parser.js'
+import { restoreToolName } from '../../infrastructure/transformers/tool-transformer.js'
 import { getContextWindowSize } from '../models.js'
 import { estimateTokens } from '../response.js'
+import type { ToolNameMap } from '../types.js'
 import { convertToOpenAI } from './openai-converter.js'
 import { findRealTag } from './stream-parser.js'
 import { createTextDeltaEvents, createThinkingDeltaEvents, stopBlock } from './stream-state.js'
 import { StreamState, THINKING_END_TAG, THINKING_START_TAG, ToolCallState } from './types.js'
 
+interface PendingToolCall {
+  toolUseId: string
+  name?: string
+  input: string
+}
+
 export async function* transformSdkStream(
   sdkResponse: any,
   model: string,
-  conversationId: string
+  conversationId: string,
+  toolNameMap?: ToolNameMap
 ): AsyncGenerator<any> {
   const thinkingRequested = true
 
@@ -29,8 +38,8 @@ export async function* transformSdkStream(
   let outputTokens = 0
   let inputTokens = 0
   let contextUsagePercentage: number | null = null
-  const toolCalls: ToolCallState[] = []
-  let currentToolCall: ToolCallState | null = null
+  const toolCallFragments = new Map<string, PendingToolCall>()
+  const toolCallOrder: string[] = []
 
   const eventStream = sdkResponse.generateAssistantResponseResponse
   if (!eventStream) {
@@ -129,20 +138,20 @@ export async function* transformSdkStream(
         if (tc.name) totalContent += tc.name
         if (tc.input) totalContent += tc.input
 
-        if (tc.name && tc.toolUseId) {
-          if (currentToolCall && currentToolCall.toolUseId === tc.toolUseId) {
-            currentToolCall.input += tc.input || ''
-          } else {
-            if (currentToolCall) toolCalls.push(currentToolCall)
-            currentToolCall = {
-              toolUseId: tc.toolUseId,
-              name: tc.name,
-              input: tc.input || ''
-            }
+        const toolUseId = tc.toolUseId
+        if (typeof toolUseId === 'string' && toolUseId.length > 0) {
+          let accumulated = toolCallFragments.get(toolUseId)
+          if (!accumulated) {
+            accumulated = { toolUseId, input: '' }
+            toolCallFragments.set(toolUseId, accumulated)
+            toolCallOrder.push(toolUseId)
           }
-          if (tc.stop && currentToolCall) {
-            toolCalls.push(currentToolCall)
-            currentToolCall = null
+          if (typeof tc.name === 'string' && tc.name.length > 0) {
+            accumulated.name = restoreToolName(tc.name, toolNameMap)
+          }
+          if (tc.input !== undefined) {
+            accumulated.input +=
+              typeof tc.input === 'string' ? tc.input : (JSON.stringify(tc.input) ?? '')
           }
         }
       } else if (event.metadataEvent) {
@@ -157,10 +166,9 @@ export async function* transformSdkStream(
       }
     }
 
-    if (currentToolCall) {
-      toolCalls.push(currentToolCall)
-      currentToolCall = null
-    }
+    const toolCalls = toolCallOrder
+      .map((toolUseId) => toolCallFragments.get(toolUseId))
+      .filter((toolCall): toolCall is ToolCallState => typeof toolCall?.name === 'string')
 
     if (thinkingRequested && streamState.buffer) {
       if (streamState.inThinking) {
@@ -196,7 +204,7 @@ export async function* transformSdkStream(
       for (const btc of bracketToolCalls) {
         toolCalls.push({
           toolUseId: btc.toolUseId,
-          name: btc.name,
+          name: restoreToolName(btc.name, toolNameMap),
           input: typeof btc.input === 'string' ? btc.input : JSON.stringify(btc.input)
         })
       }

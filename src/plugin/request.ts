@@ -14,6 +14,7 @@ import {
 } from '../infrastructure/transformers/message-transformer.js'
 import {
   convertToolsToCodeWhisperer,
+  createToolNameRegistry,
   deduplicateToolResults
 } from '../infrastructure/transformers/tool-transformer.js'
 import { getEffectiveEffort } from './effort.js'
@@ -28,13 +29,15 @@ import type {
   Effort,
   KiroAuthDetails,
   PreparedRequest,
-  SdkPreparedRequest
+  SdkPreparedRequest,
+  ToolNameMap
 } from './types'
 
 interface TransformResult {
   request: CodeWhispererRequest
   resolved: string
   convId: string
+  toolNameMap: ToolNameMap
 }
 
 interface EffortConfig {
@@ -71,7 +74,9 @@ function buildCodeWhispererRequest(
   const msgs = mergeAdjacentMessages([...otherMsgs])
   const lastMsg = msgs[msgs.length - 1]
   if (lastMsg && lastMsg.role === 'assistant' && getContentText(lastMsg) === '{') msgs.pop()
-  const cwTools = tools ? convertToolsToCodeWhisperer(tools) : []
+  const normalizedTools = Array.isArray(tools) ? tools : []
+  const toolNameRegistry = createToolNameRegistry(normalizedTools)
+  const cwTools = convertToolsToCodeWhisperer(normalizedTools, toolNameRegistry)
   let history = buildHistory(msgs, resolved)
 
   const curMsg = msgs[msgs.length - 1]
@@ -241,6 +246,16 @@ function buildCodeWhispererRequest(
     })
     finalCurTrs.push(...orphanedTrs.map((o) => o.result))
   }
+
+  // CodeWhisperer returns the names it received. Rewrite historical tool calls with the
+  // same per-request registry used by current tool specifications so replay stays valid.
+  for (const entry of history) {
+    for (const toolUse of entry.assistantResponseMessage?.toolUses || []) {
+      if (typeof toolUse.name === 'string' && toolUse.name.length > 0) {
+        toolUse.name = toolNameRegistry.toWire(toolUse.name)
+      }
+    }
+  }
   if (history.length > 0) (request.conversationState as any).history = history
 
   const uim = request.conversationState.currentMessage.userInputMessage
@@ -277,7 +292,7 @@ function buildCodeWhispererRequest(
     }
   }
 
-  return { request, resolved, convId }
+  return { request, resolved, convId, toolNameMap: toolNameRegistry.toOriginalMap() }
 }
 
 export function transformToCodeWhisperer(
@@ -288,7 +303,13 @@ export function transformToCodeWhisperer(
   think = false,
   budget = 20000
 ): PreparedRequest {
-  const { request, resolved, convId } = buildCodeWhispererRequest(body, model, auth, think, budget)
+  const { request, resolved, convId, toolNameMap } = buildCodeWhispererRequest(
+    body,
+    model,
+    auth,
+    think,
+    budget
+  )
   const osP = os.platform(),
     osR = os.release(),
     nodeV = process.version.replace('v', '')
@@ -314,7 +335,8 @@ export function transformToCodeWhisperer(
     },
     streaming: true,
     effectiveModel: resolved,
-    conversationId: convId
+    conversationId: convId,
+    toolNameMap
   }
 }
 
@@ -327,7 +349,7 @@ export function transformToSdkRequest(
   showToast?: ToastFunction,
   effortConfig?: EffortConfig
 ): SdkPreparedRequest {
-  const { request, resolved, convId } = buildCodeWhispererRequest(
+  const { request, resolved, convId, toolNameMap } = buildCodeWhispererRequest(
     body,
     model,
     auth,
@@ -352,6 +374,7 @@ export function transformToSdkRequest(
     effectiveModel: resolved,
     conversationId: convId,
     region: extractRegionFromArn(auth.profileArn) ?? auth.region,
+    toolNameMap,
     effort
   }
 }

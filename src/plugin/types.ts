@@ -105,12 +105,15 @@ export interface ParsedResponse {
   outputTokens?: number
 }
 
+export type ToolNameMap = Readonly<Record<string, string>>
+
 export interface PreparedRequest {
   url: string
   init: RequestInit
   streaming: boolean
   effectiveModel: string
   conversationId: string
+  toolNameMap?: ToolNameMap
 }
 
 export interface SdkPreparedRequest {
@@ -120,6 +123,7 @@ export interface SdkPreparedRequest {
   effectiveModel: string
   conversationId: string
   region: string
+  toolNameMap?: ToolNameMap
   /** Resolved effort level for thinking models */
   effort?: Effort
 }
