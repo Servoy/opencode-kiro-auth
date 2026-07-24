@@ -1,4 +1,6 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { CodeWhispererStreamingClient } from '@aws/codewhisperer-streaming-client'
+import { afterAll, describe, expect, mock, spyOn, test } from 'bun:test'
+import { clearSdkClientCache } from '../plugin/sdk-client.js'
 
 let sendCalls = 0
 let apiResponseLogCalls = 0
@@ -19,21 +21,25 @@ mock.module('../plugin/logger.js', () => ({
   warn: () => {}
 }))
 
-mock.module('../plugin/sdk-client.js', () => ({
-  createSdkClient: () => ({
-    send: async () => {
-      sendCalls++
-      const error: any = new Error(sdkErrorMessage)
-      error.name = sdkErrorName
-      error.$metadata = { httpStatusCode: sdkHttpStatus }
-      throw error
-    }
-  })
-}))
+const sendSpy = spyOn(CodeWhispererStreamingClient.prototype, 'send').mockImplementation(
+  async () => {
+    sendCalls++
+    const error: any = new Error(sdkErrorMessage)
+    error.name = sdkErrorName
+    error.$metadata = { httpStatusCode: sdkHttpStatus }
+    throw error
+  }
+)
 
 const { RequestHandler } = await import('../core/request/request-handler.js')
 
+afterAll(() => {
+  clearSdkClientCache()
+  sendSpy.mockRestore()
+})
+
 function createHarness() {
+  clearSdkClientCache()
   sendCalls = 0
   apiResponseLogCalls = 0
 
