@@ -7,6 +7,7 @@ import { AccountRepository } from './infrastructure/database/account-repository.
 import { AccountManager } from './plugin/accounts.js'
 import { bootstrapAuthIfNeeded } from './plugin/auth-bootstrap.js'
 import { loadConfig } from './plugin/config/index.js'
+import { buildModelRegistry } from './plugin/model-registry.js'
 import { formatWebSearchResults, kiroWebSearch } from './plugin/web-search.js'
 
 type ToastFunction = (message: string, variant: string) => void
@@ -105,92 +106,7 @@ export const createKiroPlugin =
           input.provider[id].api = baseURL
         }
         if (!input.provider[id].models) {
-          input.provider[id].models = {
-            auto: {
-              name: 'Auto (1.0x)',
-              limit: { context: 200000, output: 64000 },
-              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
-            },
-            // Claude Sonnet
-            'claude-sonnet-4': {
-              name: 'Claude Sonnet 4.0 (1.3x)',
-              limit: { context: 200000, output: 64000 },
-              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
-            },
-            'claude-sonnet-4-5': {
-              name: 'Claude Sonnet 4.5 (1.3x)',
-              limit: { context: 200000, output: 64000 },
-              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
-            },
-            'claude-sonnet-4-6': {
-              name: 'Claude Sonnet 4.6 (1.3x)',
-              limit: { context: 1000000, output: 64000 },
-              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
-            },
-            'claude-sonnet-5': {
-              name: 'Claude Sonnet 5 (1.3x)',
-              limit: { context: 1000000, output: 64000 },
-              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
-            },
-            // Claude Haiku
-            'claude-haiku-4-5': {
-              name: 'Claude Haiku 4.5 (0.4x)',
-              limit: { context: 200000, output: 64000 },
-              modalities: { input: ['text', 'image'], output: ['text'] }
-            },
-            // Claude Opus
-            'claude-opus-4-5': {
-              name: 'Claude Opus 4.5 (2.2x)',
-              limit: { context: 200000, output: 64000 },
-              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
-            },
-            'claude-opus-4-6': {
-              name: 'Claude Opus 4.6 (2.2x)',
-              limit: { context: 1000000, output: 64000 },
-              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
-            },
-            'claude-opus-4-7': {
-              name: 'Claude Opus 4.7 (2.2x)',
-              limit: { context: 1000000, output: 64000 },
-              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
-            },
-            'claude-opus-4-8': {
-              name: 'Claude Opus 4.8 (2.2x)',
-              limit: { context: 1000000, output: 64000 },
-              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
-            },
-            'claude-opus-4-8-thinking': {
-              name: 'Claude Opus 4.8 Thinking (2.2x)',
-              limit: { context: 1000000, output: 64000 },
-              modalities: { input: ['text', 'image', 'pdf'], output: ['text'] }
-            },
-            // Open weight models
-            'deepseek-3.2': {
-              name: 'DeepSeek 3.2 (0.25x)',
-              limit: { context: 128000, output: 64000 },
-              modalities: { input: ['text'], output: ['text'] }
-            },
-            'glm-5': {
-              name: 'GLM-5 (0.5x)',
-              limit: { context: 200000, output: 64000 },
-              modalities: { input: ['text'], output: ['text'] }
-            },
-            'minimax-m2.5': {
-              name: 'MiniMax M2.5 (0.25x)',
-              limit: { context: 200000, output: 64000 },
-              modalities: { input: ['text'], output: ['text'] }
-            },
-            'minimax-m2.1': {
-              name: 'MiniMax M2.1 (0.15x)',
-              limit: { context: 200000, output: 64000 },
-              modalities: { input: ['text'], output: ['text'] }
-            },
-            'qwen3-coder-next': {
-              name: 'Qwen3 Coder Next (0.05x)',
-              limit: { context: 256000, output: 64000 },
-              modalities: { input: ['text'], output: ['text'] }
-            }
-          }
+          input.provider[id].models = buildModelRegistry()
         }
       },
       auth: {

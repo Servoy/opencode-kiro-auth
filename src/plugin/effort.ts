@@ -6,10 +6,33 @@ import type { Effort } from './config/schema'
 export const EFFORT_LEVELS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /**
- * Models that support the 5-value effort enum (including xhigh).
- * These models support up to 128k thinking tokens with max effort.
+ * Reference thinking budget for each effort level.
+ *
+ * Scaled to Kiro's real thinking range (1024–128000 on opus-4.8/opus-5) rather
+ * than OpenCode's conventional 32768 cap, so every effort level is reachable
+ * from a budget alone. These double as the upper bound of each mapping band in
+ * budgetToEffort, and as the variant budgets the plugin advertises, so the two
+ * cannot drift apart.
  */
-const XHIGH_CAPABLE_MODELS = new Set(['claude-opus-4.7', 'claude-opus-4.8', 'claude-opus-5'])
+export const THINKING_BUDGETS: Readonly<Record<Effort, number>> = {
+  low: 16384,
+  medium: 32768,
+  high: 65536,
+  xhigh: 98304,
+  max: 128000
+}
+
+/**
+ * Models that support the 5-value effort enum (including xhigh).
+ * Per Kiro's effort docs, this is opus-4.7/4.8/5 and sonnet-5.
+ */
+const XHIGH_CAPABLE_MODELS = new Set([
+  'claude-opus-4.7',
+  'claude-opus-4.8',
+  'claude-opus-5',
+  'claude-sonnet-5',
+  'claude-sonnet-5-1m'
+])
 
 /**
  * Models that support the 4-value effort enum (no xhigh).
@@ -23,8 +46,6 @@ const EFFORT_CAPABLE_MODELS = new Set([
   'claude-sonnet-4.5-1m',
   'claude-sonnet-4.6',
   'claude-sonnet-4.6-1m',
-  'claude-sonnet-5',
-  'claude-sonnet-5-1m',
   ...XHIGH_CAPABLE_MODELS
 ])
 
@@ -52,7 +73,7 @@ export function resolveEffort(kiroModel: string, requested: Effort): Effort | un
     return undefined
   }
 
-  // xhigh is only supported on opus-4.7 and opus-4.8
+  // xhigh is only supported on the models in XHIGH_CAPABLE_MODELS
   if (requested === 'xhigh' && !supportsXHighEffort(kiroModel)) {
     return 'max'
   }
@@ -63,36 +84,34 @@ export function resolveEffort(kiroModel: string, requested: Effort): Effort | un
 /**
  * Map OpenCode thinking budget to Kiro effort level.
  *
- * OpenCode sends thinkingBudget from its variant config. Standard values:
- * - low:    8192
- * - medium: 16384
- * - high:   24576
- * - max:    32768
+ * Budget bands are scaled to Kiro's real thinking ceiling (1024–128000 for
+ * opus-4.8/opus-5), not OpenCode's conventional 32768 cap, so the full effort
+ * enum is reachable. Reference budgets:
+ * - low:    16384
+ * - medium: 32768
+ * - high:   65536
+ * - xhigh:  98304
+ * - max:    128000
  *
- * We map these ranges to Kiro effort levels:
- * - ≤10000  → low
- * - ≤20000  → medium
- * - ≤28000  → high
- * - ≤32768  → max (or xhigh on opus-4.7/4.8, max otherwise)
- * - >32768  → max
+ * Each THINKING_BUDGETS value is the inclusive upper bound of its band, so a
+ * variant configured with a reference budget maps back to the same level:
+ * - ≤16384  → low
+ * - ≤32768  → medium
+ * - ≤65536  → high
+ * - ≤98304  → xhigh (clamped to max on models without xhigh support)
+ * - >98304  → max
  */
 export function budgetToEffort(budget: number, kiroModel: string): Effort | undefined {
   if (!supportsEffort(kiroModel)) {
     return undefined
   }
 
-  let effort: Effort
-  if (budget <= 10000) {
-    effort = 'low'
-  } else if (budget <= 20000) {
-    effort = 'medium'
-  } else if (budget <= 28000) {
-    effort = 'high'
-  } else {
-    effort = 'max'
-  }
+  // EFFORT_LEVELS is ordered low→max, so the first band the budget fits wins.
+  const effort =
+    EFFORT_LEVELS.find((level) => budget <= THINKING_BUDGETS[level]) ??
+    EFFORT_LEVELS[EFFORT_LEVELS.length - 1]!
 
-  return effort
+  return resolveEffort(kiroModel, effort)
 }
 
 /**
