@@ -19,9 +19,9 @@ models with substantial trial quotas.
   available quota.
 - **High-Performance Storage**: Efficient account and usage management using native Bun
   SQLite.
-- **Native Thinking Mode**: Full support for Claude reasoning capabilities via virtual
-  model mappings. Thinking models are advertised with the reasoning flags OpenCode
-  needs, so reasoning renders without any model configuration.
+- **Native Thinking Mode**: Streams Kiro's native reasoning to OpenCode's thinking
+  block, with the reasoning flags declared on every thinking model, so it renders
+  without any model configuration.
 - **Kiro Effort Mapping**: Maps OpenCode thinking budgets to Kiro's native effort
   levels automatically, across the full `low`–`max` ladder.
 - **Automated Recovery**: Exponential backoff for rate limits and automated token
@@ -69,6 +69,11 @@ reasoning chunk and no thinking block appears.
 If you override `provider.kiro.models` in your own config, you replace the
 plugin's registry wholesale — copy both fields onto any `-thinking` model you
 define, or reasoning will stop rendering.
+
+Reasoning itself comes from the API: Kiro streams `reasoningContentEvent` on
+thinking models, and the plugin forwards each one as a `reasoning_content` delta.
+Nothing needs to be enabled for that. Models that instead inline reasoning as
+`<thinking>` tags in their answer are still handled, via a fallback scraper.
 
 Variants set `thinkingConfig.thinkingBudget`, which the plugin maps to Kiro's
 native `effort` field. Bands are scaled to Kiro's real thinking ceiling
@@ -239,7 +244,9 @@ Edit `~/.config/opencode/kiro.json`:
 - `usage_tracking_enabled`: Enable usage tracking and toast notifications.
 - `auto_effort_mapping`: Automatically map OpenCode thinking budgets to Kiro effort
   levels for supported models (default: `true`).
-- `enable_log_api_request`: Enable detailed API request logging.
+- `enable_log_api_request`: Enable detailed API request logging. Request logs
+  include the resolved `additionalModelRequestFields`, so this is how you confirm
+  which effort level actually went out on the wire.
 
 ## Storage
 

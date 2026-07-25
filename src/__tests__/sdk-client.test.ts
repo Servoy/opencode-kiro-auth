@@ -14,6 +14,46 @@ function auth(): KiroAuthDetails {
   }
 }
 
+async function captureRequest(client: ReturnType<typeof createSdkClient>) {
+  let capturedRequest: any
+
+  client.middlewareStack.add(
+    () => async (args: any) => {
+      capturedRequest = args.request
+      throw new Error('captured-request')
+    },
+    { step: 'finalizeRequest', name: 'captureRequest', priority: 'high' }
+  )
+
+  const command = new GenerateAssistantResponseCommand({
+    conversationState: {
+      chatTriggerType: 'MANUAL',
+      conversationId: 'test-conversation',
+      currentMessage: {
+        userInputMessage: {
+          content: 'hello',
+          modelId: 'claude-opus-4.7',
+          origin: 'AI_EDITOR'
+        }
+      }
+    }
+  })
+
+  await client.send(command).catch((error) => {
+    if (error.message !== 'captured-request') throw error
+  })
+
+  const bodyText =
+    typeof capturedRequest.body === 'string'
+      ? capturedRequest.body
+      : Buffer.from(capturedRequest.body).toString('utf8')
+
+  return {
+    body: JSON.parse(bodyText),
+    request: { headers: capturedRequest.headers, bodyText }
+  }
+}
+
 describe('SDK client', () => {
   test('uses Kiro CLI-style standard SDK retries for throttling', async () => {
     clearSdkClientCache()
@@ -31,42 +71,46 @@ describe('SDK client', () => {
     clearSdkClientCache()
 
     const client = createSdkClient(auth(), 'us-east-1', 'max')
-    let capturedRequest: any
-
-    client.middlewareStack.add(
-      () => async (args: any) => {
-        capturedRequest = args.request
-        throw new Error('captured-request')
-      },
-      { step: 'finalizeRequest', name: 'captureRequest', priority: 'high' }
-    )
-
-    const command = new GenerateAssistantResponseCommand({
-      conversationState: {
-        chatTriggerType: 'MANUAL',
-        conversationId: 'test-conversation',
-        currentMessage: {
-          userInputMessage: {
-            content: 'hello',
-            modelId: 'claude-opus-4.7',
-            origin: 'AI_EDITOR'
-          }
-        }
-      }
-    })
-
-    await client.send(command).catch((error) => {
-      if (error.message !== 'captured-request') throw error
-    })
-
-    const bodyText =
-      typeof capturedRequest.body === 'string'
-        ? capturedRequest.body
-        : Buffer.from(capturedRequest.body).toString('utf8')
-    const body = JSON.parse(bodyText)
+    const { body, request } = await captureRequest(client)
 
     expect(body.additionalModelRequestFields.output_config.effort).toBe('max')
-    expect(Number(capturedRequest.headers['content-length'])).toBe(Buffer.byteLength(bodyText))
+    expect(Number(request.headers['content-length'])).toBe(Buffer.byteLength(request.bodyText))
+
+    clearSdkClientCache()
+  })
+
+  test('omits additionalModelRequestFields when no effort is set', async () => {
+    clearSdkClientCache()
+
+    const client = createSdkClient(auth(), 'us-east-1')
+    const { body } = await captureRequest(client)
+
+    expect(body.additionalModelRequestFields).toBeUndefined()
+
+    clearSdkClientCache()
+  })
+
+  test('injects xhigh, the level that was previously unreachable', async () => {
+    clearSdkClientCache()
+
+    const client = createSdkClient(auth(), 'us-east-1', 'xhigh')
+    const { body, request } = await captureRequest(client)
+
+    expect(body.additionalModelRequestFields.output_config.effort).toBe('xhigh')
+    expect(Number(request.headers['content-length'])).toBe(Buffer.byteLength(request.bodyText))
+
+    clearSdkClientCache()
+  })
+
+  test('does not reuse a cached client across different effort levels', () => {
+    clearSdkClientCache()
+
+    const max = createSdkClient(auth(), 'us-east-1', 'max')
+    const xhigh = createSdkClient(auth(), 'us-east-1', 'xhigh')
+    const maxAgain = createSdkClient(auth(), 'us-east-1', 'max')
+
+    expect(xhigh).not.toBe(max)
+    expect(maxAgain).toBe(max)
 
     clearSdkClientCache()
   })

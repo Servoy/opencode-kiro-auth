@@ -33,6 +33,11 @@ export async function* transformSdkStream(
     stoppedBlocks: new Set()
   }
 
+  // Set when the API returns native reasoning via reasoningContentEvent. The
+  // <thinking> tag scraper below stays as a fallback for responses that only
+  // carry reasoning inline in the assistant text.
+  let sawNativeReasoning = false
+
   let totalContent = ''
   let textOnlyContent = ''
   let outputTokens = 0
@@ -48,10 +53,31 @@ export async function* transformSdkStream(
 
   try {
     for await (const event of eventStream) {
-      if (event.assistantResponseEvent?.content) {
+      if (event.reasoningContentEvent) {
+        // Native reasoning stream. redactedContent is encrypted by the provider
+        // and has no readable form, so only text is surfaced.
+        const reasoning = event.reasoningContentEvent.text
+        if (typeof reasoning === 'string' && reasoning.length > 0) {
+          sawNativeReasoning = true
+          for (const ev of createThinkingDeltaEvents(reasoning, streamState)) {
+            const chunk = convertToOpenAI(ev, conversationId, model)
+            if (chunk !== null) yield chunk
+          }
+        }
+      } else if (event.assistantResponseEvent?.content) {
         const text = event.assistantResponseEvent.content
         totalContent += text
         textOnlyContent += text
+
+        // Native reasoning already streamed, so close that block and route the
+        // remaining content straight to text instead of scraping for tags.
+        if (sawNativeReasoning && !streamState.thinkingExtracted) {
+          streamState.thinkingExtracted = true
+          for (const ev of stopBlock(streamState.thinkingBlockIndex, streamState)) {
+            const chunk = convertToOpenAI(ev, conversationId, model)
+            if (chunk !== null) yield chunk
+          }
+        }
 
         if (!thinkingRequested) {
           for (const ev of createTextDeltaEvents(text, streamState)) {
