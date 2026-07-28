@@ -277,6 +277,11 @@ export class RequestHandler {
   }
 
   private logSdkRequest(prep: SdkPreparedRequest, acc: ManagedAccount, timestamp: string): void {
+    // Mirrors what the sdk-client middleware injects, so logs reflect the wire body.
+    const additionalModelRequestFields = prep.effort
+      ? { output_config: { effort: prep.effort } }
+      : undefined
+
     logger.logApiRequest(
       {
         url: `https://q.${prep.region}.amazonaws.com/generateAssistantResponse`,
@@ -289,7 +294,8 @@ export class RequestHandler {
             historyLength: (prep.conversationState as any).history?.length || 0,
             currentMessage: prep.conversationState.currentMessage
           },
-          profileArn: prep.profileArn
+          profileArn: prep.profileArn,
+          ...(additionalModelRequestFields ? { additionalModelRequestFields } : {})
         },
         conversationId: prep.conversationId,
         model: prep.effectiveModel,
