@@ -1,8 +1,8 @@
 import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client'
-import { THINKING_BUDGETS } from '../../constants'
 import type { AccountRepository } from '../../infrastructure/database/account-repository'
 import type { AccountManager } from '../../plugin/accounts'
 import type { KiroConfig } from '../../plugin/config'
+import { THINKING_BUDGETS } from '../../plugin/effort'
 import { isPermanentError } from '../../plugin/health'
 import { imageCache } from '../../plugin/image-cache'
 import * as logger from '../../plugin/logger'
@@ -41,6 +41,7 @@ export class RequestHandler {
   private retryStrategy: RetryStrategy
   private reauthInFlight: Promise<boolean> | null = null
   private lastFailedReauthAt = 0
+  private static kiroRequestQueue: Promise<void> = Promise.resolve()
 
   constructor(
     private accountManager: AccountManager,
@@ -66,7 +67,24 @@ export class RequestHandler {
 
     const sessionId = extractSessionId(init?.headers)
 
-    return this.handleKiroRequest(url, init, showToast, sessionId)
+    return this.enqueueKiroRequest(() => this.handleKiroRequest(url, init, showToast, sessionId))
+  }
+
+  private async enqueueKiroRequest<T>(run: () => Promise<T>): Promise<T> {
+    const previous = RequestHandler.kiroRequestQueue
+    let release!: () => void
+
+    RequestHandler.kiroRequestQueue = new Promise((resolve) => {
+      release = resolve
+    })
+
+    await previous.catch(() => {})
+
+    try {
+      return await run()
+    } finally {
+      release()
+    }
   }
 
   private async handleKiroRequest(
@@ -81,22 +99,22 @@ export class RequestHandler {
     // Resolve thinking mode + budget.
     //
     // Priority order:
-    //   1. Model ID ends with '-thinking'  → adaptive thinking, default budget
+    //   1. Model ID ends with '-thinking'  → adaptive thinking, 'medium' default budget
     //   2. providerOptions["kiro"].reasoningEffort  → adaptive mode, effort-based budget
     //      (OpenCode sends this when the user picks low/medium/high in the UI)
     //   3. providerOptions.thinkingConfig.thinkingBudget → explicit budget (legacy)
     //
-    // Budget mapping (Kiro max = 200 000 tokens):
-    //   low → 10 000 | medium → 24 000 | high → 200 000 | default → 16 000
+    // Budgets come from plugin/effort.ts's THINKING_BUDGETS, the same reference
+    // scale getEffectiveEffort uses to map a budget back to an effort level —
+    // keeping a second budget table here would let the two drift apart.
     const provOpts = body.providerOptions?.['kiro'] ?? body.providerOptions ?? {}
     const reasoningEffort: string | undefined = provOpts.reasoningEffort
     const thinkingConfig = body.providerOptions?.thinkingConfig
 
     const think = model.endsWith('-thinking') || !!reasoningEffort || !!thinkingConfig
 
-    let uiEffort: 'low' | 'medium' | 'high' | 'default' = 'default'
+    let uiEffort: 'low' | 'medium' | 'high' = 'medium'
     if (reasoningEffort === 'low') uiEffort = 'low'
-    else if (reasoningEffort === 'medium') uiEffort = 'medium'
     else if (reasoningEffort === 'high') uiEffort = 'high'
 
     const budget: number = thinkingConfig?.thinkingBudget || THINKING_BUDGETS[uiEffort]
@@ -147,16 +165,7 @@ export class RequestHandler {
         continue
       }
 
-      const sdkPrep = this.prepareSdkRequest(
-        body,
-        model,
-        auth,
-        think,
-        budget,
-        showToast,
-        uiEffort,
-        sessionId
-      )
+      const sdkPrep = this.prepareSdkRequest(body, model, auth, think, budget, showToast, sessionId)
 
       const histLen = (sdkPrep.conversationState as any).history?.length || 0
       const agentContId = (sdkPrep.conversationState as any).agentContinuationId || 'none'
@@ -315,7 +324,6 @@ export class RequestHandler {
     think: boolean,
     budget: number,
     showToast?: (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void,
-    _uiEffort: 'low' | 'medium' | 'high' | 'default' = 'default',
     sessionId?: string
   ): SdkPreparedRequest {
     return transformToSdkRequest(

@@ -19,9 +19,9 @@ import {
   unlinkSync,
   writeFileSync
 } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { getConfigDir } from './config/loader.js'
 import { MAX_KIRO_IMAGES, MAX_KIRO_IMAGE_BYTES, type KiroImage } from './image-handler.js'
 
 // Content fingerprint for dedup — format + byte length + first/last 16 bytes
@@ -39,12 +39,7 @@ function dedupKey(img: KiroImage): string {
 // Mirrors the layout of logger.ts and kiro.json so everything sits under one
 // base folder. Internal — only the module-level singleton uses this.
 function defaultCacheDir(): string {
-  const platform = process.platform
-  const base =
-    platform === 'win32'
-      ? join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'opencode')
-      : join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode')
-  return join(base, 'kiro-images')
+  return join(getConfigDir(), 'kiro-images')
 }
 
 function diskFileFor(cacheDir: string, workspace: string, fingerprint: string): string {

@@ -318,9 +318,7 @@ describe('transformSdkStream: thinking tags', () => {
     const events = [
       { assistantResponseEvent: { content: '<thinking>deep thought</thinking>Answer' } }
     ]
-    const result = await collectSdk(
-      transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1', undefined, true)
-    )
+    const result = await collectSdk(transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1'))
     const thinkingEvents = result.filter(
       (e) => e.choices?.[0]?.delta?.reasoning_content !== undefined
     )
@@ -336,9 +334,7 @@ describe('transformSdkStream: thinking tags', () => {
     const events = [
       { assistantResponseEvent: { content: 'before<thinking>thought</thinking>after' } }
     ]
-    const result = await collectSdk(
-      transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1', undefined, true)
-    )
+    const result = await collectSdk(transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1'))
     const allText = result
       .filter((e) => e.choices?.[0]?.delta?.content)
       .map((e: any) => e.choices[0].delta.content)
@@ -353,9 +349,7 @@ describe('transformSdkStream: thinking tags', () => {
       { assistantResponseEvent: { content: 'hello <thin' } },
       { assistantResponseEvent: { content: 'king>thought</thinking>done' } }
     ]
-    const result = await collectSdk(
-      transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1', undefined, true)
-    )
+    const result = await collectSdk(transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1'))
     const allText = result
       .filter((e) => e.choices?.[0]?.delta?.content)
       .map((e: any) => e.choices[0].delta.content)
@@ -373,9 +367,7 @@ describe('transformSdkStream: thinking tags', () => {
       { assistantResponseEvent: { content: '<thinking>part one ' } },
       { assistantResponseEvent: { content: 'part two</thinking>Final' } }
     ]
-    const result = await collectSdk(
-      transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1', undefined, true)
-    )
+    const result = await collectSdk(transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1'))
     const thinkingEvents = result.filter(
       (e) => e.choices?.[0]?.delta?.reasoning_content !== undefined
     )
@@ -391,9 +383,7 @@ describe('transformSdkStream: thinking tags', () => {
     const events = [
       { assistantResponseEvent: { content: '<thinking>thought</thinking>\n\nAnswer' } }
     ]
-    const result = await collectSdk(
-      transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1', undefined, true)
-    )
+    const result = await collectSdk(transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1'))
     const allText = result
       .filter((e) => e.choices?.[0]?.delta?.content)
       .map((e: any) => e.choices[0].delta.content)
@@ -404,9 +394,7 @@ describe('transformSdkStream: thinking tags', () => {
 
   test('unclosed thinking tag at stream end flushes remaining buffer', async () => {
     const events = [{ assistantResponseEvent: { content: '<thinking>incomplete thought' } }]
-    const result = await collectSdk(
-      transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1', undefined, true)
-    )
+    const result = await collectSdk(transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1'))
     const thinkingEvents = result.filter(
       (e) => e.choices?.[0]?.delta?.reasoning_content !== undefined
     )
@@ -419,9 +407,7 @@ describe('transformSdkStream: thinking tags', () => {
       { assistantResponseEvent: { content: '<thinking>think</thinking>' } },
       { assistantResponseEvent: { content: 'trailing text' } }
     ]
-    const result = await collectSdk(
-      transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1', undefined, true)
-    )
+    const result = await collectSdk(transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1'))
     const allText = result
       .filter((e) => e.choices?.[0]?.delta?.content)
       .map((e: any) => e.choices[0].delta.content)
@@ -439,9 +425,7 @@ describe('transformSdkStream: thinking tags', () => {
       // so safeLen=0 and it stays in buffer until stream end flush.
       { assistantResponseEvent: { content: 'hi' } }
     ]
-    const result = await collectSdk(
-      transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1', undefined, true)
-    )
+    const result = await collectSdk(transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1'))
     const allText = result
       .filter((e) => e.choices?.[0]?.delta?.content)
       .map((e: any) => e.choices[0].delta.content)
@@ -457,9 +441,7 @@ describe('transformSdkStream: thinking tags', () => {
       { assistantResponseEvent: { content: '<thinking>thought</thinking>' } },
       { assistantResponseEvent: { content: 'this is a longer answer text' } }
     ]
-    const result = await collectSdk(
-      transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1', undefined, true)
-    )
+    const result = await collectSdk(transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1'))
     const allText = result
       .filter((e) => e.choices?.[0]?.delta?.content)
       .map((e: any) => e.choices[0].delta.content)
@@ -467,16 +449,16 @@ describe('transformSdkStream: thinking tags', () => {
     expect(allText).toContain('longer answer')
   })
 
-  test('toolNameMapper renames tool calls', async () => {
+  test('toolNameMap restores original tool names', async () => {
     const events = [
-      { toolUseEvent: { toolUseId: 't-1', name: 'original_name', input: '{"x":1}', stop: true } }
+      { toolUseEvent: { toolUseId: 't-1', name: 'wire_name', input: '{"x":1}', stop: true } }
     ]
-    const mapper = (name: string) => name.replace('original', 'mapped')
+    const toolNameMap = Object.freeze({ wire_name: 'original_name' })
     const result = await collectSdk(
-      transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1', mapper)
+      transformSdkStream(makeSdkResponse(events), 'auto', 'conv-1', toolNameMap)
     )
     const toolBlocks = result.filter((e) => e.choices?.[0]?.delta?.tool_calls?.[0]?.function?.name)
-    expect(toolBlocks[0]!.choices[0].delta.tool_calls[0].function.name).toBe('mapped_name')
+    expect(toolBlocks[0]!.choices[0].delta.tool_calls[0].function.name).toBe('original_name')
   })
 })
 
@@ -638,13 +620,13 @@ describe('isNewThread detection after merge', () => {
 
 // ── Tool name consistency (>64 chars must be shortened everywhere) ───────────
 
-import { shortenToolName } from '../infrastructure/transformers/tool-transformer.js'
+import { createToolNameRegistry } from '../infrastructure/transformers/tool-transformer.js'
 
 describe('tool name >64 chars is shortened consistently in history', () => {
   const longName =
     'a_very_long_tool_name_that_definitely_exceeds_the_sixty_four_character_limit_imposed_by_kiro'
 
-  test('buildHistory shortens tool_use names', () => {
+  test('registry.toWire shortens tool_use names used in history', () => {
     const msgs = [
       { role: 'user', content: 'do it' },
       {
@@ -661,15 +643,21 @@ describe('tool name >64 chars is shortened consistently in history', () => {
     ]
     const merged = mergeAdjacentMessages([...msgs])
     const history = buildHistory(merged, 'auto')
+    const registry = createToolNameRegistry([{ name: longName }])
+    for (const h of history) {
+      for (const tu of h.assistantResponseMessage?.toolUses || []) {
+        tu.name = registry.toWire(tu.name)
+      }
+    }
     const toolUses = history.flatMap((h) => h.assistantResponseMessage?.toolUses || [])
     expect(toolUses.length).toBeGreaterThan(0)
     for (const tu of toolUses) {
       expect(tu.name.length).toBeLessThanOrEqual(64)
-      expect(tu.name).toBe(shortenToolName(longName))
+      expect(tu.name).toBe(registry.toWire(longName))
     }
   })
 
-  test('buildHistory shortens tool_calls names', () => {
+  test('registry.toWire shortens tool_calls names used in history', () => {
     const msgs = [
       { role: 'user', content: 'do it' },
       {
@@ -684,11 +672,17 @@ describe('tool name >64 chars is shortened consistently in history', () => {
     ]
     const merged = mergeAdjacentMessages([...msgs])
     const history = buildHistory(merged, 'auto')
+    const registry = createToolNameRegistry([{ name: longName }])
+    for (const h of history) {
+      for (const tu of h.assistantResponseMessage?.toolUses || []) {
+        tu.name = registry.toWire(tu.name)
+      }
+    }
     const toolUses = history.flatMap((h) => h.assistantResponseMessage?.toolUses || [])
     expect(toolUses.length).toBeGreaterThan(0)
     for (const tu of toolUses) {
       expect(tu.name.length).toBeLessThanOrEqual(64)
-      expect(tu.name).toBe(shortenToolName(longName))
+      expect(tu.name).toBe(registry.toWire(longName))
     }
   })
 })

@@ -36,10 +36,9 @@ import {
 } from '../infrastructure/transformers/history-builder.js'
 import { mergeAdjacentMessages } from '../infrastructure/transformers/message-transformer.js'
 import {
-  buildToolNameMaps,
   convertToolsToCodeWhisperer,
-  deduplicateToolCallsByContent,
-  shortenToolName
+  createToolNameRegistry,
+  deduplicateToolCallsByContent
 } from '../infrastructure/transformers/tool-transformer.js'
 import { imageCache } from '../plugin/image-cache.js'
 import { transformToSdkRequest } from '../plugin/request.js'
@@ -55,62 +54,58 @@ const auth: KiroAuthDetails = {
   profileArn: 'arn:aws:codewhisperer:us-east-1:123:profile/ABC'
 }
 
-describe('shortenToolName edge cases', () => {
-  test('null input', () => {
-    expect(shortenToolName(null as any)).toBeFalsy()
+describe('createToolNameRegistry edge cases', () => {
+  test('empty string name', () => {
+    const registry = createToolNameRegistry([{ name: '' }])
+    expect(() => registry.toOriginalMap()).not.toThrow()
   })
 
-  test('undefined input', () => {
-    expect(shortenToolName(undefined as any)).toBeFalsy()
-  })
-
-  test('empty string', () => {
-    expect(shortenToolName('')).toBe('')
-  })
-
-  test('exactly 64 chars', () => {
+  test('exactly 64 chars stays unchanged', () => {
     const name = 'a'.repeat(64)
-    expect(shortenToolName(name)).toBe(name)
+    const registry = createToolNameRegistry([{ name }])
+    expect(registry.toWire(name)).toBe(name)
   })
 
-  test('65 chars', () => {
+  test('65 chars gets a wire alias <=64 chars', () => {
     const name = 'a'.repeat(65)
-    const result = shortenToolName(name)
+    const registry = createToolNameRegistry([{ name }])
+    const result = registry.toWire(name)
     expect(result.length).toBeLessThanOrEqual(64)
   })
 
-  test('200 chars', () => {
+  test('200 chars gets a wire alias <=64 chars', () => {
     const name = 'a'.repeat(200)
-    const result = shortenToolName(name)
+    const registry = createToolNameRegistry([{ name }])
+    const result = registry.toWire(name)
     expect(result.length).toBeLessThanOrEqual(64)
   })
 
-  test('special chars', () => {
+  test('special chars produce a wire alias <=64 chars', () => {
     const name = '🎉'.repeat(40) + '\n\t' + 'ñ'.repeat(30)
-    const result = shortenToolName(name)
+    const registry = createToolNameRegistry([{ name }])
+    const result = registry.toWire(name)
     expect(result.length).toBeLessThanOrEqual(64)
   })
 
-  test('does not split surrogate pair', () => {
-    // 🎉 is U+1F389 = 2 UTF-16 code units. 40 of them = 80 UTF-16 chars.
-    // The naive slice would land between high+low surrogate.
-    const name = '🎉'.repeat(40)
-    const result = shortenToolName(name)
-    expect(result.length).toBeLessThanOrEqual(64)
-    // No unpaired surrogate left in the prefix
-    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(result)).toBe(false)
-    expect(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(result)).toBe(false)
-  })
-
-  test('different long names produce different shortened names', () => {
+  test('different long names produce different wire aliases', () => {
     const a = 'tool_a_'.repeat(20)
     const b = 'tool_b_'.repeat(20)
-    expect(shortenToolName(a)).not.toBe(shortenToolName(b))
+    const registry = createToolNameRegistry([{ name: a }, { name: b }])
+    expect(registry.toWire(a)).not.toBe(registry.toWire(b))
   })
 
   test('same long name is deterministic', () => {
     const name = 'x'.repeat(100)
-    expect(shortenToolName(name)).toBe(shortenToolName(name))
+    const registry = createToolNameRegistry([{ name }])
+    expect(registry.toWire(name)).toBe(registry.toWire(name))
+  })
+
+  test('toOriginalMap restores original name from wire alias', () => {
+    const name = 'y'.repeat(100)
+    const registry = createToolNameRegistry([{ name }])
+    const wire = registry.toWire(name)
+    const map = registry.toOriginalMap()
+    expect(map[wire]).toBe(name)
   })
 })
 
@@ -185,7 +180,7 @@ describe('sanitizeSchema via convertToolsToCodeWhisperer', () => {
       }
     ]
     const result = convertToolsToCodeWhisperer(tools)
-    expect(result[0].toolSpecification.inputSchema.json).toEqual({})
+    expect(result[0].toolSpecification.inputSchema.json).toEqual({ type: 'object', properties: {} })
   })
 
   test('null schema', () => {
@@ -630,39 +625,38 @@ describe('convertToolsToCodeWhisperer edge cases', () => {
     expect(() => convertToolsToCodeWhisperer(tools)).not.toThrow()
   })
 
-  test('tool with description >9216 chars truncated', () => {
+  test('tool with description >1024 chars truncated', () => {
     const tools = [
       { name: 'big', description: 'x'.repeat(10000), input_schema: { type: 'object' } }
     ]
     const result = convertToolsToCodeWhisperer(tools)
-    expect(result[0].toolSpecification.description.length).toBe(9216)
+    expect(result[0].toolSpecification.description.length).toBe(1024)
   })
 
   test('tool with empty input_schema', () => {
     const tools = [{ name: 'empty', description: 'test', input_schema: {} }]
     const result = convertToolsToCodeWhisperer(tools)
-    expect(result[0].toolSpecification.inputSchema.json).toEqual({})
+    expect(result[0].toolSpecification.inputSchema.json).toEqual({ type: 'object', properties: {} })
   })
 })
 
-describe('buildToolNameMaps edge cases', () => {
+describe('createToolNameRegistry with tool lists', () => {
   test('empty tools array', () => {
-    const maps = buildToolNameMaps([])
-    expect(maps.toKiroName('anything')).toBeDefined()
-    expect(maps.fromKiroName('anything')).toBe('anything')
+    const registry = createToolNameRegistry([])
+    expect(registry.toWire('anything')).toBeDefined()
   })
 
   test('two tools with same name', () => {
     const tools = [{ name: 'dup' }, { name: 'dup' }]
-    expect(() => buildToolNameMaps(tools)).not.toThrow()
-    const maps = buildToolNameMaps(tools)
-    expect(maps.toKiroName('dup')).toBe('dup')
+    expect(() => createToolNameRegistry(tools)).not.toThrow()
+    const registry = createToolNameRegistry(tools)
+    expect(registry.toWire('dup')).toBe('dup')
   })
 
   test('tool with undefined name skipped', () => {
     const tools = [{ name: undefined }, { name: 'valid' }]
-    const maps = buildToolNameMaps(tools)
-    expect(maps.toKiroName('valid')).toBe('valid')
+    const registry = createToolNameRegistry(tools)
+    expect(registry.toWire('valid')).toBe('valid')
   })
 })
 

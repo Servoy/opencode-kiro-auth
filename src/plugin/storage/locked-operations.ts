@@ -48,21 +48,6 @@ export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>):
   }
 }
 
-// Lightweight in-process-only lock — skips the file-level lockfile entirely.
-// Use for single-process writes where cross-process races are impossible
-// (e.g. normal per-request account state updates).
-export async function withInProcessLock<T>(fn: () => T): Promise<T> {
-  let resolveInProcess!: () => void
-  const prev = inProcessLockChain
-  inProcessLockChain = new Promise<void>((r) => (resolveInProcess = r))
-  await prev
-  try {
-    return fn()
-  } finally {
-    resolveInProcess()
-  }
-}
-
 export function createDeterministicId(
   email: string,
   authMethod: string,

@@ -128,9 +128,9 @@ function buildCodeWhispererRequest(
       : extractTextFromParts(firstUserMsg.content)
     : ''
   const workspaceKey = sessionId ? `sess:${sessionId}` : workspace
-  if (process.env.DEBUG || process.env.OPENCODE_LOG_LEVEL === 'debug') {
-    logger.debug(`[CONV] ws=${workspaceKey} sessionId=${sessionId ?? 'none'} msgs=${msgs.length}`)
-  }
+  // logger.debug() already gates on DEBUG/OPENCODE_LOG_LEVEL internally; no
+  // need to duplicate that check here since the log line itself is cheap.
+  logger.debug(`[CONV] ws=${workspaceKey} sessionId=${sessionId ?? 'none'} msgs=${msgs.length}`)
   const { convId, agentContinuationId, fingerprint } = deriveConversationIds(
     workspaceKey,
     firstUserContent

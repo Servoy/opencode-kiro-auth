@@ -98,7 +98,7 @@ describe('ErrorHandler: 401', () => {
 // ── 403 single account ────────────────────────────────────────────────────────
 
 describe('ErrorHandler: 403 single account', () => {
-  test('bearer token invalid 403 forces token refresh (sets expiresAt=0) and retries', async () => {
+  test('bearer token invalid 403 forces token refresh and retries', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
     const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
@@ -108,10 +108,12 @@ describe('ErrorHandler: 403 single account', () => {
     const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
     // Should retry so the token refresher can get a fresh token
     expect(result.shouldRetry).toBe(true)
+    // Signals the caller (RequestHandler) to force a token refresh
+    expect(result.forceRefresh).toBe(true)
     // Account stays healthy — refresh will handle it
     expect(acc.isHealthy).toBe(true)
-    // expiresAt zeroed so refreshIfNeeded triggers on next iteration
-    expect(acc.expiresAt).toBe(0)
+    // Only one retry allowed for the bearer-invalid path before permanent failure
+    expect(result.newContext?.bearerRetried).toBe(true)
   })
 
   test('TEMPORARILY_SUSPENDED marks account unhealthy', async () => {
