@@ -12,7 +12,7 @@ export function runMigrations(db: SqliteDatabase): void {
   migrateConversationsAgentContinuationId(db)
 }
 
-function migrateConversationsTable(db: Database): void {
+function migrateConversationsTable(db: SqliteDatabase): void {
   const hasTable = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'")
     .get()
@@ -30,7 +30,7 @@ function migrateConversationsTable(db: Database): void {
   db.exec('CREATE INDEX idx_conversations_last_used ON conversations(last_used)')
 }
 
-function migrateReauthLockTable(db: Database): void {
+function migrateReauthLockTable(db: SqliteDatabase): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS reauth_lock (
       id      INTEGER PRIMARY KEY CHECK (id = 1),
@@ -40,7 +40,7 @@ function migrateReauthLockTable(db: Database): void {
   `)
 }
 
-function migrateConversationsAgentContinuationId(db: Database): void {
+function migrateConversationsAgentContinuationId(db: SqliteDatabase): void {
   const columns = db.prepare('PRAGMA table_info(conversations)').all() as any[]
   const names = new Set(columns.map((c: any) => c.name))
   if (!names.has('agent_continuation_id')) {
