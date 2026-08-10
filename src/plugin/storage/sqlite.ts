@@ -1,9 +1,8 @@
-import type Libsql from 'libsql'
-import Database from 'libsql'
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { ManagedAccount } from '../types'
+import { openDatabase, type SqliteDatabase } from './database-driver'
 import { deduplicateAccounts, mergeAccounts, withDatabaseLock } from './locked-operations'
 import { runMigrations } from './migrations'
 
@@ -17,19 +16,19 @@ function getBaseDir(): string {
 export const DB_PATH = join(getBaseDir(), 'kiro.db')
 
 export class KiroDatabase {
-  private db: Libsql.Database
+  private db: SqliteDatabase
   private path: string
 
   constructor(path: string = DB_PATH) {
     this.path = path
     const dir = join(path, '..')
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    this.db = new Database(path)
-    this.db.pragma('busy_timeout = 5000')
+    this.db = openDatabase(path)
+    this.db.exec('PRAGMA busy_timeout = 5000')
     this.init()
   }
   private init() {
-    this.db.pragma('journal_mode = WAL')
+    this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY, email TEXT NOT NULL, auth_method TEXT NOT NULL,
