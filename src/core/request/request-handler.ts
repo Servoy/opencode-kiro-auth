@@ -67,6 +67,11 @@ export class RequestHandler {
 
     const sessionId = extractSessionId(init?.headers)
 
+    // Queue only matters when multiple accounts share rate limits.
+    if (this.accountManager.getAccountCount() <= 1) {
+      return this.handleKiroRequest(url, init, showToast, sessionId)
+    }
+
     return this.enqueueKiroRequest(() => this.handleKiroRequest(url, init, showToast, sessionId))
   }
 
