@@ -60,6 +60,35 @@ describe('createToolNameRegistry edge cases', () => {
     expect(() => registry.toOriginalMap()).not.toThrow()
   })
 
+  test('a hyphenated MCP tool name passes through unchanged', () => {
+    // Regression: excluding `-` aliased every tool of every server whose key contains a hyphen.
+    const name = 'my-server_getFileOutline'
+    const registry = createToolNameRegistry([{ name }])
+    expect(registry.toWire(name)).toBe(name)
+    // identity mapping, not an alias: what goes out is what comes back
+    expect(registry.toOriginalMap()[name]).toBe(name)
+  })
+
+  test('a whole hyphenated server keeps every tool name intact', () => {
+    const names = [
+      'my-server_getProjectLayout',
+      'my-server_getFilteredSource',
+      'other-server_applyPatch',
+      'other-server_getTableInfo'
+    ]
+    const registry = createToolNameRegistry(names.map((name) => ({ name })))
+    for (const name of names) expect(registry.toWire(name)).toBe(name)
+  })
+
+  test('a name that is still unsafe is aliased and round-trips', () => {
+    const name = '9bad-tool/name'
+    const registry = createToolNameRegistry([{ name }])
+    const wire = registry.toWire(name)
+    expect(wire).not.toBe(name)
+    expect(wire.length).toBeLessThanOrEqual(64)
+    expect(registry.toOriginalMap()[wire]).toBe(name)
+  })
+
   test('exactly 64 chars stays unchanged', () => {
     const name = 'a'.repeat(64)
     const registry = createToolNameRegistry([{ name }])

@@ -5,7 +5,10 @@ export const CODEWHISPERER_TOOL_NAME_MAX_LENGTH = 64
 export const CODEWHISPERER_DESCRIPTION_MAX_LENGTH = 1024
 export const CODEWHISPERER_SCHEMA_MAX_DEPTH = 32
 
-const SAFE_TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
+// Hyphens are legal: CodeWhisperer only constrains length, not charset. Excluding `-` here
+// forced every tool of any hyphenated MCP server name into an alias, causing name-mismatch
+// failures between tool declarations and tool-call results.
+const SAFE_TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/
 const SUPPORTED_SCHEMA_TYPES = new Set(['object', 'array', 'string', 'number', 'boolean'])
 
 type JsonObject = Record<string, any>
