@@ -102,19 +102,30 @@ export class ErrorHandler {
     if (response.status === 429) {
       const w = parseInt(response.headers.get('retry-after') || '60') * 1000
       logger.warn(`HTTP 429 on ${account.email}: rate limited, retry-after=${Math.ceil(w / 1000)}s`)
-      this.accountManager.markRateLimited(account, w)
-      await this.repository.batchSave(this.accountManager.getAccounts())
       const count = this.accountManager.getAccountCount()
+
+      // Several accounts: park this one and hand the request to a healthy one straight away.
       if (count > 1) {
+        this.accountManager.markRateLimited(account, w)
+        await this.repository.batchSave(this.accountManager.getAccounts())
         return { shouldRetry: true, switchAccount: true }
       }
-      showToast(`429: Rate limited. Waiting ${Math.ceil(w / 1000)}s...`, 'warning')
-      await this.sleep(w)
-      // The wait is not request runtime — exclude it from the timeout budget.
-      return {
-        shouldRetry: true,
-        newContext: { ...context, excludedMs: (context.excludedMs ?? 0) + w }
+
+      // Single account: nothing to switch to. Retry immediately instead of sleeping,
+      // bounded by rate_limit_max_retries, then fail loudly.
+      if (context.retry < this.config.rate_limit_max_retries) {
+        showToast(
+          `429: rate limited (server asked for ${Math.ceil(w / 1000)}s). Retrying now...`,
+          'warning'
+        )
+        return { shouldRetry: true, newContext: { ...context, retry: context.retry + 1 } }
       }
+      showToast(
+        `429: still rate limited after ${this.config.rate_limit_max_retries} retries. ` +
+          `The server asked for ${Math.ceil(w / 1000)}s — add a second Kiro account or retry shortly.`,
+        'error'
+      )
+      return { shouldRetry: false }
     }
 
     if (response.status === 402 || response.status === 403) {

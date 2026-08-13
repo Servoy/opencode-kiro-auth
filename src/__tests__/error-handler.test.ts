@@ -175,30 +175,39 @@ describe('ErrorHandler: 403 multi account', () => {
 // ── 429 ───────────────────────────────────────────────────────────────────────
 
 describe('ErrorHandler: 429', () => {
-  test('marks account rate-limited', async () => {
+  test('single account is NOT marked rate-limited — nothing to switch to, and marking it made the selector sleep', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
     const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
-    const res = new Response('', {
-      status: 429,
-      headers: { 'retry-after': '1' } // 1s not 30s
-    })
+    const res = new Response('', { status: 429, headers: { 'retry-after': '60' } })
+    const before = acc.rateLimitResetTime
     const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
     expect(result.shouldRetry).toBe(true)
-    expect(acc.rateLimitResetTime).toBeGreaterThan(Date.now() - 100)
+    expect(acc.rateLimitResetTime).toBe(before)
   })
 
-  test('with single account, sleep is excluded from request timeout budget', async () => {
+  test('single account NEVER sleeps — it retries immediately, bounded, then fails', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
     const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
-    const res = new Response('', {
-      status: 429,
-      headers: { 'retry-after': '1' } // 1s sleep
-    })
-    const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
-    expect(result.shouldRetry).toBe(true)
-    expect(result.newContext?.excludedMs).toBeGreaterThanOrEqual(1000)
+    const res = () => new Response('', { status: 429, headers: { 'retry-after': '60' } })
+
+    const start = Date.now()
+    const first = await handler.handle(null, res(), acc, { retry: 0 }, noToast)
+    expect(Date.now() - start).toBeLessThan(200)
+    expect(first.shouldRetry).toBe(true)
+    expect(first.newContext?.retry).toBe(1)
+    expect(first.newContext?.excludedMs).toBeUndefined()
+
+    // past rate_limit_max_retries it fails loudly instead of sleeping
+    const last = await handler.handle(
+      null,
+      res(),
+      acc,
+      { retry: defaultConfig.rate_limit_max_retries },
+      noToast
+    )
+    expect(last.shouldRetry).toBe(false)
   })
 
   test('with multiple accounts, switches without sleeping', async () => {
