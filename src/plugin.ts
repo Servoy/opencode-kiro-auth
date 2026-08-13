@@ -74,7 +74,8 @@ export const createKiroPlugin =
     const config = loadConfig(directory)
 
     const showToast: ToastFunction = (message: string, variant: string) => {
-      client.tui.showToast({ body: { message, variant } }).catch(() => {})
+      // Flat params, not a `body` wrapper — the SDK maps message/variant at the top level.
+      client.tui.showToast({ message, variant: variant as any }).catch(() => {})
     }
 
     const cache = new AccountCache(60000)
