@@ -555,7 +555,7 @@ describe('transformSdkStream: token usage', () => {
       {
         metadataEvent: {
           contextUsagePercentage: 80,
-          tokenUsage: { inputTokens: 1234, outputTokens: 56 }
+          tokenUsage: { uncachedInputTokens: 1234, outputTokens: 56, totalTokens: 1290 }
         }
       }
     ]
@@ -563,6 +563,42 @@ describe('transformSdkStream: token usage', () => {
     const usageEvent = result.find((e) => e.usage)
     expect(usageEvent.usage.prompt_tokens).toBe(1234)
     expect(usageEvent.usage.completion_tokens).toBe(56)
+  })
+
+  test('cache reads and writes are reported, not hard-coded to zero', async () => {
+    const events = [
+      { assistantResponseEvent: { content: 'hi' } },
+      {
+        metadataEvent: {
+          tokenUsage: {
+            uncachedInputTokens: 100,
+            cacheReadInputTokens: 9000,
+            cacheWriteInputTokens: 250,
+            outputTokens: 20
+          }
+        }
+      }
+    ]
+    const result = await collectSdk(transformSdkStream(makeSdkResponse(events), 'auto', 'conv-2'))
+    const usage = result.find((e) => e.usage)!.usage
+    // OpenAI shape: prompt_tokens is ALL input (100 uncached + 9000 read + 250 written),
+    // with the cached part called out separately.
+    expect(usage.prompt_tokens).toBe(9350)
+    expect(usage.completion_tokens).toBe(20)
+    expect(usage.prompt_tokens_details.cached_tokens).toBe(9000)
+    expect(usage.cache_creation_input_tokens).toBe(250)
+    expect(usage.total_tokens).toBe(9370)
+  })
+
+  test('context percentage is taken from tokenUsage when no contextUsageEvent arrives', async () => {
+    const events = [
+      { assistantResponseEvent: { content: 'x' } },
+      { metadataEvent: { tokenUsage: { contextUsagePercentage: 50 } } }
+    ]
+    const result = await collectSdk(transformSdkStream(makeSdkResponse(events), 'auto', 'conv-3'))
+    const usage = result.find((e) => e.usage)!.usage
+    // 50% of the model's window, minus output — the estimate must be non-zero.
+    expect(usage.prompt_tokens).toBeGreaterThan(0)
   })
 })
 

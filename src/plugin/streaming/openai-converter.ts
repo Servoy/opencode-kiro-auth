@@ -61,10 +61,18 @@ export function convertToOpenAI(event: StreamEvent, id: string, model: string): 
       delta: {},
       finish_reason: event.delta.stop_reason === 'tool_use' ? 'tool_calls' : 'stop'
     })
+    // prompt_tokens is ALL input (uncached + cached); the cached part is called out separately.
+    const uncached = event.usage?.input_tokens || 0
+    const cacheRead = event.usage?.cache_read_input_tokens || 0
+    const cacheWrite = event.usage?.cache_creation_input_tokens || 0
+    const promptTokens = uncached + cacheRead + cacheWrite
+    const completionTokens = event.usage?.output_tokens || 0
     ;(base as any).usage = {
-      prompt_tokens: event.usage?.input_tokens || 0,
-      completion_tokens: event.usage?.output_tokens || 0,
-      total_tokens: (event.usage?.input_tokens || 0) + (event.usage?.output_tokens || 0)
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: promptTokens + completionTokens,
+      prompt_tokens_details: { cached_tokens: cacheRead },
+      cache_creation_input_tokens: cacheWrite
     }
   } else {
     // Skip Anthropic-specific events that @ai-sdk/openai-compatible doesn't understand

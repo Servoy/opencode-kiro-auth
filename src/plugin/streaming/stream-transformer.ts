@@ -1,6 +1,6 @@
 import { parseBracketToolCalls } from '../../infrastructure/transformers/tool-call-parser.js'
 import { restoreToolName } from '../../infrastructure/transformers/tool-transformer.js'
-import { getContextWindowSize } from '../models.js'
+import { getModelContextLimit } from '../model-registry.js'
 import { estimateTokens } from '../response.js'
 import type { ToolNameMap } from '../types.js'
 import { convertToOpenAI } from './openai-converter.js'
@@ -307,10 +307,12 @@ export async function* transformKiroStream(
       }
     }
 
+    // This raw-stream path has no separate reasoning channel and no real token counts from
+    // Kiro — only the context-usage percentage, so the estimate below is all there is.
     outputTokens = estimateTokens(textOnlyContent)
 
     if (contextUsagePercentage !== null && contextUsagePercentage > 0) {
-      const contextWindow = getContextWindowSize(model)
+      const contextWindow = getModelContextLimit(model)
       const totalTokens = Math.round((contextWindow * contextUsagePercentage) / 100)
       inputTokens = Math.max(0, totalTokens - outputTokens)
     }

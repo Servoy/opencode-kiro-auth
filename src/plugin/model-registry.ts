@@ -141,6 +141,17 @@ const MODEL_SPECS: Record<string, ModelSpec> = {
 }
 
 /**
+ * Context limit for a model, read from MODEL_SPECS. `-thinking` ids share their base's limit.
+ * The registry and the streaming transformers both call this, so they can't disagree.
+ */
+export function getModelContextLimit(model: string): number {
+  const base = model.endsWith('-thinking') ? model.slice(0, -'-thinking'.length) : model
+  return (
+    MODEL_SPECS[base]?.limit.context ?? MODEL_SPECS[model]?.limit.context ?? CONTEXT_200K.context
+  )
+}
+
+/**
  * Build the thinking variants a model supports.
  *
  * Levels come from the model's own effort capabilities, so xhigh only appears on

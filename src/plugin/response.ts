@@ -4,7 +4,7 @@ import {
   deduplicateToolCalls,
   parseBracketToolCalls
 } from '../infrastructure/transformers/tool-call-parser.js'
-import { getContextWindowSize } from './models.js'
+import { getModelContextLimit } from './model-registry.js'
 import { ParsedResponse, ToolCall } from './types'
 
 export function parseEventStream(rawResponse: string, model?: string): ParsedResponse {
@@ -88,7 +88,7 @@ function parseEventStreamChunk(rawText: string, model?: string): ParsedResponse 
   })
 
   if (contextUsagePercentage !== undefined) {
-    const contextWindow = getContextWindowSize(model || '')
+    const contextWindow = getModelContextLimit(model || '')
     const totalTokens = Math.round((contextWindow * contextUsagePercentage) / 100)
     outputTokens = estimateTokens(content)
     inputTokens = Math.max(0, totalTokens - outputTokens)

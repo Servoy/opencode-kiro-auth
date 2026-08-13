@@ -4,7 +4,7 @@ import {
   restoreToolName
 } from '../../infrastructure/transformers/tool-transformer.js'
 import * as logger from '../logger.js'
-import { getContextWindowSize } from '../models.js'
+import { getModelContextLimit } from '../model-registry.js'
 import { estimateTokens } from '../response.js'
 import type { ToolNameMap } from '../types.js'
 import { convertToOpenAI } from './openai-converter.js'
@@ -38,10 +38,16 @@ export async function* transformSdkStream(
 
   let totalContent = ''
   let textOnlyContent = ''
+  // Reasoning is billed output but arrives on reasoningContentEvent, never in textOnlyContent.
+  let reasoningContent = ''
   let outputTokens = 0
   let inputTokens = 0
   let contextUsagePercentage: number | null = null
-  let realInputTokens: number | undefined
+  // Kiro's TokenUsage has no `inputTokens` field — only uncachedInputTokens, outputTokens,
+  // totalTokens, cacheReadInputTokens and cacheWriteInputTokens.
+  let uncachedInputTokens: number | undefined
+  let cacheReadInputTokens: number | undefined
+  let cacheWriteInputTokens: number | undefined
   let realOutputTokens: number | undefined
   const toolCalls: ToolCallState[] = []
   const activeToolCalls = new Map<string, ToolCallState>()
@@ -59,6 +65,7 @@ export async function* transformSdkStream(
         // and has no readable form, so only text is surfaced.
         const reasoning = event.reasoningContentEvent.text
         if (typeof reasoning === 'string' && reasoning.length > 0) {
+          reasoningContent += reasoning
           sawNativeReasoning = true
           for (const ev of createThinkingDeltaEvents(reasoning, streamState)) {
             const chunk = convertToOpenAI(ev, conversationId, model)
@@ -245,8 +252,17 @@ export async function* transformSdkStream(
         }
         if (event.metadataEvent.tokenUsage) {
           const tu = event.metadataEvent.tokenUsage
-          if (typeof tu.inputTokens === 'number') realInputTokens = tu.inputTokens
+          if (typeof tu.uncachedInputTokens === 'number')
+            uncachedInputTokens = tu.uncachedInputTokens
+          if (typeof tu.cacheReadInputTokens === 'number')
+            cacheReadInputTokens = tu.cacheReadInputTokens
+          if (typeof tu.cacheWriteInputTokens === 'number')
+            cacheWriteInputTokens = tu.cacheWriteInputTokens
           if (typeof tu.outputTokens === 'number') realOutputTokens = tu.outputTokens
+          // tokenUsage carries the context percentage too; a separate contextUsageEvent may not arrive.
+          if (typeof tu.contextUsagePercentage === 'number' && contextUsagePercentage === null) {
+            contextUsagePercentage = tu.contextUsagePercentage
+          }
         }
       } else if ((event as any).contextUsageEvent) {
         const cue = (event as any).contextUsageEvent
@@ -395,16 +411,25 @@ export async function* transformSdkStream(
       }
     }
 
-    outputTokens = estimateTokens(textOnlyContent)
+    // Tool calls are billed output too.
+    const toolCallChars = dedupedToolCalls.reduce(
+      (n, c: any) =>
+        n + String(c?.name ?? '').length + String(c?.arguments ?? c?.input ?? '').length,
+      0
+    )
+    outputTokens =
+      estimateTokens(textOnlyContent) +
+      estimateTokens(reasoningContent) +
+      estimateTokens('x'.repeat(toolCallChars))
 
     if (contextUsagePercentage !== null && contextUsagePercentage > 0) {
-      const contextWindow = getContextWindowSize(model)
+      const contextWindow = getModelContextLimit(model)
       const totalTokens = Math.round((contextWindow * contextUsagePercentage) / 100)
       inputTokens = Math.max(0, totalTokens - outputTokens)
     }
 
     // Real token counts from Kiro's metadata win over the context-% estimate.
-    if (realInputTokens !== undefined) inputTokens = realInputTokens
+    if (uncachedInputTokens !== undefined) inputTokens = uncachedInputTokens
     if (realOutputTokens !== undefined) outputTokens = realOutputTokens
 
     {
@@ -415,8 +440,8 @@ export async function* transformSdkStream(
           usage: {
             input_tokens: inputTokens,
             output_tokens: outputTokens,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0
+            cache_creation_input_tokens: cacheWriteInputTokens ?? 0,
+            cache_read_input_tokens: cacheReadInputTokens ?? 0
           }
         },
         conversationId,
