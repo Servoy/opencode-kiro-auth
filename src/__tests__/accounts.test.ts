@@ -237,17 +237,17 @@ describe('AccountManager.removeAccount', () => {
 })
 
 describe('AccountManager.addAccount', () => {
-  test('adds new account', () => {
+  test('adds new account', async () => {
     const mgr = new AccountManager([])
-    mgr.addAccount(makeAccount({ id: 'new' }))
+    await mgr.addAccount(makeAccount({ id: 'new' }))
     expect(mgr.getAccountCount()).toBe(1)
   })
 
-  test('replaces existing account with same id', () => {
+  test('replaces existing account with same id', async () => {
     const original = makeAccount({ id: 'x', email: 'old@x.com' })
     const updated = makeAccount({ id: 'x', email: 'new@x.com' })
     const mgr = new AccountManager([original])
-    mgr.addAccount(updated)
+    await mgr.addAccount(updated)
     expect(mgr.getAccountCount()).toBe(1)
     expect(mgr.getAccounts()[0]!.email).toBe('new@x.com')
   })
@@ -317,17 +317,17 @@ describe('AccountManager.updateUsage', () => {
 // ── addAccount / removeAccount ─────────────────────────────────────────────────
 
 describe('AccountManager.addAccount / removeAccount', () => {
-  test('addAccount appends new account', () => {
+  test('addAccount appends new account', async () => {
     const mgr = new AccountManager([])
     const acc = makeAccount()
-    mgr.addAccount(acc)
+    await mgr.addAccount(acc)
     expect(mgr.getAccountCount()).toBe(1)
   })
 
-  test('addAccount replaces existing account with same id', () => {
+  test('addAccount replaces existing account with same id', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
-    mgr.addAccount({ ...acc, email: 'updated@example.com' })
+    await mgr.addAccount({ ...acc, email: 'updated@example.com' })
     expect(mgr.getAccountCount()).toBe(1)
     expect(mgr.getAccounts()[0]!.email).toBe('updated@example.com')
   })

@@ -227,23 +227,51 @@ describe('ErrorHandler: 429', () => {
 // ── 500 ───────────────────────────────────────────────────────────────────────
 
 describe('ErrorHandler: 500', () => {
-  test('retries with backoff on first failure', async () => {
+  test('retries with backoff without marking account unhealthy', async () => {
     const acc = makeAccount({ failCount: 0 })
     const mgr = new AccountManager([acc])
     const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
     const res = makeResponse(500, { message: 'Internal Server Error' })
     const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
     expect(result.shouldRetry).toBe(true)
-    expect(acc.failCount).toBe(1)
+    // 500 is server-side: must NOT damage account state
+    expect(acc.failCount).toBe(0)
+    expect(acc.isHealthy).toBe(true)
   })
 
-  test('marks unhealthy after 5 failures', async () => {
-    const acc = makeAccount({ failCount: 4 })
+  test('multi-account: switches to next after retry budget exhausted, keeps account healthy', async () => {
+    const acc1 = makeAccount({ id: 'a', failCount: 0 })
+    const acc2 = makeAccount({ id: 'b', failCount: 0 })
+    const mgr = new AccountManager([acc1, acc2])
+    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc1, acc2]))
+    const res = makeResponse(500, { message: 'Internal Server Error' })
+    const result = await handler.handle(
+      null,
+      res,
+      acc1,
+      { retry: defaultConfig.rate_limit_max_retries },
+      noToast
+    )
+    expect(result.shouldRetry).toBe(true)
+    expect(result.switchAccount).toBe(true)
+    expect(acc1.isHealthy).toBe(true)
+    expect(acc2.isHealthy).toBe(true)
+  })
+
+  test('single-account: fails request without marking unhealthy after retry budget exhausted', async () => {
+    const acc = makeAccount({ id: 'only', failCount: 0 })
     const mgr = new AccountManager([acc])
     const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
     const res = makeResponse(500, { message: 'Internal Server Error' })
-    const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
-    expect(result.switchAccount).toBe(true)
-    expect(acc.isHealthy).toBe(false)
+    const result = await handler.handle(
+      null,
+      res,
+      acc,
+      { retry: defaultConfig.rate_limit_max_retries },
+      noToast
+    )
+    expect(result.shouldRetry).toBe(false)
+    expect(acc.isHealthy).toBe(true)
+    expect(acc.unhealthyReason).toBeUndefined()
   })
 })

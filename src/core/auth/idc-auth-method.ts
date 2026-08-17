@@ -1,14 +1,62 @@
 import type { AuthOuathResult } from '@opencode-ai/plugin'
 import { execFile } from 'node:child_process'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { extractRegionFromArn, normalizeRegion } from '../../constants.js'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
 import { authorizeKiroIDC, pollKiroIDCToken } from '../../kiro/oauth-idc.js'
 import { createDeterministicAccountId } from '../../plugin/accounts.js'
+import { getConfigDir } from '../../plugin/config/loader.js'
 import * as logger from '../../plugin/logger.js'
 import { makePlaceholderEmail } from '../../plugin/sync/kiro-cli-parser.js'
 import { readActiveProfileArnFromKiroCli } from '../../plugin/sync/kiro-cli-profile.js'
 import type { KiroRegion, ManagedAccount } from '../../plugin/types.js'
 import { fetchUsageLimits } from '../../plugin/usage.js'
+
+function persistIdcConfigDefaults(
+  startUrl: string | undefined,
+  idcRegion: KiroRegion | undefined,
+  profileArn: string | undefined
+): void {
+  const configPath = join(getConfigDir(), 'kiro.json')
+
+  let config: Record<string, unknown> = {}
+  try {
+    if (existsSync(configPath)) {
+      const raw = readFileSync(configPath, 'utf-8')
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>
+      }
+    }
+  } catch {
+    return
+  }
+
+  let changed = false
+  if (startUrl && !config.idc_start_url) {
+    config.idc_start_url = startUrl
+    changed = true
+  }
+  if (idcRegion && !config.idc_region) {
+    config.idc_region = idcRegion
+    changed = true
+  }
+  if (profileArn && !config.idc_profile_arn) {
+    config.idc_profile_arn = profileArn
+    changed = true
+  }
+
+  if (!changed) return
+
+  try {
+    writeFileSync(configPath, JSON.stringify(config, null, 2))
+  } catch (e) {
+    logger.warn('persistIdcConfigDefaults: write failed', {
+      error: e instanceof Error ? e.message : String(e)
+    })
+  }
+}
 
 const openBrowser = (url: string) => {
   const platform = process.platform
@@ -182,7 +230,9 @@ export class IdcAuthMethod {
           }
 
           await this.repository.save(acc)
-          this.accountManager?.addAccount?.(acc)
+          await this.accountManager?.addAccount?.(acc)
+
+          persistIdcConfigDefaults(acc.startUrl, acc.oidcRegion, acc.profileArn)
 
           return { type: 'success', key: token.accessToken }
         } catch (e: any) {

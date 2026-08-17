@@ -13,6 +13,7 @@ import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
 import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../plugin/types'
 import { AccountSelector } from '../account/account-selector'
 import { UsageTracker } from '../account/usage-tracker'
+import { IdcAuthMethod } from '../auth/idc-auth-method.js'
 import { TokenRefresher } from '../auth/token-refresher'
 import { ErrorHandler } from './error-handler'
 import { ResponseHandler } from './response-handler'
@@ -23,7 +24,8 @@ type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' |
 // Matches both the standard q.amazonaws.com endpoint and the Pro runtime.kiro.dev endpoint
 const KIRO_API_PATTERN =
   /^(https?:\/\/)?(q\.[a-z0-9-]+\.amazonaws\.com|runtime\.[a-z0-9-]+\.kiro\.dev)/
-const REAUTH_FAILURE_COOLDOWN_MS = 60000
+const REAUTH_BASE_COOLDOWN_MS = 5_000
+const REAUTH_MAX_COOLDOWN_MS = 60_000
 const REAUTH_TIMEOUT_MS = 90_000
 
 function extractSessionId(headers: unknown): string | undefined {
@@ -41,6 +43,7 @@ export class RequestHandler {
   private retryStrategy: RetryStrategy
   private reauthInFlight: Promise<boolean> | null = null
   private lastFailedReauthAt = 0
+  private reauthFailureStreak = 0
   private static kiroRequestQueue: Promise<void> = Promise.resolve()
 
   constructor(
@@ -261,6 +264,9 @@ export class RequestHandler {
               await this.tokenRefresher.forceRefresh(acc, this.accountManager.toAuthDetails(acc))
             }
             if (errorResult.switchAccount) {
+              retry = 0
+              bearerRetried = false
+              consecutiveNullAccounts = 0
               continue
             }
             continue
@@ -464,13 +470,20 @@ export class RequestHandler {
   private async triggerReauth(showToast: ToastFunction): Promise<boolean> {
     if (!this.client) return false
 
-    const cooldownRemaining = REAUTH_FAILURE_COOLDOWN_MS - (Date.now() - this.lastFailedReauthAt)
-    if (cooldownRemaining > 0) {
-      showToast(
-        'Recent re-authentication failed. Please complete authentication manually.',
-        'error'
+    // Progressive cooldown: 5s, 10s, 20s, 40s, capped at 60s.
+    if (this.reauthFailureStreak > 0) {
+      const cooldown = Math.min(
+        REAUTH_BASE_COOLDOWN_MS * Math.pow(2, this.reauthFailureStreak - 1),
+        REAUTH_MAX_COOLDOWN_MS
       )
-      return false
+      const remaining = cooldown - (Date.now() - this.lastFailedReauthAt)
+      if (remaining > 0) {
+        showToast(
+          `Re-auth cooldown ${Math.ceil(remaining / 1000)}s — plugin will retry automatically.`,
+          'info'
+        )
+        return false
+      }
     }
 
     if (this.reauthInFlight) {
@@ -480,16 +493,20 @@ export class RequestHandler {
     if (!kiroDb.acquireReauthLock()) {
       logger.warn('Reauth lock held by another instance — polling for completion')
       showToast('Another session is re-authenticating. Please wait...', 'info')
-      const deadline = Date.now() + 10_000
+      const deadline = Date.now() + 15_000
       while (Date.now() < deadline) {
         await this.sleep(1000)
         if (kiroDb.isReauthLockHeld()) continue
         this.repository.invalidateCache()
         const accounts = await this.repository.findAll()
-        for (const acc of accounts) this.accountManager.addAccount(acc)
-        return this.hasUsableAccount(accounts)
+        for (const acc of accounts) await this.accountManager.addAccount(acc)
+        if (this.hasUsableAccount(accounts)) {
+          this.reauthFailureStreak = 0
+          return true
+        }
+        return false
       }
-      showToast('Re-authentication timed out. Please try again.', 'error')
+      showToast('Another session is still re-authenticating. Retrying later.', 'info')
       return false
     }
 
@@ -498,14 +515,31 @@ export class RequestHandler {
       this.reauthInFlight = null
       kiroDb.releaseReauthLock()
     })
-    if (!success) this.lastFailedReauthAt = Date.now()
+    if (success) {
+      this.reauthFailureStreak = 0
+    } else {
+      this.lastFailedReauthAt = Date.now()
+      this.reauthFailureStreak++
+    }
     return success
   }
 
   private async performReauth(showToast: ToastFunction): Promise<boolean> {
     try {
-      showToast('Session expired. Re-authenticating...', 'warning')
+      showToast('Opening browser for Kiro authentication — complete sign-in there.', 'warning')
       logger.warn('Reauth: starting oauth flow')
+
+      const accounts = this.accountManager.getAccounts()
+      const account = accounts[0]
+      const inputs: Record<string, string> = {}
+      if (account) {
+        if (account.profileArn) inputs.profile_arn = account.profileArn
+        if (account.startUrl) inputs.start_url = account.startUrl
+        if (account.oidcRegion) inputs.idc_region = account.oidcRegion
+      }
+
+      const idcMethod = new IdcAuthMethod(this.config, this.repository, this.accountManager)
+      const auth = await idcMethod.authorize(inputs)
 
       const withTimeout = <T>(promise: Promise<T>, label: string): Promise<T> => {
         let timer: ReturnType<typeof setTimeout> | undefined
@@ -521,23 +555,21 @@ export class RequestHandler {
         ])
       }
 
-      await withTimeout(
-        this.client.provider.oauth.authorize({ path: { id: 'kiro' }, body: { method: 0 } }),
-        'oauth.authorize'
-      )
+      const callbackPromise = (auth as any).callback() as Promise<any>
+      const result = (await withTimeout(callbackPromise, 'oauth.callback')) as any
 
-      await withTimeout(
-        this.client.provider.oauth.callback({ path: { id: 'kiro' }, body: { method: 0 } }),
-        'oauth.callback'
-      )
-
-      this.repository.invalidateCache()
-      const accounts = await this.repository.findAll()
-      for (const acc of accounts) {
-        this.accountManager.addAccount(acc)
+      if (result.type !== 'success') {
+        showToast('Re-authentication failed.', 'error')
+        return false
       }
 
-      if (!this.hasUsableAccount(accounts)) {
+      this.repository.invalidateCache()
+      const freshAccounts = await this.repository.findAll()
+      for (const acc of freshAccounts) {
+        await this.accountManager.addAccount(acc)
+      }
+
+      if (!this.hasUsableAccount(freshAccounts)) {
         logger.warn('Re-auth completed but no usable Kiro account was found')
         showToast('Re-authentication completed but no usable Kiro account was found.', 'error')
         return false
@@ -549,7 +581,7 @@ export class RequestHandler {
       logger.error('Re-auth failed', e instanceof Error ? e : new Error(String(e)))
       showToast(
         e instanceof Error && e.message.includes('timed out')
-          ? 'Re-authentication timed out. Please try again.'
+          ? 'Re-authentication timed out. Complete sign-in in the browser, then retry.'
           : 'Re-authentication failed. Please try again.',
         'error'
       )

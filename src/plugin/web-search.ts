@@ -42,7 +42,7 @@ export async function kiroWebSearch(
   let auth: KiroAuthDetails = accountManager.toAuthDetails(account)
   if (accessTokenExpired(auth)) {
     auth = await refreshAccessToken(auth)
-    accountManager.updateFromAuth(account, auth)
+    await accountManager.updateFromAuth(account, auth)
   }
 
   const trimmed = query.length > MAX_QUERY_LENGTH ? query.slice(0, MAX_QUERY_LENGTH) : query

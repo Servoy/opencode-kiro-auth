@@ -33,7 +33,7 @@ export class TokenRefresher {
 
     try {
       const newAuth = await refreshAccessToken(auth)
-      this.accountManager.updateFromAuth(account, newAuth)
+      await this.accountManager.updateFromAuth(account, newAuth)
       // Persist only the updated account instead of all accounts — avoids
       // invalidating the whole AccountCache on every token refresh.
       await this.repository.save(account)
@@ -53,16 +53,14 @@ export class TokenRefresher {
     const synced = accounts.find((a: ManagedAccount) => a.id === account.id)
 
     if (synced && synced.accessToken !== account.accessToken) {
-      this.accountManager.updateFromAuth(account, this.accountManager.toAuthDetails(synced))
-      await this.repository.batchSave(this.accountManager.getAccounts())
+      await this.accountManager.updateFromAuth(account, this.accountManager.toAuthDetails(synced))
       logger.debug('Force refresh: recovered newer token from CLI sync')
       return
     }
 
     try {
       const newAuth = await refreshAccessToken(auth)
-      this.accountManager.updateFromAuth(account, newAuth)
-      await this.repository.batchSave(this.accountManager.getAccounts())
+      await this.accountManager.updateFromAuth(account, newAuth)
       logger.debug('Force refresh: token refreshed via OIDC')
     } catch (e: any) {
       logger.warn('Force refresh failed, will retry with current token', {
@@ -111,8 +109,7 @@ export class TokenRefresher {
         error.message.includes('Invalid grant provided') ||
         error.message.includes('Client is expired'))
     ) {
-      this.accountManager.markUnhealthy(account, error.code || error.message)
-      await this.repository.batchSave(this.accountManager.getAccounts())
+      await this.accountManager.markUnhealthy(account, error.code || error.message)
       return { account, shouldContinue: true }
     }
 

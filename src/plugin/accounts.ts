@@ -184,17 +184,20 @@ export class AccountManager {
       )
     }
   }
-  addAccount(a: ManagedAccount): void {
-    const i = this.accounts.findIndex((x) => x.id === a.id)
-    if (i === -1) this.accounts.push(a)
-    else this.accounts[i] = a
-    kiroDb.upsertAccount(a).catch((e) =>
-      logger.warn('DB write failed', {
+  async addAccount(a: ManagedAccount): Promise<void> {
+    try {
+      await kiroDb.upsertAccount(a)
+    } catch (e) {
+      logger.warn('addAccount: DB write failed, in-memory state not modified', {
         method: 'addAccount',
         email: a.email,
         error: e instanceof Error ? e.message : String(e)
       })
-    )
+      return
+    }
+    const i = this.accounts.findIndex((x) => x.id === a.id)
+    if (i === -1) this.accounts.push(a)
+    else this.accounts[i] = a
   }
   removeAccount(a: ManagedAccount): void {
     const removedIndex = this.accounts.findIndex((x) => x.id === a.id)
@@ -211,55 +214,88 @@ export class AccountManager {
     else if (this.cursor >= this.accounts.length) this.cursor = this.accounts.length - 1
     else if (removedIndex <= this.cursor && this.cursor > 0) this.cursor--
   }
-  updateFromAuth(a: ManagedAccount, auth: KiroAuthDetails): void {
+  async updateFromAuth(a: ManagedAccount, auth: KiroAuthDetails): Promise<void> {
     const acc = this.accounts.find((x) => x.id === a.id)
-    if (acc) {
-      acc.accessToken = auth.access
-      acc.expiresAt = auth.expires
-      acc.lastUsed = Date.now()
-      if (auth.email) acc.email = auth.email
-      const p = decodeRefreshToken(auth.refresh)
-      acc.refreshToken = p.refreshToken
-      if (p.profileArn) acc.profileArn = p.profileArn
-      if (p.clientId) acc.clientId = p.clientId
-      acc.failCount = 0
-      acc.isHealthy = true
-      delete acc.unhealthyReason
-      delete acc.recoveryTime
-      kiroDb.upsertAccount(acc).catch((e) =>
-        logger.warn('DB write failed', {
-          method: 'updateFromAuth',
-          email: acc.email,
-          error: e instanceof Error ? e.message : String(e)
-        })
-      )
-      writeToKiroCli(acc).catch((e) =>
-        logger.warn('CLI write failed', {
-          method: 'updateFromAuth',
-          email: acc.email,
-          error: e instanceof Error ? e.message : String(e)
-        })
-      )
+    if (!acc) return
+
+    const snapshot = {
+      accessToken: acc.accessToken,
+      refreshToken: acc.refreshToken,
+      expiresAt: acc.expiresAt,
+      email: acc.email,
+      profileArn: acc.profileArn,
+      clientId: acc.clientId,
+      failCount: acc.failCount,
+      isHealthy: acc.isHealthy,
+      unhealthyReason: acc.unhealthyReason,
+      recoveryTime: acc.recoveryTime,
+      lastUsed: acc.lastUsed
+    }
+
+    acc.accessToken = auth.access
+    acc.expiresAt = auth.expires
+    acc.lastUsed = Date.now()
+    if (auth.email) acc.email = auth.email
+    const p = decodeRefreshToken(auth.refresh)
+    acc.refreshToken = p.refreshToken
+    if (p.profileArn) acc.profileArn = p.profileArn
+    if (p.clientId) acc.clientId = p.clientId
+    acc.failCount = 0
+    acc.isHealthy = true
+    delete acc.unhealthyReason
+    delete acc.recoveryTime
+
+    try {
+      await kiroDb.upsertAccount(acc)
+    } catch (e) {
+      Object.assign(acc, snapshot)
+      logger.warn('updateFromAuth: DB write failed, in-memory state reverted', {
+        method: 'updateFromAuth',
+        email: acc.email,
+        error: e instanceof Error ? e.message : String(e)
+      })
+      return
+    }
+
+    writeToKiroCli(acc).catch((e) =>
+      logger.warn('CLI write failed', {
+        method: 'updateFromAuth',
+        email: acc.email,
+        error: e instanceof Error ? e.message : String(e)
+      })
+    )
+  }
+  async markRateLimited(a: ManagedAccount, ms: number): Promise<void> {
+    const acc = this.accounts.find((x) => x.id === a.id)
+    if (!acc) return
+
+    const oldReset = acc.rateLimitResetTime
+    acc.rateLimitResetTime = Date.now() + ms
+
+    try {
+      await kiroDb.upsertAccount(acc)
+    } catch (e) {
+      acc.rateLimitResetTime = oldReset
+      logger.warn('markRateLimited: DB write failed, in-memory state reverted', {
+        method: 'markRateLimited',
+        email: acc.email,
+        error: e instanceof Error ? e.message : String(e)
+      })
     }
   }
-  markRateLimited(a: ManagedAccount, ms: number): void {
-    const acc = this.accounts.find((x) => x.id === a.id)
-    if (acc) {
-      acc.rateLimitResetTime = Date.now() + ms
-      kiroDb.upsertAccount(acc).catch((e) =>
-        logger.warn('DB write failed', {
-          method: 'markRateLimited',
-          email: acc.email,
-          error: e instanceof Error ? e.message : String(e)
-        })
-      )
-    }
-  }
-  markUnhealthy(a: ManagedAccount, reason: string, recovery?: number): void {
+  async markUnhealthy(a: ManagedAccount, reason: string, recovery?: number): Promise<void> {
     const acc = this.accounts.find((x) => x.id === a.id)
     if (!acc) return
 
     const isPermanent = isPermanentError(reason)
+
+    const snapshot = {
+      failCount: acc.failCount,
+      isHealthy: acc.isHealthy,
+      unhealthyReason: acc.unhealthyReason,
+      recoveryTime: acc.recoveryTime,
+      lastUsed: acc.lastUsed
+    }
 
     if (isPermanent) {
       logger.warn('Account marked as permanently unhealthy', {
@@ -281,13 +317,20 @@ export class AccountManager {
       }
     }
 
-    kiroDb.upsertAccount(acc).catch((e) =>
-      logger.warn('DB write failed', {
+    try {
+      await kiroDb.upsertAccount(acc)
+    } catch (e) {
+      acc.failCount = snapshot.failCount
+      acc.isHealthy = snapshot.isHealthy
+      acc.unhealthyReason = snapshot.unhealthyReason
+      acc.recoveryTime = snapshot.recoveryTime
+      acc.lastUsed = snapshot.lastUsed
+      logger.warn('markUnhealthy: DB write failed, in-memory state reverted', {
         method: 'markUnhealthy',
         email: acc.email,
         error: e instanceof Error ? e.message : String(e)
       })
-    )
+    }
   }
   async saveToDisk(): Promise<void> {
     await kiroDb.batchUpsertAccounts(this.accounts)

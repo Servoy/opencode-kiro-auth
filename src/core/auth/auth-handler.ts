@@ -28,7 +28,7 @@ export class AuthHandler {
       this.repository.invalidateCache()
       const accounts = await this.repository.findAll()
       if (this.accountManager) {
-        for (const a of accounts) this.accountManager.addAccount(a)
+        for (const a of accounts) await this.accountManager.addAccount(a)
       }
       logger.log('Kiro CLI sync: done', { importedAccounts: accounts.length })
     }

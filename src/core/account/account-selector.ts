@@ -68,7 +68,7 @@ export class AccountSelector {
     this.repository.invalidateCache()
     const accounts = await this.repository.findAll()
     for (const a of accounts) {
-      this.accountManager.addAccount(a)
+      await this.accountManager.addAccount(a)
     }
   }
 

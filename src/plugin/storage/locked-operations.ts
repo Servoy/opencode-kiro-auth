@@ -87,11 +87,11 @@ export function mergeAccounts(
           existingAcc.rateLimitResetTime || 0,
           acc.rateLimitResetTime || 0
         ),
-        isHealthy: incomingRecovered
-          ? true
-          : hasPermanentError
-            ? false
-            : existingAcc.isHealthy || acc.isHealthy,
+        // Incoming is authoritative for isHealthy. OR-logic previously
+        // (`existing.isHealthy || acc.isHealthy`) preserved a healthy DB
+        // state when markUnhealthy set acc.isHealthy=false, leaving
+        // in-memory and DB diverged.
+        isHealthy: incomingRecovered ? true : hasPermanentError ? false : acc.isHealthy,
         unhealthyReason: incomingRecovered
           ? undefined
           : acc.unhealthyReason || existingAcc.unhealthyReason,

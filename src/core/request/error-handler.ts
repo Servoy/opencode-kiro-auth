@@ -68,7 +68,6 @@ export class ErrorHandler {
     }
 
     if (response.status === 500) {
-      account.failCount = (account.failCount || 0) + 1
       let errorMessage = 'Internal Server Error'
       try {
         const errorBody = await response.text()
@@ -80,23 +79,23 @@ export class ErrorHandler {
         }
       } catch (e) {}
 
-      logger.warn(`HTTP 500 on ${account.email} (failCount ${account.failCount}): ${errorMessage}`)
-      if (account.failCount < 5) {
-        const delay = 1000 * Math.pow(2, account.failCount - 1)
+      logger.warn(`HTTP 500 on ${account.email} (attempt ${context.retry + 1}): ${errorMessage}`)
+
+      if (context.retry < this.config.rate_limit_max_retries) {
+        const delay = 1000 * Math.pow(2, context.retry)
         showToast(`500: ${errorMessage}. Retrying in ${Math.ceil(delay / 1000)}s...`, 'warning')
         await this.sleep(delay)
-        return { shouldRetry: true }
-      } else {
-        account.failCount = 9 // markUnhealthy will increment to 10 and set isHealthy=false
-        this.accountManager.markUnhealthy(
-          account,
-          `Server error (500) after 5 attempts: ${errorMessage}`,
-          Date.now() + 1800000 // 30 min recovery
-        )
-        await this.repository.batchSave(this.accountManager.getAccounts())
-        showToast(`500: ${errorMessage}. Marking account as unhealthy and switching...`, 'warning')
+        return { shouldRetry: true, newContext: { ...context, retry: context.retry + 1 } }
+      }
+
+      // 500 is server-side; never mark unhealthy.
+      if (this.accountManager.getAccountCount() > 1) {
+        showToast(`500: ${errorMessage}. Switching account...`, 'warning')
         return { shouldRetry: true, switchAccount: true }
       }
+
+      showToast(`500: ${errorMessage}. Persistent server error, please retry shortly.`, 'error')
+      return { shouldRetry: false }
     }
 
     if (response.status === 429) {
@@ -106,8 +105,7 @@ export class ErrorHandler {
 
       // Several accounts: park this one and hand the request to a healthy one straight away.
       if (count > 1) {
-        this.accountManager.markRateLimited(account, w)
-        await this.repository.batchSave(this.accountManager.getAccounts())
+        await this.accountManager.markRateLimited(account, w)
         return { shouldRetry: true, switchAccount: true }
       }
 
@@ -177,14 +175,12 @@ export class ErrorHandler {
 
       if (this.accountManager.getAccountCount() > 1) {
         showToast(`${response.status}: ${errorReason}. Switching account...`, 'warning')
-        this.accountManager.markUnhealthy(account, errorReason)
-        await this.repository.batchSave(this.accountManager.getAccounts())
+        await this.accountManager.markUnhealthy(account, errorReason)
         return { shouldRetry: true, switchAccount: true }
       }
 
       if (isPermanent) {
-        this.accountManager.markUnhealthy(account, errorReason)
-        await this.repository.batchSave(this.accountManager.getAccounts())
+        await this.accountManager.markUnhealthy(account, errorReason)
         return { shouldRetry: false }
       }
 

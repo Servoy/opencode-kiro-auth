@@ -80,7 +80,7 @@ export class UsageTracker {
       }
 
       if (msg.includes('403') || msg.includes('invalid') || msg.includes('bearer token')) {
-        this.accountManager.markUnhealthy(account, msg)
+        await this.accountManager.markUnhealthy(account, msg)
         this.repository.save(account).catch(() => {})
       }
 

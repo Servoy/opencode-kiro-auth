@@ -49,6 +49,34 @@ describe('Kiro CLI account sync', () => {
     expect(merged.accessToken).toBe('fresh-access')
   })
 
+  test('incoming unhealthy mark persists against a healthy DB row (regression: OR-logic silently preserved healthy state)', () => {
+    // existing DB row is healthy
+    const existing = account({
+      isHealthy: true,
+      failCount: 0,
+      unhealthyReason: undefined,
+      recoveryTime: undefined
+    })
+
+    // markUnhealthy mutated the in-memory copy
+    const incoming = account({
+      isHealthy: false,
+      failCount: 11,
+      unhealthyReason: 'invalid_client',
+      recoveryTime: Date.now() + 3600000
+    })
+
+    const merged = mergeAccounts([existing], [incoming])[0]!
+
+    // The merge must respect the incoming state. Before the fix, the OR-logic
+    // (`existing.isHealthy || acc.isHealthy`) silently returned `true` here,
+    // leaving the DB row healthy while in-memory thought it was unhealthy.
+    expect(merged.isHealthy).toBe(false)
+    expect(merged.unhealthyReason).toBe('invalid_client')
+    expect(merged.failCount).toBe(11)
+    expect(merged.recoveryTime).toBe(incoming.recoveryTime)
+  })
+
   test('deactivates stale cached CLI account variants after a successful CLI import', () => {
     const synced = {
       id: 'current-id',
