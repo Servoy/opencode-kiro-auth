@@ -1,5 +1,6 @@
 import type { AccountRepository } from '../../infrastructure/database/account-repository'
 import type { AccountManager } from '../../plugin/accounts'
+import { isPermanentError } from '../../plugin/health'
 import * as logger from '../../plugin/logger'
 import type { KiroAuthDetails, ManagedAccount } from '../../plugin/types'
 import { fetchUsageLimits, updateAccountQuota } from '../../plugin/usage'
@@ -79,7 +80,7 @@ export class UsageTracker {
         return
       }
 
-      if (msg.includes('403') || msg.includes('invalid') || msg.includes('bearer token')) {
+      if (isPermanentError(msg)) {
         await this.accountManager.markUnhealthy(account, msg)
         this.repository.save(account).catch(() => {})
       }

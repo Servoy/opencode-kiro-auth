@@ -2,6 +2,7 @@ import type { AccountRepository } from '../../infrastructure/database/account-re
 import { accessTokenExpired } from '../../kiro/auth'
 import type { AccountManager } from '../../plugin/accounts'
 import { KiroTokenRefreshError } from '../../plugin/errors'
+import { isPermanentError } from '../../plugin/health'
 import * as logger from '../../plugin/logger'
 import { refreshAccessToken } from '../../plugin/token'
 import type { KiroAuthDetails, ManagedAccount } from '../../plugin/types'
@@ -31,16 +32,25 @@ export class TokenRefresher {
       return { account, shouldContinue: false }
     }
 
-    try {
-      const newAuth = await refreshAccessToken(auth)
-      await this.accountManager.updateFromAuth(account, newAuth)
-      // Persist only the updated account instead of all accounts — avoids
-      // invalidating the whole AccountCache on every token refresh.
-      await this.repository.save(account)
-      return { account, shouldContinue: false }
-    } catch (e: any) {
-      return await this.handleRefreshError(e, account, showToast)
+    // Retry transient failures (network blips, brief AWS SSO unavailability)
+    // before escalating to handleRefreshError. Permanent auth failures skip
+    // the retry — they're never going to succeed via refresh.
+    const maxAttempts = 3
+    let lastError: any
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const newAuth = await refreshAccessToken(auth)
+        await this.accountManager.updateFromAuth(account, newAuth)
+        await this.repository.save(account)
+        return { account, shouldContinue: false }
+      } catch (e: any) {
+        lastError = e
+        if (isPermanentError(e?.message) || isPermanentError(e?.code) || attempt === maxAttempts)
+          break
+        await this.sleep(1000 * Math.pow(2, attempt - 1))
+      }
     }
+    return await this.handleRefreshError(lastError, account, showToast)
   }
 
   async forceRefresh(account: ManagedAccount, auth: KiroAuthDetails): Promise<void> {
@@ -119,5 +129,9 @@ export class TokenRefresher {
       message: error instanceof Error ? error.message : String(error)
     })
     throw error
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
   }
 }
