@@ -24,11 +24,31 @@ jobs:
 
       - run: bun run build
 
+      # Bundel de runtime-deps ín dist/index.js in plaats van ze als
+      # node_modules mee te packen. bundleDependencies leverde 7207 files /
+      # 11 MB, wat opencode bij elke start opnieuw uitpakt en installeert.
+      # @opencode-ai/plugin blijft extern: opencode levert die runtime.
+      - name: Bundle runtime dependencies into a single file
+        shell: bash
+        run: |
+          bun build src/index.ts \
+            --outdir dist-bundle \
+            --target node \
+            --format esm \
+            --external '@opencode-ai/plugin'
+          find dist -name '*.js' -delete
+          mv dist-bundle/index.js dist/index.js
+          rm -rf dist-bundle
+          find dist -type d -empty -delete
+
       - name: Prepare repository tarball metadata
         shell: bash
         run: |
           npm pkg set name="${GITHUB_REPOSITORY#*/}"
-          npm pkg set bundleDependencies=true --json
+          npm pkg delete dependencies
+          npm pkg delete devDependencies
+          npm pkg delete scripts.prepare
+          npm pkg set peerDependencies.@opencode-ai/plugin='*'
 
       - name: Pack self-contained tarball
         run: npm pack
@@ -36,21 +56,33 @@ jobs:
       - name: Rename tarball to fixed name
         run: mv *.tgz opencode-kiro-auth.tgz
 
-      - name: Verify bundled production dependencies
+      - name: Verify the tarball installs and loads
         shell: bash
         run: |
-          tar -tzf opencode-kiro-auth.tgz > tarball-contents.txt
-          for dependency in \
-            "@aws/codewhisperer-streaming-client" \
-            "@opencode-ai/plugin" \
-            "proper-lockfile" \
-            "zod"
-          do
-            grep -Fxq "package/node_modules/${dependency}/package.json" tarball-contents.txt || {
-              echo "::error::Missing bundled dependency: ${dependency}"
-              exit 1
+          files=$(tar -tzf opencode-kiro-auth.tgz | wc -l)
+          echo "tarball bevat ${files} files"
+          if [ "$files" -gt 200 ]; then
+            echo "::error::Tarball bevat ${files} files; de bundle-stap is niet effectief"
+            exit 1
+          fi
+
+          smoke=$(mktemp -d)
+          cd "$smoke"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund \
+            "${GITHUB_WORKSPACE}/opencode-kiro-auth.tgz" \
+            '@opencode-ai/plugin'
+
+          node --input-type=module -e "
+            const m = await import('opencode-kiro-auth');
+            if (m.default?.id !== 'kiro') {
+              throw new Error('default export mist id=kiro');
             }
-          done
+            if (typeof m.default.server !== 'function') {
+              throw new Error('default export mist de server hook');
+            }
+            console.log('ok: plugin laadt, id=' + m.default.id);
+          "
 
       - name: Check if release exists
         id: check_release
