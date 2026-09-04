@@ -24,11 +24,33 @@ jobs:
 
       - run: bun run build
 
-      - name: Pack tarball
+      - name: Prepare repository tarball metadata
+        shell: bash
+        run: |
+          npm pkg set name="${GITHUB_REPOSITORY#*/}"
+          npm pkg set bundleDependencies=true --json
+
+      - name: Pack self-contained tarball
         run: npm pack
 
       - name: Rename tarball to fixed name
         run: mv *.tgz opencode-kiro-auth.tgz
+
+      - name: Verify bundled production dependencies
+        shell: bash
+        run: |
+          tar -tzf opencode-kiro-auth.tgz > tarball-contents.txt
+          for dependency in \
+            "@aws/codewhisperer-streaming-client" \
+            "@opencode-ai/plugin" \
+            "proper-lockfile" \
+            "zod"
+          do
+            grep -Fxq "package/node_modules/${dependency}/package.json" tarball-contents.txt || {
+              echo "::error::Missing bundled dependency: ${dependency}"
+              exit 1
+            }
+          done
 
       - name: Check if release exists
         id: check_release
