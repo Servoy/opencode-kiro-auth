@@ -232,28 +232,35 @@ export class IdcAuthMethod {
             oidcRegion
           )
 
-          let profileArn =
+          const requestedProfileArn =
             inputs?.profile_arn?.trim() || configuredProfileArn || readActiveProfileArnFromKiroCli()
 
-          // No local profileArn: ask the service which profiles this token can use.
-          if (!profileArn) {
-            profileArn = await listAvailableProfileArns(token.accessToken, oidcRegion)
-              .then((arns) => arns[0])
-              .catch((e) => {
-                logger.warn('ListAvailableProfiles failed during auth', {
-                  oidcRegion,
-                  error: e instanceof Error ? e.message : String(e)
-                })
-                return undefined
+          // A requested ARN the user isn't granted 403s on every request, so
+          // trust the service's list over the requested/synced ARN.
+          const availableArns = await listAvailableProfileArns(token.accessToken, oidcRegion).catch(
+            (e) => {
+              logger.warn('ListAvailableProfiles failed during auth', {
+                oidcRegion,
+                error: e instanceof Error ? e.message : String(e)
               })
-            if (profileArn)
-              logger.log('IDC authorize: resolved profileArn via service', { profileArn })
+              return null
+            }
+          )
+
+          let profileArn: string | undefined
+          if (availableArns && availableArns.length > 0) {
+            profileArn =
+              requestedProfileArn && availableArns.includes(requestedProfileArn)
+                ? requestedProfileArn
+                : availableArns[0]
+          } else if (availableArns === null) {
+            // Service unreachable: fall back to the requested ARN.
+            profileArn = requestedProfileArn
           }
 
-          // A profileArn is mandatory; persisting an account without one loops 403 → reauth.
           if (!profileArn) {
             throw new Error(
-              'No CodeWhisperer profile is available for this account. Select a Q Developer profile (run "kiro-cli profile") or set "idc_profile_arn" in kiro.json, then sign in again.'
+              'This account has no Amazon Q Developer / CodeWhisperer profile assigned, so it cannot use Kiro. Ask your AWS administrator to assign a Q Developer profile, then sign in again.'
             )
           }
 

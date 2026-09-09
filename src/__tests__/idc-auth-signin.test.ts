@@ -13,6 +13,8 @@ mock.module('../plugin/logger.js', () => ({
   getTimestamp: () => '2026-07-22T00:00:00.000Z'
 }))
 
+let availableProfileArns: string[] = ['arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC']
+
 mock.module('../kiro/oauth-idc.js', () => ({
   authorizeKiroIDC: async () => ({
     userCode: 'ABCD-EFGH',
@@ -31,9 +33,7 @@ mock.module('../kiro/oauth-idc.js', () => ({
     clientId: 'client-id',
     clientSecret: 'client-secret'
   }),
-  listAvailableProfileArns: async () => [
-    'arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC'
-  ]
+  listAvailableProfileArns: async () => availableProfileArns
 }))
 
 mock.module('../plugin/sync/kiro-cli-profile.js', () => ({
@@ -61,6 +61,7 @@ describe('IdcAuthMethod: sign-in resilience', () => {
   beforeEach(() => {
     usageShouldFail = false
     saveShouldFail = false
+    availableProfileArns = ['arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC']
     globalThis.fetch = (async (input: any, init?: any) => {
       const target = init?.headers?.['X-Amz-Target'] || ''
       if (target.includes('ListAvailableProfiles')) {
@@ -128,5 +129,29 @@ describe('IdcAuthMethod: sign-in resilience', () => {
     const outcome = await (result as any).callback()
 
     expect(outcome.type).toBe('success')
+  })
+
+  test('fails sign-in when the service grants no profiles', async () => {
+    availableProfileArns = []
+    const { method, savedAccounts } = createMethod()
+
+    const result = await method.authorize({ idc_region: 'eu-central-1' })
+    await expect((result as any).callback()).rejects.toThrow(/no Amazon Q Developer/i)
+    expect(savedAccounts).toHaveLength(0)
+  })
+
+  test('ignores a requested profileArn the service does not grant', async () => {
+    availableProfileArns = ['arn:aws:codewhisperer:eu-central-1:123456789012:profile/GRANTED']
+    const { method, savedAccounts } = createMethod()
+
+    const result = await method.authorize({
+      idc_region: 'eu-central-1',
+      profile_arn: 'arn:aws:codewhisperer:eu-central-1:999999999999:profile/NOTMINE'
+    })
+    await (result as any).callback()
+
+    expect(savedAccounts[0].profileArn).toBe(
+      'arn:aws:codewhisperer:eu-central-1:123456789012:profile/GRANTED'
+    )
   })
 })
