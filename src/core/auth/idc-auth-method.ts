@@ -59,11 +59,8 @@ function persistIdcConfigDefaults(
 }
 
 function resolveBrowserCommand(url: string): { bin: string; args: string[]; source: string } {
-  // A BROWSER override lets callers (e.g. Eclipse's embedded Chromium / SWT
-  // Browser, or a headless/sandboxed host) point at whatever actually renders
-  // pages in that context. Supports a `%s` placeholder for the URL; if absent
-  // the URL is appended as the final argument. This is the standard
-  // freedesktop `$BROWSER` convention.
+  // KIRO_BROWSER/BROWSER override for hosts needing a custom launcher (`%s` =
+  // URL, else appended). Follows the freedesktop $BROWSER convention.
   const override = process.env.KIRO_BROWSER || process.env.BROWSER
   if (override && override.trim()) {
     const parts = override.trim().split(/\s+/)
@@ -74,12 +71,10 @@ function resolveBrowserCommand(url: string): { bin: string; args: string[]; sour
     return { bin, args, source: process.env.KIRO_BROWSER ? 'KIRO_BROWSER' : 'BROWSER' }
   }
 
+  // Absolute path so an IDE's PATH wrapper can't shadow the launcher and route
+  // the URL into its embedded browser instead of the system default.
   const platform = process.platform
   if (platform === 'win32') return { bin: 'cmd', args: ['/c', 'start', '', url], source: 'default' }
-  // Use the absolute path to the OS launcher. When the plugin is spawned from
-  // an IDE (Eclipse/SWT), the inherited PATH can shadow `open`/`xdg-open` with
-  // a wrapper that routes the URL back into the IDE's embedded browser instead
-  // of the real system default browser. An absolute path bypasses that.
   if (platform === 'darwin') return { bin: '/usr/bin/open', args: [url], source: 'default' }
   return { bin: '/usr/bin/xdg-open', args: [url], source: 'default' }
 }
@@ -88,9 +83,7 @@ const openBrowser = (url: string) => {
   const { bin, args, source } = resolveBrowserCommand(url)
   logger.log('openBrowser: launching', { bin, source, url })
   try {
-    // detached + ignored stdio + unref so the launcher runs independently of
-    // the IDE-spawned parent process — the IDE can't capture its output or tie
-    // its lifecycle to the plugin.
+    // detached + unref so the launcher is decoupled from the IDE-spawned parent.
     const child = execFile(bin, args, { detached: true, stdio: 'ignore' } as any, (error) => {
       if (error) {
         logger.warn('openBrowser: launch failed', { bin, source, url, error: error.message })

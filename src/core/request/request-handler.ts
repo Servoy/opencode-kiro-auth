@@ -199,6 +199,10 @@ export class RequestHandler {
           this.logSdkResponse(sdkPrep, apiTimestamp)
         }
 
+        if (bearerRetried) {
+          logger.warn(`bearer retry succeeded convId=${sdkPrep.conversationId}`)
+        }
+
         this.handleSuccessfulRequest(acc)
         this.usageTracker.syncUsage(acc, auth)
 
@@ -229,9 +233,24 @@ export class RequestHandler {
           ) {
             bearerRetried = true
             logger.warn('403 bearer invalid on first attempt, forcing token refresh and retrying')
-            await this.tokenRefresher.forceRefresh(acc, this.accountManager.toAuthDetails(acc))
+            const refreshed = await this.tokenRefresher.forceRefresh(
+              acc,
+              this.accountManager.toAuthDetails(acc)
+            )
+            if (!refreshed) {
+              logger.warn(
+                `bearer-403 refresh failed, rotating/reauth convId=${sdkPrep.conversationId}`
+              )
+              bearerRetried = false
+            }
             continue
           }
+        }
+
+        if (httpStatus === 403 && bearerRetried) {
+          logger.warn(
+            `bearer retry failed: still 403 after token refresh convId=${sdkPrep.conversationId}`
+          )
         }
 
         if (httpStatus) {
@@ -541,10 +560,8 @@ export class RequestHandler {
       const idcMethod = new IdcAuthMethod(this.config, this.repository, this.accountManager)
       const auth = await idcMethod.authorize(inputs)
 
-      // Surface the verification URL through every channel we have: the log
-      // (temporary/debug so it can be opened manually), a toast, and the
-      // instructions text. The toast is unreliable in some hosts, so the log
-      // is the guaranteed fallback.
+      // Log + toast the verification URL; the log is the guaranteed fallback
+      // since the toast is unreliable in some hosts.
       const verificationUrl = (auth as any).url as string | undefined
       if (verificationUrl) {
         logger.warn(`Reauth: open this URL to sign in: ${verificationUrl}`)

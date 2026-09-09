@@ -53,7 +53,12 @@ export class TokenRefresher {
     return await this.handleRefreshError(lastError, account, showToast)
   }
 
-  async forceRefresh(account: ManagedAccount, auth: KiroAuthDetails): Promise<void> {
+  // Returns true only when the account ends up holding a genuinely new access
+  // token. On failure the account is marked unhealthy so callers escalate to
+  // rotation/reauth instead of retrying the same dead token.
+  async forceRefresh(account: ManagedAccount, auth: KiroAuthDetails): Promise<boolean> {
+    const previousToken = account.accessToken
+
     if (this.config.auto_sync_kiro_cli) {
       await this.syncFromKiroCli()
     }
@@ -62,18 +67,37 @@ export class TokenRefresher {
     const accounts = await this.repository.findAll()
     const synced = accounts.find((a: ManagedAccount) => a.id === account.id)
 
-    if (synced && synced.accessToken !== account.accessToken) {
+    if (synced && synced.accessToken && synced.accessToken !== previousToken) {
       await this.accountManager.updateFromAuth(account, this.accountManager.toAuthDetails(synced))
       logger.debug('Force refresh: recovered newer token from CLI sync')
-      return
+      return true
     }
 
     try {
       const newAuth = await refreshAccessToken(auth)
       await this.accountManager.updateFromAuth(account, newAuth)
+
+      if (account.accessToken === previousToken) {
+        logger.warn('Force refresh: OIDC returned an unchanged access token')
+        await this.markRefreshFailed(account, 'bearer-403 refresh returned unchanged token')
+        return false
+      }
+
       logger.debug('Force refresh: token refreshed via OIDC')
+      return true
     } catch (e: any) {
-      logger.warn('Force refresh failed, will retry with current token', {
+      const message = e instanceof Error ? e.message : String(e)
+      logger.warn('Force refresh failed after bearer-403', { message })
+      await this.markRefreshFailed(account, e?.code || message)
+      return false
+    }
+  }
+
+  private async markRefreshFailed(account: ManagedAccount, reason: string): Promise<void> {
+    try {
+      await this.accountManager.markUnhealthy(account, reason)
+    } catch (e) {
+      logger.warn('markRefreshFailed: markUnhealthy failed', {
         message: e instanceof Error ? e.message : String(e)
       })
     }

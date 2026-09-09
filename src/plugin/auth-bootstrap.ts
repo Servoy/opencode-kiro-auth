@@ -60,7 +60,9 @@ export function bootstrapAuthIfNeeded(providerId: string): void {
   try {
     const cliDbPath = getCliDbPath()
     if (!existsSync(cliDbPath)) {
-      logger.log('Bootstrap: Kiro CLI DB not found, skipping')
+      // Debug-level: the config hook runs constantly, incl. subprocesses where
+      // this path differs, so info-level would flood the log.
+      logger.debug('Bootstrap: Kiro CLI DB not found, skipping')
       return
     }
 

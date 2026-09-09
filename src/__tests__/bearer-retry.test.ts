@@ -102,8 +102,11 @@ function createHarness() {
     refreshIfNeeded: async (selected: any) => ({ account: selected, shouldContinue: false }),
     forceRefresh: async () => {
       forceRefreshCalls++
+      account.accessToken = `fresh-access-token-${forceRefreshCalls}`
+      return true
     }
   }
+  handler.triggerReauth = async () => false
   handler.prepareSdkRequest = () => ({
     region: 'us-east-1',
     effort: undefined,
@@ -114,7 +117,11 @@ function createHarness() {
     effectiveModel: 'claude-sonnet-4-5'
   })
 
-  return { handler, getForceRefreshCalls: () => forceRefreshCalls }
+  return {
+    handler,
+    account,
+    getForceRefreshCalls: () => forceRefreshCalls
+  }
 }
 
 function request(handler: any) {
@@ -137,6 +144,25 @@ describe('RequestHandler SDK error recovery', () => {
     expect(sendCalls).toBe(2)
     expect(getForceRefreshCalls()).toBe(1)
     expect(apiResponseLogCalls).toBe(2)
+  })
+
+  test('does not retry with the same token when refresh cannot produce a new one', async () => {
+    sdkErrorMessage = 'The bearer token included in the request is invalid'
+    sdkErrorName = 'ForbiddenException'
+    sdkHttpStatus = 403
+    const { handler, account } = createHarness()
+
+    handler.tokenRefresher.forceRefresh = async () => {
+      account.isHealthy = false
+      account.unhealthyReason = 'invalid_grant'
+      return false
+    }
+    handler.triggerReauth = async () => false
+
+    await expect(request(handler)).rejects.toThrow()
+
+    // SDK called only once: no retry with the dead token, so no lock-up.
+    expect(sendCalls).toBe(1)
   })
 
   test('returns a context-length response for SDK input overflow', async () => {
