@@ -54,6 +54,12 @@ export async function syncFromKiroCli() {
         const authMethod = isIdc ? 'idc' : 'desktop'
         let profileArn: string | undefined = data.profile_arn || data.profileArn
         if (!profileArn && isIdc) profileArn = activeProfileArn || readActiveProfileArnFromKiroCli()
+
+        // An IDC account without a profileArn 403s on every request; never import one.
+        if (isIdc && !profileArn) {
+          logger.warn('Kiro CLI sync: IDC token has no profileArn; skipping import')
+          continue
+        }
         // serviceRegion wins over data.region: kiro-cli stores data.region as the
         // OIDC region (often us-east-1) regardless of where the account actually lives.
         const serviceRegion = extractRegionFromArn(profileArn) || normalizeRegion(data.region)

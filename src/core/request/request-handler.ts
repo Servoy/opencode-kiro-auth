@@ -1,5 +1,6 @@
 import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client'
 import type { AccountRepository } from '../../infrastructure/database/account-repository'
+import { isPermanentlyUnusable, isUsableAccount } from '../../plugin/account-usability'
 import type { AccountManager } from '../../plugin/accounts'
 import type { KiroConfig } from '../../plugin/config'
 import { THINKING_BUDGETS } from '../../plugin/effort'
@@ -617,10 +618,7 @@ export class RequestHandler {
   }
 
   private hasUsableAccount(accounts: ManagedAccount[]): boolean {
-    const now = Date.now()
-    return accounts.some(
-      (acc) => acc.isHealthy && acc.expiresAt > now && !isPermanentError(acc.unhealthyReason)
-    )
+    return accounts.some((acc) => isUsableAccount(acc))
   }
 
   private allAccountsPermanentlyUnhealthy(): boolean {
@@ -628,7 +626,7 @@ export class RequestHandler {
     if (accounts.length === 0) {
       return false
     }
-    return accounts.every((acc) => !acc.isHealthy && isPermanentError(acc.unhealthyReason))
+    return accounts.every((acc) => isPermanentlyUnusable(acc))
   }
 
   private sleep(ms: number): Promise<void> {

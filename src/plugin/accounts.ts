@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { decodeRefreshToken, encodeRefreshToken } from '../kiro/auth'
+import { evaluateAccount, isPermanentlyUnusable } from './account-usability'
 import { isPermanentError } from './health'
 import * as logger from './logger'
 import { kiroDb } from './storage/sqlite'
@@ -99,19 +100,14 @@ export class AccountManager {
   getCurrentOrNext(): ManagedAccount | null {
     const now = Date.now()
     const available = this.accounts.filter((a) => {
+      if (!evaluateAccount(a, now).usable) return false
+      // Recovered past recoveryTime: clear stale flags to match the live verdict.
       if (!a.isHealthy) {
-        if (isPermanentError(a.unhealthyReason)) {
-          return false
-        }
-        if (a.failCount < 10 && a.recoveryTime && now >= a.recoveryTime) {
-          a.isHealthy = true
-          delete a.unhealthyReason
-          delete a.recoveryTime
-          return true
-        }
-        return false
+        a.isHealthy = true
+        delete a.unhealthyReason
+        delete a.recoveryTime
       }
-      return !(a.rateLimitResetTime && now < a.rateLimitResetTime)
+      return true
     })
     let selected: ManagedAccount | undefined
     if (available.length > 0) {
@@ -135,14 +131,11 @@ export class AccountManager {
       }
     }
     if (!selected) {
-      // Fallback: unhealthy accounts without a scheduled recoveryTime
+      // Fallback to a temporarily-unhealthy account, but never a permanently-unusable one.
       const fallback = this.accounts
         .filter(
           (a) =>
-            !a.isHealthy &&
-            a.failCount < 10 &&
-            !isPermanentError(a.unhealthyReason) &&
-            !a.recoveryTime
+            !a.isHealthy && a.failCount < 10 && !a.recoveryTime && !isPermanentlyUnusable(a, now)
         )
         .sort(
           (a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0)

@@ -34,6 +34,7 @@ function makeAccount(overrides: Partial<ManagedAccount> = {}): ManagedAccount {
     email: 'test@example.com',
     authMethod: 'idc',
     region: 'eu-central-1',
+    profileArn: 'arn:aws:codewhisperer:eu-central-1:123456789012:profile/TEST',
     refreshToken: 'refresh',
     accessToken: 'access',
     expiresAt: Date.now() + 3600000,

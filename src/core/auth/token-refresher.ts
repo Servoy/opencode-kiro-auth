@@ -79,7 +79,7 @@ export class TokenRefresher {
 
       if (account.accessToken === previousToken) {
         logger.warn('Force refresh: OIDC returned an unchanged access token')
-        await this.markRefreshFailed(account, 'bearer-403 refresh returned unchanged token')
+        await this.markRefreshFailed(account, 'unauthorized: refresh returned unchanged token')
         return false
       }
 
@@ -93,9 +93,12 @@ export class TokenRefresher {
     }
   }
 
+  // Mark permanent so the request loop escalates to reauth instead of retrying a
+  // dead token. Prefix with 'unauthorized' (which isPermanentError matches).
   private async markRefreshFailed(account: ManagedAccount, reason: string): Promise<void> {
+    const permanentReason = isPermanentError(reason) ? reason : `unauthorized: ${reason}`
     try {
-      await this.accountManager.markUnhealthy(account, reason)
+      await this.accountManager.markUnhealthy(account, permanentReason)
     } catch (e) {
       logger.warn('markRefreshFailed: markUnhealthy failed', {
         message: e instanceof Error ? e.message : String(e)

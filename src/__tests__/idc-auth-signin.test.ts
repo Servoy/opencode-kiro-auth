@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
+process.env.KIRO_DISABLE_BROWSER = '1'
+
 let usageShouldFail = false
 let saveShouldFail = false
 
@@ -28,7 +30,10 @@ mock.module('../kiro/oauth-idc.js', () => ({
     expiresAt: Date.now() + 3_600_000,
     clientId: 'client-id',
     clientSecret: 'client-secret'
-  })
+  }),
+  listAvailableProfileArns: async () => [
+    'arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC'
+  ]
 }))
 
 mock.module('../plugin/sync/kiro-cli-profile.js', () => ({
@@ -56,7 +61,16 @@ describe('IdcAuthMethod: sign-in resilience', () => {
   beforeEach(() => {
     usageShouldFail = false
     saveShouldFail = false
-    globalThis.fetch = (async () => {
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const target = init?.headers?.['X-Amz-Target'] || ''
+      if (target.includes('ListAvailableProfiles')) {
+        return new Response(
+          JSON.stringify({
+            profiles: [{ arn: 'arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC' }]
+          }),
+          { status: 200 }
+        )
+      }
       if (usageShouldFail) {
         return new Response(
           JSON.stringify({
@@ -73,7 +87,7 @@ describe('IdcAuthMethod: sign-in resilience', () => {
         }),
         { status: 200 }
       )
-    }) as typeof fetch
+    }) as unknown as typeof fetch
   })
 
   afterEach(() => {
@@ -94,12 +108,15 @@ describe('IdcAuthMethod: sign-in resilience', () => {
     expect(savedAccounts[0].usedCount).toBe(0)
   })
 
-  test('uses the OIDC sign-in region when no profileArn is available', async () => {
+  test('resolves profileArn via ListAvailableProfiles when none is local', async () => {
     const { method, savedAccounts } = createMethod()
 
     const result = await method.authorize({ idc_region: 'eu-central-1' })
     await (result as any).callback()
 
+    expect(savedAccounts[0].profileArn).toBe(
+      'arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC'
+    )
     expect(savedAccounts[0].region).toBe('eu-central-1')
   })
 

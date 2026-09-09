@@ -4,7 +4,11 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { extractRegionFromArn, normalizeRegion } from '../../constants.js'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
-import { authorizeKiroIDC, pollKiroIDCToken } from '../../kiro/oauth-idc.js'
+import {
+  authorizeKiroIDC,
+  listAvailableProfileArns,
+  pollKiroIDCToken
+} from '../../kiro/oauth-idc.js'
 import { createDeterministicAccountId } from '../../plugin/accounts.js'
 import { getConfigDir } from '../../plugin/config/loader.js'
 import * as logger from '../../plugin/logger.js'
@@ -80,6 +84,10 @@ function resolveBrowserCommand(url: string): { bin: string; args: string[]; sour
 }
 
 const openBrowser = (url: string) => {
+  if (process.env.NODE_ENV === 'test' || process.env.KIRO_DISABLE_BROWSER) {
+    logger.log('openBrowser: skipped (test/disabled)', { url })
+    return
+  }
   const { bin, args, source } = resolveBrowserCommand(url)
   logger.log('openBrowser: launching', { bin, source, url })
   try {
@@ -224,8 +232,31 @@ export class IdcAuthMethod {
             oidcRegion
           )
 
-          const profileArn =
+          let profileArn =
             inputs?.profile_arn?.trim() || configuredProfileArn || readActiveProfileArnFromKiroCli()
+
+          // No local profileArn: ask the service which profiles this token can use.
+          if (!profileArn) {
+            profileArn = await listAvailableProfileArns(token.accessToken, oidcRegion)
+              .then((arns) => arns[0])
+              .catch((e) => {
+                logger.warn('ListAvailableProfiles failed during auth', {
+                  oidcRegion,
+                  error: e instanceof Error ? e.message : String(e)
+                })
+                return undefined
+              })
+            if (profileArn)
+              logger.log('IDC authorize: resolved profileArn via service', { profileArn })
+          }
+
+          // A profileArn is mandatory; persisting an account without one loops 403 → reauth.
+          if (!profileArn) {
+            throw new Error(
+              'No CodeWhisperer profile is available for this account. Select a Q Developer profile (run "kiro-cli profile") or set "idc_profile_arn" in kiro.json, then sign in again.'
+            )
+          }
+
           const serviceRegion =
             extractRegionFromArn(profileArn) || oidcRegion || configuredServiceRegion
 
@@ -243,7 +274,6 @@ export class IdcAuthMethod {
           }).catch((e) => {
             logger.warn('fetchUsageLimits failed during auth; continuing with zeroed usage', {
               serviceRegion,
-              hasProfileArn: !!profileArn,
               error: e instanceof Error ? e.message : String(e)
             })
             return { usedCount: 0, limitCount: 0, email: undefined }

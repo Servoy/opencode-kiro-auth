@@ -253,3 +253,27 @@ export async function pollKiroIDCToken(
   const timeoutError = new Error('Token polling timed out. Authorization may have expired.')
   throw timeoutError
 }
+
+export async function listAvailableProfileArns(
+  accessToken: string,
+  region: KiroRegion
+): Promise<string[]> {
+  const host = buildUrl(KIRO_CONSTANTS.BASE_URL, region).replace(
+    /\/generateAssistantResponse$/,
+    '/'
+  )
+  const res = await fetch(host, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/x-amz-json-1.0',
+      'X-Amz-Target': 'AmazonCodeWhispererService.ListAvailableProfiles',
+      'x-amzn-kiro-agent-mode': 'vibe'
+    },
+    body: '{}'
+  })
+  if (!res.ok) throw new Error(`ListAvailableProfiles failed: ${res.status}`)
+  const data: any = await res.json()
+  const list = Array.isArray(data.profiles) ? data.profiles : []
+  return list.map((p: any) => p.arn || p.profileArn).filter((a: unknown): a is string => !!a)
+}

@@ -48,6 +48,7 @@ function createHarness() {
     email: 'user@example.com',
     authMethod: 'idc',
     region: 'us-east-1',
+    profileArn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/ABC',
     refreshToken: 'refresh-token',
     accessToken: 'stale-access-token',
     expiresAt: Date.now() + 60_000,
@@ -183,5 +184,24 @@ describe('RequestHandler SDK error recovery', () => {
     })
     expect(sendCalls).toBe(1)
     expect(getForceRefreshCalls()).toBe(0)
+  })
+
+  test('IDC account without profileArn never hits the SDK and escalates to reauth', async () => {
+    sdkErrorMessage = 'The bearer token included in the request is invalid'
+    sdkErrorName = 'ForbiddenException'
+    sdkHttpStatus = 403
+    const { handler, account } = createHarness()
+    account.profileArn = undefined
+
+    let reauthCalls = 0
+    handler.triggerReauth = async () => {
+      reauthCalls++
+      return false
+    }
+
+    await expect(request(handler)).rejects.toThrow()
+
+    expect(sendCalls).toBe(0)
+    expect(reauthCalls).toBe(1)
   })
 })

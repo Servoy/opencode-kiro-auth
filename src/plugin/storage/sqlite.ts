@@ -1,19 +1,12 @@
 import { existsSync, mkdirSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { getConfigDir } from '../config/paths'
 import type { ManagedAccount } from '../types'
 import { openDatabase, type SqliteDatabase } from './database-driver'
 import { deduplicateAccounts, mergeAccounts, withDatabaseLock } from './locked-operations'
 import { runMigrations } from './migrations'
 
-function getBaseDir(): string {
-  const p = process.platform
-  if (p === 'win32')
-    return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'opencode')
-  return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode')
-}
-
-export const DB_PATH = join(getBaseDir(), 'kiro.db')
+export const DB_PATH = join(getConfigDir(), 'kiro.db')
 
 export class KiroDatabase {
   private db: SqliteDatabase
@@ -180,6 +173,7 @@ export class KiroDatabase {
           `DELETE FROM accounts
            WHERE email = 'test@example.com'
               OR email LIKE 'placeholder-%@awsapps.local'
+              OR (auth_method = 'idc' AND (profile_arn IS NULL OR profile_arn = ''))
               OR (is_healthy = 0
                   AND unhealthy_reason IN ('Account Suspended', 'ExpiredTokenException')
                   AND (recovery_time IS NULL OR recovery_time < ?))`
