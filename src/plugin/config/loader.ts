@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import * as logger from '../logger'
+import { getConfigDir, getDefaultLogsDir } from './paths'
 import {
   AccountSelectionStrategySchema,
   DEFAULT_CONFIG,
@@ -10,17 +10,7 @@ import {
   type KiroConfig
 } from './schema'
 
-// Exported so other modules that need a subdirectory under the same base
-// (logs, image cache, etc.) resolve to the same platform-specific root
-// instead of re-implementing this lookup.
-export function getConfigDir(): string {
-  const platform = process.platform
-  if (platform === 'win32') {
-    return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'opencode')
-  }
-  const xdgConfig = process.env.XDG_CONFIG_HOME || join(homedir(), '.config')
-  return join(xdgConfig, 'opencode')
-}
+export { getConfigDir, getDefaultLogsDir }
 
 export function getUserConfigPath(): string {
   return join(getConfigDir(), 'kiro.json')
@@ -190,8 +180,4 @@ export function loadConfig(directory: string): KiroConfig {
 
 export function configExists(path: string): boolean {
   return existsSync(path)
-}
-
-export function getDefaultLogsDir(): string {
-  return join(getConfigDir(), 'kiro-logs')
 }

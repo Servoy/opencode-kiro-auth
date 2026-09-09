@@ -1,21 +1,14 @@
 import { Buffer } from 'node:buffer'
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { getDefaultLogsDir } from './config/paths'
 
 const binaryToBase64Replacer = (_key: string, value: unknown): unknown => {
   if (value instanceof Uint8Array) return Buffer.from(value).toString('base64')
   return value
 }
 
-const getLogDir = () => {
-  const platform = process.platform
-  const base =
-    platform === 'win32'
-      ? join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'opencode')
-      : join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode')
-  return join(base, 'kiro-logs')
-}
+const getLogDir = () => process.env.KIRO_LOG_DIR || getDefaultLogsDir()
 
 const writeToFile = (level: string, message: string, ...args: unknown[]) => {
   try {

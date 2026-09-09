@@ -126,6 +126,17 @@ function normalizeStartUrl(raw: string | undefined): string | undefined {
   return url.toString()
 }
 
+function emailFromJwt(accessToken: string): string | undefined {
+  try {
+    const payload = accessToken.split('.')[1]
+    if (!payload) return undefined
+    const decoded = JSON.parse(Buffer.from(payload, 'base64').toString())
+    return decoded.email || decoded.sub || undefined
+  } catch {
+    return undefined
+  }
+}
+
 function buildDeviceUrl(startUrl: string, userCode: string): string {
   const url = new URL(startUrl)
   url.search = ''
@@ -217,37 +228,28 @@ export class IdcAuthMethod {
             inputs?.profile_arn?.trim() || configuredProfileArn || readActiveProfileArnFromKiroCli()
           const serviceRegion =
             extractRegionFromArn(profileArn) || oidcRegion || configuredServiceRegion
-          let usage: any = { usedCount: 0, limitCount: 0, email: undefined }
-          try {
-            usage = await fetchUsageLimits({
-              refresh: '',
-              access: token.accessToken,
-              expires: token.expiresAt,
-              authMethod: 'idc',
-              region: serviceRegion,
-              clientId: token.clientId,
-              clientSecret: token.clientSecret,
-              profileArn
-            })
-          } catch (e) {
-            // Usage is metadata, not a login gate — never discard a valid sign-in.
+
+          // Usage is metadata, not a login gate — a failed lookup must never
+          // discard a valid sign-in.
+          const usage = await fetchUsageLimits({
+            refresh: '',
+            access: token.accessToken,
+            expires: token.expiresAt,
+            authMethod: 'idc',
+            region: serviceRegion,
+            clientId: token.clientId,
+            clientSecret: token.clientSecret,
+            profileArn
+          }).catch((e) => {
             logger.warn('fetchUsageLimits failed during auth; continuing with zeroed usage', {
               serviceRegion,
               hasProfileArn: !!profileArn,
               error: e instanceof Error ? e.message : String(e)
             })
-            usage = { usedCount: 0, limitCount: 0, email: undefined }
-          }
+            return { usedCount: 0, limitCount: 0, email: undefined }
+          })
 
-          if (!usage.email) {
-            try {
-              const tokenParts = token.accessToken.split('.')
-              if (tokenParts.length === 3 && tokenParts[1]) {
-                const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString())
-                usage.email = payload.email || payload.sub
-              }
-            } catch {}
-          }
+          if (!usage.email) usage.email = emailFromJwt(token.accessToken)
 
           const email =
             usage.email || makePlaceholderEmail('idc', serviceRegion, token.clientId, profileArn)
@@ -272,22 +274,33 @@ export class IdcAuthMethod {
             limitCount: usage.limitCount
           }
 
-          await this.repository.save(acc)
-          await this.accountManager?.addAccount?.(acc)
+          try {
+            await this.repository.save(acc)
+            await this.accountManager?.addAccount?.(acc)
+            persistIdcConfigDefaults(acc.startUrl, acc.oidcRegion, acc.profileArn)
+          } catch (e) {
+            // The token is valid; a persistence hiccup must not fail sign-in.
+            // The account stays in memory and gets persisted on next save.
+            logger.warn('IDC authorize: account persist failed, continuing', {
+              email,
+              error: e instanceof Error ? e.message : String(e)
+            })
+          }
 
-          persistIdcConfigDefaults(acc.startUrl, acc.oidcRegion, acc.profileArn)
-
-          logger.log('IDC authorize: token issued and account saved', {
+          logger.log('IDC authorize: token issued', {
             email,
             serviceRegion,
             hasProfileArn: !!profileArn
           })
           return { type: 'success', key: token.accessToken }
         } catch (e: any) {
+          // Only a failure to obtain the token itself is fatal. Everything
+          // after a valid token (usage, save) is recovered above, so reaching
+          // here means the device-code exchange genuinely failed.
           const err = e instanceof Error ? e : new Error(String(e))
           logger.error('IDC auth callback failed', err)
           throw new Error(
-            `IDC authorization failed: ${err.message}. Check ~/.config/opencode/kiro-logs/plugin.log for details. If this is an Identity Center account, ensure you have selected an AWS Q Developer/CodeWhisperer profile (try: kiro-cli profile).`
+            `IDC authorization failed: ${err.message}. Check the plugin log (plugin.log next to your kiro.json). For Identity Center accounts, ensure a Q Developer/CodeWhisperer profile is selected (try: kiro-cli profile).`
           )
         }
       }
