@@ -541,6 +541,16 @@ export class RequestHandler {
       const idcMethod = new IdcAuthMethod(this.config, this.repository, this.accountManager)
       const auth = await idcMethod.authorize(inputs)
 
+      // Surface the verification URL through every channel we have: the log
+      // (temporary/debug so it can be opened manually), a toast, and the
+      // instructions text. The toast is unreliable in some hosts, so the log
+      // is the guaranteed fallback.
+      const verificationUrl = (auth as any).url as string | undefined
+      if (verificationUrl) {
+        logger.warn(`Reauth: open this URL to sign in: ${verificationUrl}`)
+        showToast(`Sign in to Kiro: ${verificationUrl}`, 'warning')
+      }
+
       const withTimeout = <T>(promise: Promise<T>, label: string): Promise<T> => {
         let timer: ReturnType<typeof setTimeout> | undefined
         return Promise.race([

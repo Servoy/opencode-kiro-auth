@@ -58,17 +58,63 @@ function persistIdcConfigDefaults(
   }
 }
 
-const openBrowser = (url: string) => {
+function resolveBrowserCommand(url: string): { bin: string; args: string[]; source: string } {
+  // A BROWSER override lets callers (e.g. Eclipse's embedded Chromium / SWT
+  // Browser, or a headless/sandboxed host) point at whatever actually renders
+  // pages in that context. Supports a `%s` placeholder for the URL; if absent
+  // the URL is appended as the final argument. This is the standard
+  // freedesktop `$BROWSER` convention.
+  const override = process.env.KIRO_BROWSER || process.env.BROWSER
+  if (override && override.trim()) {
+    const parts = override.trim().split(/\s+/)
+    const bin = parts[0]!
+    const rest = parts.slice(1)
+    const hasPlaceholder = rest.some((p) => p.includes('%s'))
+    const args = hasPlaceholder ? rest.map((p) => p.replace(/%s/g, url)) : [...rest, url]
+    return { bin, args, source: process.env.KIRO_BROWSER ? 'KIRO_BROWSER' : 'BROWSER' }
+  }
+
   const platform = process.platform
-  const [bin, ...args] =
-    platform === 'win32'
-      ? ['cmd', '/c', 'start', '', url]
-      : platform === 'darwin'
-        ? ['open', url]
-        : ['xdg-open', url]
-  execFile(bin!, args, (error) => {
-    if (error) logger.warn(`Browser error: ${error.message}`)
-  })
+  if (platform === 'win32') return { bin: 'cmd', args: ['/c', 'start', '', url], source: 'default' }
+  // Use the absolute path to the OS launcher. When the plugin is spawned from
+  // an IDE (Eclipse/SWT), the inherited PATH can shadow `open`/`xdg-open` with
+  // a wrapper that routes the URL back into the IDE's embedded browser instead
+  // of the real system default browser. An absolute path bypasses that.
+  if (platform === 'darwin') return { bin: '/usr/bin/open', args: [url], source: 'default' }
+  return { bin: '/usr/bin/xdg-open', args: [url], source: 'default' }
+}
+
+const openBrowser = (url: string) => {
+  const { bin, args, source } = resolveBrowserCommand(url)
+  logger.log('openBrowser: launching', { bin, source, url })
+  try {
+    // detached + ignored stdio + unref so the launcher runs independently of
+    // the IDE-spawned parent process — the IDE can't capture its output or tie
+    // its lifecycle to the plugin.
+    const child = execFile(bin, args, { detached: true, stdio: 'ignore' } as any, (error) => {
+      if (error) {
+        logger.warn('openBrowser: launch failed', { bin, source, url, error: error.message })
+      } else {
+        logger.log('openBrowser: launched ok', { bin, source })
+      }
+    })
+    child.on('error', (error) => {
+      logger.warn('openBrowser: spawn error', {
+        bin,
+        source,
+        url,
+        error: error instanceof Error ? error.message : String(error)
+      })
+    })
+    child.unref()
+  } catch (e) {
+    logger.warn('openBrowser: threw synchronously', {
+      bin,
+      source,
+      url,
+      error: e instanceof Error ? e.message : String(e)
+    })
+  }
 }
 
 function normalizeStartUrl(raw: string | undefined): string | undefined {
@@ -126,7 +172,14 @@ export class IdcAuthMethod {
     })
 
     // Step 1: get device code + verification URL (fast)
+    logger.log('IDC authorize: requesting device code', { oidcRegion })
     const auth = await authorizeKiroIDC(oidcRegion, startUrl)
+    logger.log('IDC authorize: device code received', {
+      userCode: auth.userCode,
+      interval: auth.interval,
+      expiresIn: auth.expiresIn,
+      hasVerificationUriComplete: !!auth.verificationUriComplete
+    })
 
     // If a custom Identity Center start URL is provided, prefer the portal device page.
     // This avoids the AWS Builder ID device page (which often prompts for an email)
@@ -134,6 +187,14 @@ export class IdcAuthMethod {
     const verificationUrl = startUrl
       ? buildDeviceUrl(startUrl, auth.userCode)
       : auth.verificationUriComplete || auth.verificationUrl
+
+    // Full verification URL logged so it can be opened manually if the browser
+    // launch fails (temporary/debug — the URL is a one-time device-code page).
+    logger.log('IDC authorize: verification URL ready', {
+      verificationUrl,
+      userCode: auth.userCode,
+      usedStartUrlDevicePage: !!startUrl
+    })
 
     // Open the *AWS* verification page directly (no local web server).
     openBrowser(verificationUrl)
@@ -144,6 +205,11 @@ export class IdcAuthMethod {
       method: 'auto',
       callback: async (): Promise<{ type: 'success'; key: string } | { type: 'failed' }> => {
         try {
+          logger.log('IDC authorize: callback invoked, polling for token', {
+            interval: auth.interval,
+            expiresIn: auth.expiresIn,
+            oidcRegion
+          })
           // Step 2: poll until token is issued (standard device-code flow)
           const token = await pollKiroIDCToken(
             auth.clientId,
@@ -234,6 +300,11 @@ export class IdcAuthMethod {
 
           persistIdcConfigDefaults(acc.startUrl, acc.oidcRegion, acc.profileArn)
 
+          logger.log('IDC authorize: token issued and account saved', {
+            email,
+            serviceRegion,
+            hasProfileArn: !!profileArn
+          })
           return { type: 'success', key: token.accessToken }
         } catch (e: any) {
           const err = e instanceof Error ? e : new Error(String(e))
