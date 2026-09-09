@@ -215,7 +215,8 @@ export class IdcAuthMethod {
 
           const profileArn =
             inputs?.profile_arn?.trim() || configuredProfileArn || readActiveProfileArnFromKiroCli()
-          const serviceRegion = extractRegionFromArn(profileArn) || configuredServiceRegion
+          const serviceRegion =
+            extractRegionFromArn(profileArn) || oidcRegion || configuredServiceRegion
           let usage: any = { usedCount: 0, limitCount: 0, email: undefined }
           try {
             usage = await fetchUsageLimits({
@@ -229,30 +230,13 @@ export class IdcAuthMethod {
               profileArn
             })
           } catch (e) {
-            logger.warn('fetchUsageLimits failed during auth', {
+            // Usage is metadata, not a login gate — never discard a valid sign-in.
+            logger.warn('fetchUsageLimits failed during auth; continuing with zeroed usage', {
+              serviceRegion,
+              hasProfileArn: !!profileArn,
               error: e instanceof Error ? e.message : String(e)
             })
-            if (startUrl && !profileArn) {
-              throw new Error(
-                `Missing profile ARN for IAM Identity Center. Set "idc_profile_arn" in ~/.config/opencode/kiro.json, or run "kiro-cli profile" once so it can be auto-detected. Original error: ${
-                  e instanceof Error ? e.message : String(e)
-                }`
-              )
-            }
-            const errMsg = e instanceof Error ? e.message : String(e)
-            if (errMsg.includes('FEATURE_NOT_SUPPORTED')) {
-              logger.warn('fetchUsageLimits returned FEATURE_NOT_SUPPORTED; skipping usage check', {
-                serviceRegion,
-                profileArn
-              })
-              usage = {
-                usedCount: 0,
-                limitCount: 0,
-                email: undefined
-              }
-            } else {
-              throw e
-            }
+            usage = { usedCount: 0, limitCount: 0, email: undefined }
           }
 
           if (!usage.email) {
