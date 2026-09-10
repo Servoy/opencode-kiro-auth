@@ -14,7 +14,7 @@ mock.module('../plugin/logger.js', () => ({
 }))
 
 let availableProfileArns: string[] = ['arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC']
-let profileLookupReachable = true
+let profileLookupReachedAll = true
 let profileLookupRegions: (string | undefined)[] = []
 
 mock.module('../kiro/oauth-idc.js', () => ({
@@ -41,7 +41,11 @@ mock.module('../kiro/oauth-idc.js', () => ({
     regions: (string | undefined)[]
   ) => {
     profileLookupRegions = regions
-    return { arns: availableProfileArns, reachable: profileLookupReachable }
+    return {
+      arns: availableProfileArns,
+      reachedAll: profileLookupReachedAll,
+      reachedAny: profileLookupReachedAll
+    }
   }
 }))
 
@@ -70,7 +74,7 @@ describe('IdcAuthMethod: sign-in resilience', () => {
   beforeEach(() => {
     usageShouldFail = false
     saveShouldFail = false
-    profileLookupReachable = true
+    profileLookupReachedAll = true
     profileLookupRegions = []
     availableProfileArns = ['arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC']
     globalThis.fetch = (async (input: any, init?: any) => {
@@ -151,12 +155,28 @@ describe('IdcAuthMethod: sign-in resilience', () => {
     expect(savedAccounts).toHaveLength(0)
   })
 
-  test('keeps a configured profileArn when the service lists none', async () => {
-    // An empty list is not proof of "not entitled": the lookup can come back
-    // empty for a region that simply does not host the profile. Discarding a
-    // working, configured ARN over that turned a healthy setup into a hard
-    // sign-in failure.
+  test('a configured ARN cannot override a conclusive "no profiles" verdict', async () => {
+    // Every region answered and none granted a profile. Signing in anyway on
+    // a locally configured ARN produces an account whose every request 403s —
+    // the reauth loop. The blunt message is what points at the real cause: a
+    // missing Q Developer subscription in Identity Center.
     availableProfileArns = []
+    const { method, savedAccounts } = createMethod()
+
+    const result = await method.authorize({
+      idc_region: 'eu-central-1',
+      profile_arn: 'arn:aws:codewhisperer:eu-central-1:123456789012:profile/CONFIGURED'
+    })
+
+    await expect((result as any).callback()).rejects.toThrow(/no Amazon Q Developer/i)
+    expect(savedAccounts).toHaveLength(0)
+  })
+
+  test('keeps a configured profileArn when the lookup was incomplete', async () => {
+    // A region we could not ask might be the one holding the profile, so an
+    // empty list proves nothing and must not block a working setup.
+    availableProfileArns = []
+    profileLookupReachedAll = false
     const { method, savedAccounts } = createMethod()
 
     const result = await method.authorize({
@@ -173,7 +193,7 @@ describe('IdcAuthMethod: sign-in resilience', () => {
 
   test('reports a lookup failure differently from a missing entitlement', async () => {
     availableProfileArns = []
-    profileLookupReachable = false
+    profileLookupReachedAll = false
     const { method } = createMethod()
 
     const result = await method.authorize({ idc_region: 'eu-central-1' })

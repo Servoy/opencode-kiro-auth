@@ -239,18 +239,17 @@ export class IdcAuthMethod {
           const requestedProfileArn =
             inputs?.profile_arn?.trim() || configuredProfileArn || readActiveProfileArnFromKiroCli()
 
-          // A requested ARN the user isn't granted 403s on every request, so
-          // prefer the service's list — but only as far as it is trustworthy.
           // Profiles are regional, so probe the requested ARN's region and the
-          // other Kiro regions too; an empty list from a single wrong region is
-          // not proof that nothing is granted.
-          const { arns: availableArns, reachable } = await listAvailableProfileArnsAcrossRegions(
+          // other Kiro regions before drawing any conclusion.
+          const { arns: availableArns, reachedAll } = await listAvailableProfileArnsAcrossRegions(
             token.accessToken,
             [oidcRegion, extractRegionFromArn(requestedProfileArn), configuredServiceRegion]
           )
 
           let profileArn: string | undefined
           if (availableArns.length > 0) {
+            // A requested ARN the user isn't granted 403s on every request, so
+            // trust the service's list over the requested/synced one.
             profileArn =
               requestedProfileArn && availableArns.includes(requestedProfileArn)
                 ? requestedProfileArn
@@ -261,24 +260,28 @@ export class IdcAuthMethod {
                 requestedProfileArn: requestedProfileArn || 'none'
               })
             }
+          } else if (reachedAll) {
+            // Every region answered and none granted a profile. That is the
+            // service's verdict, and a locally configured ARN cannot override
+            // it — signing in anyway just produces an account whose every
+            // request 403s, which is the loop this message exists to prevent.
+            throw new Error(
+              'This account has no Amazon Q Developer / CodeWhisperer profile assigned, so it cannot use Kiro. Ask your AWS administrator to subscribe you to Amazon Q Developer (check for the QDefaultProfile tile in your AWS access portal), then sign in again.'
+            )
           } else {
-            // Nothing listed. Never throw away a configured or CLI-synced ARN
-            // over this: the lookup can fail or come back empty for reasons
-            // that have nothing to do with the user's entitlement.
+            // Some region could not be asked, so an empty list proves nothing.
+            // Keep whatever the user configured rather than blocking sign-in.
             profileArn = requestedProfileArn
             if (profileArn) {
-              logger.warn('IDC authorize: no profiles listed, keeping the configured profileArn', {
-                profileArn,
-                lookupReachable: reachable
+              logger.warn('IDC authorize: profile lookup incomplete, keeping the configured ARN', {
+                profileArn
               })
             }
           }
 
           if (!profileArn) {
             throw new Error(
-              reachable
-                ? 'This account has no Amazon Q Developer / CodeWhisperer profile assigned, so it cannot use Kiro. Ask your AWS administrator to subscribe you to Amazon Q Developer (check for the QDefaultProfile tile in your AWS access portal), then sign in again.'
-                : 'Could not reach CodeWhisperer to look up your profile, and no profile is configured. Set "idc_profile_arn" in kiro.json (or run "kiro-cli profile") and sign in again.'
+              'Could not reach CodeWhisperer to look up your profile, and no profile is configured. Set "idc_profile_arn" in kiro.json (or run "kiro-cli profile") and sign in again.'
             )
           }
 

@@ -153,31 +153,49 @@ describe('profile lookup across regions', () => {
       return new Response(JSON.stringify({ profiles: [] }), { status: 200 })
     })
 
-    const { arns, reachable } = await listAvailableProfileArnsAcrossRegions('token', ['us-east-1'])
+    const { arns, reachedAll } = await listAvailableProfileArnsAcrossRegions('token', ['us-east-1'])
 
     expect(arns).toEqual(['arn:aws:codewhisperer:eu-central-1:1:profile/EU'])
-    expect(reachable).toBe(true)
+    expect(reachedAll).toBe(true)
   })
 
-  test('reports unreachable when every region errors', async () => {
-    stubFetch(() => new Response('nope', { status: 403 }))
-
-    const { arns, reachable } = await listAvailableProfileArnsAcrossRegions('token', [
-      'eu-central-1'
-    ])
-
-    expect(arns).toEqual([])
-    expect(reachable).toBe(false)
-  })
-
-  test('separates "reached it, nothing granted" from "could not reach it"', async () => {
+  test('an empty answer from every region is a conclusive answer', async () => {
     stubFetch(() => new Response(JSON.stringify({ profiles: [] }), { status: 200 }))
 
-    const { arns, reachable } = await listAvailableProfileArnsAcrossRegions('token', [
+    const { arns, reachedAll, reachedAny } = await listAvailableProfileArnsAcrossRegions('token', [
       'eu-central-1'
     ])
 
     expect(arns).toEqual([])
-    expect(reachable).toBe(true)
+    expect(reachedAll).toBe(true)
+    expect(reachedAny).toBe(true)
+  })
+
+  test('one unreachable region makes an empty result inconclusive', async () => {
+    stubFetch((url) =>
+      url.includes('us-east-1')
+        ? new Response('nope', { status: 500 })
+        : new Response(JSON.stringify({ profiles: [] }), { status: 200 })
+    )
+
+    const { arns, reachedAll, reachedAny } = await listAvailableProfileArnsAcrossRegions('token', [
+      'eu-central-1'
+    ])
+
+    expect(arns).toEqual([])
+    expect(reachedAll).toBe(false)
+    expect(reachedAny).toBe(true)
+  })
+
+  test('reports nothing reached when every region errors', async () => {
+    stubFetch(() => new Response('nope', { status: 403 }))
+
+    const { arns, reachedAll, reachedAny } = await listAvailableProfileArnsAcrossRegions('token', [
+      'eu-central-1'
+    ])
+
+    expect(arns).toEqual([])
+    expect(reachedAll).toBe(false)
+    expect(reachedAny).toBe(false)
   })
 })

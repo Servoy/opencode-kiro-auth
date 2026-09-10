@@ -337,7 +337,7 @@ export async function pollKiroIDCToken(
 export async function listAvailableProfileArnsAcrossRegions(
   accessToken: string,
   preferredRegions: (KiroRegion | undefined)[]
-): Promise<{ arns: string[]; reachable: boolean }> {
+): Promise<{ arns: string[]; reachedAll: boolean; reachedAny: boolean }> {
   const seen = new Set<KiroRegion>()
   const regions: KiroRegion[] = []
   for (const r of [...preferredRegions, ...KIRO_SERVICE_REGIONS]) {
@@ -361,14 +361,20 @@ export async function listAvailableProfileArnsAcrossRegions(
   )
 
   const arns: string[] = []
-  let reachable = false
+  let reachedAny = false
+  let reachedAll = true
   for (const r of results) {
-    if (r.arns === null) continue
-    reachable = true
+    if (r.arns === null) {
+      // A region we could not ask about might be the one holding the profile,
+      // so an empty result is only conclusive when every region answered.
+      reachedAll = false
+      continue
+    }
+    reachedAny = true
     for (const arn of r.arns) if (!arns.includes(arn)) arns.push(arn)
   }
 
-  return { arns, reachable }
+  return { arns, reachedAll, reachedAny }
 }
 
 export async function listAvailableProfileArns(

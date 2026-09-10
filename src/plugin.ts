@@ -91,7 +91,16 @@ export const createKiroPlugin =
 
     const showToast: ToastFunction = (message: string, variant: string) => {
       // Flat params, not a `body` wrapper — the SDK maps message/variant at the top level.
-      client.tui.showToast({ message, variant: variant as any }).catch(() => {})
+      client.tui.showToast({ message, variant: variant as any }).catch((e: unknown) => {
+        // Hosts without a TUI silently drop toasts, which is how a plugin can
+        // sit there looking like it is still thinking while the only trace of
+        // the real failure is this log line.
+        logger.warn('showToast failed; message only reached the log', {
+          variant,
+          message,
+          error: e instanceof Error ? e.message : String(e)
+        })
+      })
     }
 
     const cache = new AccountCache(60000)
