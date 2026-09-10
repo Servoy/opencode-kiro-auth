@@ -1,4 +1,11 @@
-import { KIRO_AUTH_SERVICE, KIRO_CONSTANTS, buildUrl, normalizeRegion } from '../constants'
+import {
+  KIRO_AUTH_SERVICE,
+  KIRO_CONSTANTS,
+  KIRO_SERVICE_REGIONS,
+  buildUrl,
+  normalizeRegion
+} from '../constants'
+import * as logger from '../plugin/logger'
 import type { KiroRegion } from '../plugin/types'
 
 export interface KiroIDCAuthorization {
@@ -25,6 +32,74 @@ export interface KiroIDCTokenResult {
   authMethod: 'idc'
 }
 
+// RegisterClient, preferring the Identity Center-bound shape.
+//
+// `issuerUrl` is what ties the public client to a specific Identity Center
+// instance — the API docs call it "needed for user access to resources through
+// the client". Without it an org (non-Builder-ID) sign-in still yields a token,
+// but CodeWhisperer rejects it on every call. Builder ID has no issuer, and
+// older/other instances may reject the field, so fall back to the plain shape
+// on a client-metadata rejection rather than failing the sign-in.
+async function registerClient(
+  ssoOIDCEndpoint: string,
+  startUrl: string
+): Promise<{ clientId: string; clientSecret: string }> {
+  const isBuilderId = startUrl === KIRO_AUTH_SERVICE.BUILDER_ID_START_URL
+  const base = {
+    clientName: 'Kiro IDE',
+    clientType: 'public',
+    scopes: KIRO_AUTH_SERVICE.SCOPES,
+    grantTypes: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']
+  }
+  const shapes: Array<{ label: string; body: Record<string, unknown> }> = isBuilderId
+    ? [{ label: 'builder-id', body: base }]
+    : [
+        { label: 'with-issuer-url', body: { ...base, issuerUrl: startUrl } },
+        { label: 'without-issuer-url', body: base }
+      ]
+
+  let lastError: Error | null = null
+  for (const [index, shape] of shapes.entries()) {
+    const response = await fetch(`${ssoOIDCEndpoint}/client/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': KIRO_CONSTANTS.USER_AGENT
+      },
+      body: JSON.stringify(shape.body)
+    })
+
+    if (response.ok) {
+      const data = await response.json()
+      const { clientId, clientSecret } = data
+      if (!clientId || !clientSecret) {
+        throw new Error('Client registration response missing clientId or clientSecret')
+      }
+      logger.log('IDC register: client registered', { shape: shape.label })
+      return { clientId, clientSecret }
+    }
+
+    const errorText = await response.text().catch(() => '')
+    lastError = new Error(`Client registration failed: ${response.status} ${errorText}`)
+
+    // Only a rejection of the metadata itself is worth retrying with a
+    // narrower shape; anything else (5xx, throttling) must surface as-is.
+    const rejectsMetadata =
+      response.status === 400 &&
+      /invalid_client_metadata|invalid_request|invalid_scope|issuerUrl/i.test(errorText)
+    if (index < shapes.length - 1 && rejectsMetadata) {
+      logger.warn('IDC register: shape rejected, retrying without issuerUrl', {
+        shape: shape.label,
+        status: response.status
+      })
+      continue
+    }
+    throw lastError
+  }
+
+  throw lastError ?? new Error('Client registration failed')
+}
+
 export async function authorizeKiroIDC(
   region?: KiroRegion,
   startUrl?: string
@@ -34,33 +109,7 @@ export async function authorizeKiroIDC(
   const effectiveStartUrl = startUrl || KIRO_AUTH_SERVICE.BUILDER_ID_START_URL
 
   try {
-    const registerResponse = await fetch(`${ssoOIDCEndpoint}/client/register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': KIRO_CONSTANTS.USER_AGENT
-      },
-      body: JSON.stringify({
-        clientName: 'Kiro IDE',
-        clientType: 'public',
-        scopes: KIRO_AUTH_SERVICE.SCOPES,
-        grantTypes: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']
-      })
-    })
-
-    if (!registerResponse.ok) {
-      const errorText = await registerResponse.text().catch(() => '')
-      const error = new Error(`Client registration failed: ${registerResponse.status} ${errorText}`)
-      throw error
-    }
-
-    const registerData = await registerResponse.json()
-    const { clientId, clientSecret } = registerData
-
-    if (!clientId || !clientSecret) {
-      const error = new Error('Client registration response missing clientId or clientSecret')
-      throw error
-    }
+    const { clientId, clientSecret } = await registerClient(ssoOIDCEndpoint, effectiveStartUrl)
 
     const deviceAuthResponse = await fetch(`${ssoOIDCEndpoint}/device_authorization`, {
       method: 'POST',
@@ -116,13 +165,38 @@ export async function authorizeKiroIDC(
   }
 }
 
+// Sleep that wakes immediately when the caller gives up, so an abandoned
+// device-code flow stops hammering the token endpoint.
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve()
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+export class DeviceFlowAbortedError extends Error {
+  constructor() {
+    super('Device authorization was cancelled')
+    this.name = 'DeviceFlowAbortedError'
+  }
+}
+
 export async function pollKiroIDCToken(
   clientId: string,
   clientSecret: string,
   deviceCode: string,
   interval: number,
   expiresIn: number,
-  region: KiroRegion
+  region: KiroRegion,
+  signal?: AbortSignal
 ): Promise<KiroIDCTokenResult> {
   if (!clientId || !clientSecret || !deviceCode) {
     const error = new Error('Missing required parameters for token polling')
@@ -139,7 +213,8 @@ export async function pollKiroIDCToken(
   while (attempts < maxAttempts) {
     attempts++
 
-    await new Promise((resolve) => setTimeout(resolve, currentInterval))
+    await abortableSleep(currentInterval, signal)
+    if (signal?.aborted) throw new DeviceFlowAbortedError()
 
     try {
       const tokenResponse = await fetch(`${ssoOIDCEndpoint}/token`, {
@@ -232,6 +307,7 @@ export async function pollKiroIDCToken(
         `Token polling failed: missing tokens in response: ${responseText ? responseText.slice(0, 300) : '[empty]'}`
       )
     } catch (error) {
+      if (error instanceof DeviceFlowAbortedError) throw error
       if (
         error instanceof Error &&
         (error.message.includes('expired') ||
@@ -252,6 +328,47 @@ export async function pollKiroIDCToken(
 
   const timeoutError = new Error('Token polling timed out. Authorization may have expired.')
   throw timeoutError
+}
+
+// Profiles are regional: a token minted in one region only lists the profiles
+// of the region it is queried in. Probe the caller's candidates first, then the
+// remaining Kiro service regions, so a sign-in that defaulted to the wrong
+// region doesn't look like "no profile assigned".
+export async function listAvailableProfileArnsAcrossRegions(
+  accessToken: string,
+  preferredRegions: (KiroRegion | undefined)[]
+): Promise<{ arns: string[]; reachable: boolean }> {
+  const seen = new Set<KiroRegion>()
+  const regions: KiroRegion[] = []
+  for (const r of [...preferredRegions, ...KIRO_SERVICE_REGIONS]) {
+    if (!r || seen.has(r)) continue
+    seen.add(r)
+    regions.push(r)
+  }
+
+  const results = await Promise.all(
+    regions.map(async (region) => {
+      try {
+        return { region, arns: await listAvailableProfileArns(accessToken, region) }
+      } catch (e) {
+        logger.warn('ListAvailableProfiles failed', {
+          region,
+          error: e instanceof Error ? e.message : String(e)
+        })
+        return { region, arns: null as string[] | null }
+      }
+    })
+  )
+
+  const arns: string[] = []
+  let reachable = false
+  for (const r of results) {
+    if (r.arns === null) continue
+    reachable = true
+    for (const arn of r.arns) if (!arns.includes(arn)) arns.push(arn)
+  }
+
+  return { arns, reachable }
 }
 
 export async function listAvailableProfileArns(

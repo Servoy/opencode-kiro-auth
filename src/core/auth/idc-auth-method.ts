@@ -6,7 +6,7 @@ import { extractRegionFromArn, normalizeRegion } from '../../constants.js'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
 import {
   authorizeKiroIDC,
-  listAvailableProfileArns,
+  listAvailableProfileArnsAcrossRegions,
   pollKiroIDCToken
 } from '../../kiro/oauth-idc.js'
 import { createDeterministicAccountId } from '../../plugin/accounts.js'
@@ -162,7 +162,7 @@ export class IdcAuthMethod {
     private accountManager: any
   ) {}
 
-  async authorize(inputs?: Record<string, string>): Promise<AuthOuathResult> {
+  async authorize(inputs?: Record<string, string>, signal?: AbortSignal): Promise<AuthOuathResult> {
     const configuredServiceRegion: KiroRegion = this.config.default_region
     const invokedWithoutPrompts = !inputs || Object.keys(inputs).length === 0
 
@@ -215,6 +215,9 @@ export class IdcAuthMethod {
       url: verificationUrl,
       instructions: `Open the verification URL and complete sign-in.\nCode: ${auth.userCode}`,
       method: 'auto',
+      // Not part of AuthOuathResult, but the reauth flow needs it to size its
+      // wait to the device code instead of guessing.
+      expiresIn: auth.expiresIn,
       callback: async (): Promise<{ type: 'success'; key: string } | { type: 'failed' }> => {
         try {
           logger.log('IDC authorize: callback invoked, polling for token', {
@@ -229,38 +232,53 @@ export class IdcAuthMethod {
             auth.deviceCode,
             auth.interval,
             auth.expiresIn,
-            oidcRegion
+            oidcRegion,
+            signal
           )
 
           const requestedProfileArn =
             inputs?.profile_arn?.trim() || configuredProfileArn || readActiveProfileArnFromKiroCli()
 
           // A requested ARN the user isn't granted 403s on every request, so
-          // trust the service's list over the requested/synced ARN.
-          const availableArns = await listAvailableProfileArns(token.accessToken, oidcRegion).catch(
-            (e) => {
-              logger.warn('ListAvailableProfiles failed during auth', {
-                oidcRegion,
-                error: e instanceof Error ? e.message : String(e)
-              })
-              return null
-            }
+          // prefer the service's list — but only as far as it is trustworthy.
+          // Profiles are regional, so probe the requested ARN's region and the
+          // other Kiro regions too; an empty list from a single wrong region is
+          // not proof that nothing is granted.
+          const { arns: availableArns, reachable } = await listAvailableProfileArnsAcrossRegions(
+            token.accessToken,
+            [oidcRegion, extractRegionFromArn(requestedProfileArn), configuredServiceRegion]
           )
 
           let profileArn: string | undefined
-          if (availableArns && availableArns.length > 0) {
+          if (availableArns.length > 0) {
             profileArn =
               requestedProfileArn && availableArns.includes(requestedProfileArn)
                 ? requestedProfileArn
                 : availableArns[0]
-          } else if (availableArns === null) {
-            // Service unreachable: fall back to the requested ARN.
+            if (profileArn !== requestedProfileArn) {
+              logger.log('IDC authorize: using profileArn from ListAvailableProfiles', {
+                profileArn,
+                requestedProfileArn: requestedProfileArn || 'none'
+              })
+            }
+          } else {
+            // Nothing listed. Never throw away a configured or CLI-synced ARN
+            // over this: the lookup can fail or come back empty for reasons
+            // that have nothing to do with the user's entitlement.
             profileArn = requestedProfileArn
+            if (profileArn) {
+              logger.warn('IDC authorize: no profiles listed, keeping the configured profileArn', {
+                profileArn,
+                lookupReachable: reachable
+              })
+            }
           }
 
           if (!profileArn) {
             throw new Error(
-              'This account has no Amazon Q Developer / CodeWhisperer profile assigned, so it cannot use Kiro. Ask your AWS administrator to assign a Q Developer profile, then sign in again.'
+              reachable
+                ? 'This account has no Amazon Q Developer / CodeWhisperer profile assigned, so it cannot use Kiro. Ask your AWS administrator to subscribe you to Amazon Q Developer (check for the QDefaultProfile tile in your AWS access portal), then sign in again.'
+                : 'Could not reach CodeWhisperer to look up your profile, and no profile is configured. Set "idc_profile_arn" in kiro.json (or run "kiro-cli profile") and sign in again.'
             )
           }
 
@@ -341,6 +359,6 @@ export class IdcAuthMethod {
           )
         }
       }
-    }
+    } as AuthOuathResult
   }
 }

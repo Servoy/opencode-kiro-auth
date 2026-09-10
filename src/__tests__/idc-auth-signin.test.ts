@@ -14,6 +14,8 @@ mock.module('../plugin/logger.js', () => ({
 }))
 
 let availableProfileArns: string[] = ['arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC']
+let profileLookupReachable = true
+let profileLookupRegions: (string | undefined)[] = []
 
 mock.module('../kiro/oauth-idc.js', () => ({
   authorizeKiroIDC: async () => ({
@@ -33,7 +35,14 @@ mock.module('../kiro/oauth-idc.js', () => ({
     clientId: 'client-id',
     clientSecret: 'client-secret'
   }),
-  listAvailableProfileArns: async () => availableProfileArns
+  listAvailableProfileArns: async () => availableProfileArns,
+  listAvailableProfileArnsAcrossRegions: async (
+    _token: string,
+    regions: (string | undefined)[]
+  ) => {
+    profileLookupRegions = regions
+    return { arns: availableProfileArns, reachable: profileLookupReachable }
+  }
 }))
 
 mock.module('../plugin/sync/kiro-cli-profile.js', () => ({
@@ -61,6 +70,8 @@ describe('IdcAuthMethod: sign-in resilience', () => {
   beforeEach(() => {
     usageShouldFail = false
     saveShouldFail = false
+    profileLookupReachable = true
+    profileLookupRegions = []
     availableProfileArns = ['arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC']
     globalThis.fetch = (async (input: any, init?: any) => {
       const target = init?.headers?.['X-Amz-Target'] || ''
@@ -131,13 +142,55 @@ describe('IdcAuthMethod: sign-in resilience', () => {
     expect(outcome.type).toBe('success')
   })
 
-  test('fails sign-in when the service grants no profiles', async () => {
+  test('fails sign-in when the service is reachable and grants no profiles', async () => {
     availableProfileArns = []
     const { method, savedAccounts } = createMethod()
 
     const result = await method.authorize({ idc_region: 'eu-central-1' })
     await expect((result as any).callback()).rejects.toThrow(/no Amazon Q Developer/i)
     expect(savedAccounts).toHaveLength(0)
+  })
+
+  test('keeps a configured profileArn when the service lists none', async () => {
+    // An empty list is not proof of "not entitled": the lookup can come back
+    // empty for a region that simply does not host the profile. Discarding a
+    // working, configured ARN over that turned a healthy setup into a hard
+    // sign-in failure.
+    availableProfileArns = []
+    const { method, savedAccounts } = createMethod()
+
+    const result = await method.authorize({
+      idc_region: 'eu-central-1',
+      profile_arn: 'arn:aws:codewhisperer:eu-central-1:123456789012:profile/CONFIGURED'
+    })
+    const outcome = await (result as any).callback()
+
+    expect(outcome.type).toBe('success')
+    expect(savedAccounts[0].profileArn).toBe(
+      'arn:aws:codewhisperer:eu-central-1:123456789012:profile/CONFIGURED'
+    )
+  })
+
+  test('reports a lookup failure differently from a missing entitlement', async () => {
+    availableProfileArns = []
+    profileLookupReachable = false
+    const { method } = createMethod()
+
+    const result = await method.authorize({ idc_region: 'eu-central-1' })
+    await expect((result as any).callback()).rejects.toThrow(/Could not reach CodeWhisperer/i)
+  })
+
+  test('probes the requested ARN region as well as the sign-in region', async () => {
+    const { method } = createMethod()
+
+    const result = await method.authorize({
+      idc_region: 'us-east-1',
+      profile_arn: 'arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC'
+    })
+    await (result as any).callback()
+
+    expect(profileLookupRegions).toContain('us-east-1')
+    expect(profileLookupRegions).toContain('eu-central-1')
   })
 
   test('ignores a requested profileArn the service does not grant', async () => {
