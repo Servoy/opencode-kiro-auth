@@ -355,6 +355,36 @@ describe('payload trim preserves valid structure', () => {
     expect(payload.length).toBeLessThanOrEqual(500_000)
   })
 
+  test('trims history away entirely rather than staying over the cap', () => {
+    // Trimming used to stop with two entries left, so a session whose last two
+    // turns were already oversized re-sent a payload the service had just
+    // rejected — every retry, forever.
+    const body = {
+      messages: [
+        { role: 'user', content: 'x'.repeat(400_000) },
+        { role: 'assistant', content: 'y'.repeat(400_000) },
+        { role: 'user', content: 'final question' }
+      ]
+    }
+
+    const result = transformToSdkRequest(
+      body,
+      'auto',
+      auth,
+      false,
+      20000,
+      undefined,
+      '',
+      true,
+      undefined,
+      undefined,
+      100_000
+    )
+
+    expect((result.conversationState as any).history ?? []).toHaveLength(0)
+    expect(JSON.stringify(result.conversationState).length).toBeLessThanOrEqual(100_000)
+  })
+
   test('history starts with userInputMessage after trim', () => {
     const messages: any[] = []
     for (let i = 0; i < 80; i++) {

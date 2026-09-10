@@ -7,6 +7,7 @@ let apiResponseLogCalls = 0
 let sdkErrorMessage = 'The bearer token included in the request is invalid'
 let sdkErrorName = 'ForbiddenException'
 let sdkHttpStatus = 403
+let sdkErrorReason: string | undefined
 
 mock.module('../plugin/logger.js', () => ({
   debug: () => {},
@@ -27,6 +28,7 @@ const sendSpy = spyOn(CodeWhispererStreamingClient.prototype, 'send').mockImplem
     const error: any = new Error(sdkErrorMessage)
     error.name = sdkErrorName
     error.$metadata = { httpStatusCode: sdkHttpStatus }
+    if (sdkErrorReason) error.reason = sdkErrorReason
     throw error
   }
 )
@@ -42,6 +44,7 @@ function createHarness() {
   clearSdkClientCache()
   sendCalls = 0
   apiResponseLogCalls = 0
+  sdkErrorReason = undefined
 
   const account: any = {
     id: 'account-1',
@@ -114,6 +117,7 @@ function createHarness() {
     conversationState: {},
     profileArn: undefined,
     conversationId: 'conversation-1',
+    conversationKey: { workspace: 'test-workspace', fingerprint: 'test-fingerprint' },
     streaming: false,
     effectiveModel: 'claude-sonnet-4-5'
   })
@@ -177,13 +181,55 @@ describe('RequestHandler SDK error recovery', () => {
     expect(response.status).toBe(400)
     expect(await response.json()).toEqual({
       error: {
-        message: 'input is too long for requested model',
+        message: 'Input is too long for this model',
         type: 'invalid_request_error',
         code: 'context_length_exceeded'
       }
     })
     expect(sendCalls).toBe(1)
     expect(getForceRefreshCalls()).toBe(0)
+  })
+
+  test('maps CONTENT_LENGTH_EXCEEDS_THRESHOLD to context_length_exceeded', async () => {
+    // The wording Kiro actually returns; matching only on "input is too long"
+    // let this through as a bare 400 the host could not act on.
+    sdkErrorMessage = 'Input content length exceeds threshold.'
+    sdkErrorName = 'ValidationException'
+    sdkErrorReason = 'CONTENT_LENGTH_EXCEEDS_THRESHOLD'
+    sdkHttpStatus = 400
+    const { handler } = createHarness()
+
+    const response = await request(handler)
+
+    expect(response.status).toBe(400)
+    expect((await response.json()).error.code).toBe('context_length_exceeded')
+    // No pointless conversation reset + retry: the payload is the problem.
+    expect(sendCalls).toBe(1)
+  })
+
+  test('does not reset the conversation for a non-conversation ValidationException', async () => {
+    sdkErrorMessage = 'Tool schema is invalid'
+    sdkErrorName = 'ValidationException'
+    sdkErrorReason = 'TOOL_SCHEMA_INVALID'
+    sdkHttpStatus = 400
+    const { handler } = createHarness()
+
+    await expect(request(handler)).rejects.toThrow(/Kiro Error: 400/)
+
+    expect(sendCalls).toBe(1)
+  })
+
+  test('resets the conversation once when the service reports a stale id', async () => {
+    sdkErrorMessage = 'Invalid conversation id'
+    sdkErrorName = 'ValidationException'
+    sdkErrorReason = 'INVALID_CONVERSATION_ID'
+    sdkHttpStatus = 400
+    const { handler } = createHarness()
+
+    await expect(request(handler)).rejects.toThrow(/Kiro Error: 400/)
+
+    // One reset, one retry — then it gives up instead of looping.
+    expect(sendCalls).toBe(2)
   })
 
   test('IDC account without profileArn never hits the SDK and escalates to reauth', async () => {

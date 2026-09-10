@@ -27,7 +27,49 @@ const KIRO_API_PATTERN =
   /^(https?:\/\/)?(q\.[a-z0-9-]+\.amazonaws\.com|runtime\.[a-z0-9-]+\.kiro\.dev)/
 const REAUTH_BASE_COOLDOWN_MS = 5_000
 const REAUTH_MAX_COOLDOWN_MS = 60_000
-const REAUTH_TIMEOUT_MS = 90_000
+// How long to wait for the user to finish the browser sign-in. The device code
+// itself is valid for ~10 minutes; waiting less than that guarantees a timeout
+// for anyone who has to type a password and an MFA code, and every timeout
+// starts a fresh device code and a fresh browser tab — the re-auth loop.
+const REAUTH_MIN_WAIT_MS = 120_000
+const REAUTH_MAX_WAIT_MS = 600_000
+
+export function reauthWaitMs(deviceCodeExpiresInSeconds: number | undefined): number {
+  const deviceCodeMs = (deviceCodeExpiresInSeconds ?? 0) * 1000
+  return Math.min(REAUTH_MAX_WAIT_MS, Math.max(REAUTH_MIN_WAIT_MS, deviceCodeMs))
+}
+
+// The service tells us *why* a request was rejected in ValidationException's
+// `reason`. Reading it is the difference between "your prompt is too big" and
+// "your conversation id is stale" — two 400s that need opposite handling.
+const CONTEXT_LENGTH_REASONS = new Set(['CONTENT_LENGTH_EXCEEDS_THRESHOLD', 'PROMPT_TOO_LONG'])
+
+function validationReason(error: any): string {
+  const reason = error?.reason
+  return typeof reason === 'string' ? reason : ''
+}
+
+function isContextLengthError(reason: string, message: string): boolean {
+  if (CONTEXT_LENGTH_REASONS.has(reason)) return true
+  return /content length exceeds threshold|input is too long|prompt is too long|too many tokens/i.test(
+    message
+  )
+}
+
+function contextLengthResponse(message: string): Response {
+  // OpenAI-shaped so the host recognises it and compacts the session instead of
+  // surfacing a bare "Kiro Error: 400" the user can only escape by starting over.
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: message || 'input is too long for requested model',
+        type: 'invalid_request_error',
+        code: 'context_length_exceeded'
+      }
+    }),
+    { status: 400, headers: { 'Content-Type': 'application/json' } }
+  )
+}
 
 function extractSessionId(headers: unknown): string | undefined {
   if (!headers) return undefined
@@ -254,6 +296,40 @@ export class RequestHandler {
           )
         }
 
+        if (httpStatus === 400) {
+          const reason = validationReason(e)
+          const message = e?.message || ''
+
+          if (isContextLengthError(reason, message)) {
+            logger.warn(
+              `[REQ] payload rejected as too large (${reason || 'no reason'}) convId=${sdkPrep.conversationId} history=${histLen}`
+            )
+            showToast('Kiro rejected the request as too large — compact the session.', 'warning')
+            return contextLengthResponse(message)
+          }
+
+          // Only reset the conversation when the service actually says the id
+          // is bad. Doing it for every ValidationException throws away the
+          // conversation mapping and the carried-forward images for nothing,
+          // and costs an extra doomed round-trip.
+          const staleConversation =
+            reason === 'INVALID_CONVERSATION_ID' ||
+            (!reason && e?.name === 'ValidationException' && /conversation/i.test(message))
+
+          if (staleConversation && !forceNewConversation) {
+            const { workspace, fingerprint } = sdkPrep.conversationKey
+            kiroDb.deleteConversationId(workspace, fingerprint)
+            // The conversation is starting fresh — drop any carried-forward
+            // images too so the new convId doesn't inherit stale state.
+            imageCache.delete(workspace, fingerprint)
+            logger.warn(
+              `[REQ] stale conversationId reset, retrying convId=${sdkPrep.conversationId}`
+            )
+            forceNewConversation = true
+            continue
+          }
+        }
+
         if (httpStatus) {
           const mockResponse = new Response(
             JSON.stringify({ message: e.message, __type: e.name }),
@@ -289,36 +365,6 @@ export class RequestHandler {
               consecutiveNullAccounts = 0
               continue
             }
-            continue
-          }
-
-          const errMsg = e?.message || `Kiro Error: ${httpStatus}`
-          if (/input is too long/i.test(errMsg)) {
-            return new Response(
-              JSON.stringify({
-                error: {
-                  message: 'input is too long for requested model',
-                  type: 'invalid_request_error',
-                  code: 'context_length_exceeded'
-                }
-              }),
-              {
-                status: 400,
-                headers: { 'Content-Type': 'application/json' }
-              }
-            )
-          }
-
-          if (httpStatus === 400 && e?.name === 'ValidationException' && !forceNewConversation) {
-            const { workspace, fingerprint } = sdkPrep.conversationKey
-            kiroDb.deleteConversationId(workspace, fingerprint)
-            // The conversation is starting fresh — drop any carried-forward
-            // images too so the new convId doesn't inherit stale state.
-            imageCache.delete(workspace, fingerprint)
-            logger.warn(
-              `[REQ] stale conversationId reset, retrying convId=${sdkPrep.conversationId}`
-            )
-            forceNewConversation = true
             continue
           }
 
@@ -559,7 +605,8 @@ export class RequestHandler {
       }
 
       const idcMethod = new IdcAuthMethod(this.config, this.repository, this.accountManager)
-      const auth = await idcMethod.authorize(inputs)
+      const abortController = new AbortController()
+      const auth = await idcMethod.authorize(inputs, abortController.signal)
 
       // Log + toast the verification URL; the log is the guaranteed fallback
       // since the toast is unreliable in some hosts.
@@ -569,20 +616,27 @@ export class RequestHandler {
         showToast(`Sign in to Kiro: ${verificationUrl}`, 'warning')
       }
 
+      // Give the user as long as the device code is actually valid.
+      const waitMs = reauthWaitMs((auth as any).expiresIn)
+
       const withTimeout = <T>(promise: Promise<T>, label: string): Promise<T> => {
         let timer: ReturnType<typeof setTimeout> | undefined
         return Promise.race([
           promise.finally(() => clearTimeout(timer)),
           new Promise<T>(
             (_, reject) =>
-              (timer = setTimeout(
-                () => reject(new Error(`Reauth timed out waiting for ${label}`)),
-                REAUTH_TIMEOUT_MS
-              ))
+              (timer = setTimeout(() => {
+                // Stop the abandoned poll; otherwise it keeps hitting the token
+                // endpoint for the rest of the device code's lifetime and can
+                // still complete behind the caller's back.
+                abortController.abort()
+                reject(new Error(`Reauth timed out waiting for ${label}`))
+              }, waitMs))
           )
         ])
       }
 
+      logger.warn(`Reauth: waiting up to ${Math.round(waitMs / 1000)}s for browser sign-in`)
       const callbackPromise = (auth as any).callback() as Promise<any>
       const result = (await withTimeout(callbackPromise, 'oauth.callback')) as any
 
