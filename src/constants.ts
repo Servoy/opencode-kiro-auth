@@ -114,13 +114,21 @@ export const KIRO_AUTH_SERVICE = {
   SSO_OIDC_ENDPOINT: 'https://oidc.{{region}}.amazonaws.com',
   BUILDER_ID_START_URL: 'https://view.awsapps.com/start',
   USER_INFO_URL: 'https://view.awsapps.com/api/user/info',
-  // Exactly the scopes the official Kiro/Q device registration asks for.
-  // Requesting extras (transformations, taskassist, sso:account:access) that the
-  // Identity Center-managed Q Developer application does not grant yields a
-  // token the service rejects with "the bearer token included in the request is
-  // invalid" on every call — registration and sign-in still succeed, so the
-  // failure only shows up later.
-  SCOPES: ['codewhisperer:completions', 'codewhisperer:analysis', 'codewhisperer:conversations']
+  // These five are what this plugin has always registered, and a device-code
+  // sign-in with them produces a working token once the user actually has an
+  // Amazon Q Developer subscription. The official Q CLI asks for only the
+  // first three and its Kiro counterpart registers via PKCE with an issuerUrl,
+  // but narrowing to match was tried and reverted: a "bearer token invalid"
+  // 403 on every call turned out to be a missing Identity Center profile
+  // assignment, not a registration problem. Don't change this without a
+  // reproduction that a different shape actually fixes.
+  SCOPES: [
+    'codewhisperer:completions',
+    'codewhisperer:analysis',
+    'codewhisperer:conversations',
+    'codewhisperer:transformations',
+    'codewhisperer:taskassist'
+  ]
 }
 
 // Regions that actually host the Kiro/Q endpoints. Used to probe for a

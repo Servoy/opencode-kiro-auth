@@ -32,74 +32,6 @@ export interface KiroIDCTokenResult {
   authMethod: 'idc'
 }
 
-// RegisterClient, preferring the Identity Center-bound shape.
-//
-// `issuerUrl` is what ties the public client to a specific Identity Center
-// instance — the API docs call it "needed for user access to resources through
-// the client". Without it an org (non-Builder-ID) sign-in still yields a token,
-// but CodeWhisperer rejects it on every call. Builder ID has no issuer, and
-// older/other instances may reject the field, so fall back to the plain shape
-// on a client-metadata rejection rather than failing the sign-in.
-async function registerClient(
-  ssoOIDCEndpoint: string,
-  startUrl: string
-): Promise<{ clientId: string; clientSecret: string }> {
-  const isBuilderId = startUrl === KIRO_AUTH_SERVICE.BUILDER_ID_START_URL
-  const base = {
-    clientName: 'Kiro IDE',
-    clientType: 'public',
-    scopes: KIRO_AUTH_SERVICE.SCOPES,
-    grantTypes: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']
-  }
-  const shapes: Array<{ label: string; body: Record<string, unknown> }> = isBuilderId
-    ? [{ label: 'builder-id', body: base }]
-    : [
-        { label: 'with-issuer-url', body: { ...base, issuerUrl: startUrl } },
-        { label: 'without-issuer-url', body: base }
-      ]
-
-  let lastError: Error | null = null
-  for (const [index, shape] of shapes.entries()) {
-    const response = await fetch(`${ssoOIDCEndpoint}/client/register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': KIRO_CONSTANTS.USER_AGENT
-      },
-      body: JSON.stringify(shape.body)
-    })
-
-    if (response.ok) {
-      const data = await response.json()
-      const { clientId, clientSecret } = data
-      if (!clientId || !clientSecret) {
-        throw new Error('Client registration response missing clientId or clientSecret')
-      }
-      logger.log('IDC register: client registered', { shape: shape.label })
-      return { clientId, clientSecret }
-    }
-
-    const errorText = await response.text().catch(() => '')
-    lastError = new Error(`Client registration failed: ${response.status} ${errorText}`)
-
-    // Only a rejection of the metadata itself is worth retrying with a
-    // narrower shape; anything else (5xx, throttling) must surface as-is.
-    const rejectsMetadata =
-      response.status === 400 &&
-      /invalid_client_metadata|invalid_request|invalid_scope|issuerUrl/i.test(errorText)
-    if (index < shapes.length - 1 && rejectsMetadata) {
-      logger.warn('IDC register: shape rejected, retrying without issuerUrl', {
-        shape: shape.label,
-        status: response.status
-      })
-      continue
-    }
-    throw lastError
-  }
-
-  throw lastError ?? new Error('Client registration failed')
-}
-
 export async function authorizeKiroIDC(
   region?: KiroRegion,
   startUrl?: string
@@ -109,7 +41,33 @@ export async function authorizeKiroIDC(
   const effectiveStartUrl = startUrl || KIRO_AUTH_SERVICE.BUILDER_ID_START_URL
 
   try {
-    const { clientId, clientSecret } = await registerClient(ssoOIDCEndpoint, effectiveStartUrl)
+    const registerResponse = await fetch(`${ssoOIDCEndpoint}/client/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': KIRO_CONSTANTS.USER_AGENT
+      },
+      body: JSON.stringify({
+        clientName: 'Kiro IDE',
+        clientType: 'public',
+        scopes: KIRO_AUTH_SERVICE.SCOPES,
+        grantTypes: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']
+      })
+    })
+
+    if (!registerResponse.ok) {
+      const errorText = await registerResponse.text().catch(() => '')
+      const error = new Error(`Client registration failed: ${registerResponse.status} ${errorText}`)
+      throw error
+    }
+
+    const registerData = await registerResponse.json()
+    const { clientId, clientSecret } = registerData
+
+    if (!clientId || !clientSecret) {
+      const error = new Error('Client registration response missing clientId or clientSecret')
+      throw error
+    }
 
     const deviceAuthResponse = await fetch(`${ssoOIDCEndpoint}/device_authorization`, {
       method: 'POST',

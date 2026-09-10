@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
-import { KIRO_AUTH_SERVICE } from '../constants.js'
 
 mock.module('../plugin/logger.js', () => ({
   debug: () => {},
@@ -49,19 +48,14 @@ afterEach(() => {
 })
 
 describe('IDC client registration', () => {
-  test('requests only the scopes the Q Developer application actually grants', () => {
-    // Asking for transformations/taskassist on an Identity Center instance that
-    // does not grant them yields a token the service rejects on every call with
-    // "the bearer token included in the request is invalid" — while sign-in
-    // itself still reports success.
-    expect(KIRO_AUTH_SERVICE.SCOPES).toEqual([
-      'codewhisperer:completions',
-      'codewhisperer:analysis',
-      'codewhisperer:conversations'
-    ])
-  })
-
-  test('binds the client to the Identity Center instance via issuerUrl', async () => {
+  // Pinned deliberately. A "the bearer token included in the request is
+  // invalid" 403 on every call was chased here first — the registration does
+  // diverge from the Kiro CLI's (which uses PKCE with an issuerUrl and only
+  // the first three scopes) — but the actual cause was a missing Amazon Q
+  // Developer subscription in Identity Center. Once that was granted this
+  // exact shape produced a working token. Changing it needs a reproduction,
+  // not a theory.
+  test('registers the shape that is known to produce a working token', async () => {
     const calls = stubFetch((url) => {
       if (url.endsWith('/client/register')) {
         return new Response(JSON.stringify({ clientId: 'cid', clientSecret: 'secret' }), {
@@ -74,11 +68,21 @@ describe('IDC client registration', () => {
     await authorizeKiroIDC('eu-central-1', 'https://d-996749b310.awsapps.com/start')
 
     const register = calls.find((c) => c.url.endsWith('/client/register'))
-    expect(register?.body.issuerUrl).toBe('https://d-996749b310.awsapps.com/start')
-    expect(register?.body.scopes).toEqual(KIRO_AUTH_SERVICE.SCOPES)
+    expect(register?.body).toEqual({
+      clientName: 'Kiro IDE',
+      clientType: 'public',
+      scopes: [
+        'codewhisperer:completions',
+        'codewhisperer:analysis',
+        'codewhisperer:conversations',
+        'codewhisperer:transformations',
+        'codewhisperer:taskassist'
+      ],
+      grantTypes: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']
+    })
   })
 
-  test('omits issuerUrl for Builder ID, which has no Identity Center instance', async () => {
+  test('passes the org start URL to the device authorization', async () => {
     const calls = stubFetch((url) => {
       if (url.endsWith('/client/register')) {
         return new Response(JSON.stringify({ clientId: 'cid', clientSecret: 'secret' }), {
@@ -88,52 +92,22 @@ describe('IDC client registration', () => {
       return deviceAuthResponse()
     })
 
-    await authorizeKiroIDC('us-east-1', KIRO_AUTH_SERVICE.BUILDER_ID_START_URL)
+    await authorizeKiroIDC('eu-central-1', 'https://d-996749b310.awsapps.com/start')
 
-    const register = calls.find((c) => c.url.endsWith('/client/register'))
-    expect(register?.body.issuerUrl).toBeUndefined()
+    const deviceAuth = calls.find((c) => c.url.endsWith('/device_authorization'))
+    expect(deviceAuth?.body.startUrl).toBe('https://d-996749b310.awsapps.com/start')
   })
 
-  test('falls back to a plain registration when issuerUrl is rejected', async () => {
-    let registerAttempts = 0
-    const calls = stubFetch((url) => {
-      if (url.endsWith('/client/register')) {
-        registerAttempts++
-        if (registerAttempts === 1) {
-          return new Response(
-            JSON.stringify({ error: 'invalid_client_metadata', error_description: 'issuerUrl' }),
-            { status: 400 }
-          )
-        }
-        return new Response(JSON.stringify({ clientId: 'cid', clientSecret: 'secret' }), {
-          status: 200
-        })
-      }
-      return deviceAuthResponse()
-    })
-
-    const auth = await authorizeKiroIDC('eu-central-1', 'https://example.awsapps.com/start')
-
-    expect(registerAttempts).toBe(2)
-    expect(auth.clientId).toBe('cid')
-    const second = calls.filter((c) => c.url.endsWith('/client/register'))[1]
-    expect(second?.body.issuerUrl).toBeUndefined()
-  })
-
-  test('does not retry registration on a server error', async () => {
-    let registerAttempts = 0
-    stubFetch((url) => {
-      if (url.endsWith('/client/register')) {
-        registerAttempts++
-        return new Response('boom', { status: 500 })
-      }
-      return deviceAuthResponse()
-    })
+  test('surfaces a registration failure instead of continuing', async () => {
+    stubFetch((url) =>
+      url.endsWith('/client/register')
+        ? new Response('boom', { status: 500 })
+        : deviceAuthResponse()
+    )
 
     await expect(
       authorizeKiroIDC('eu-central-1', 'https://example.awsapps.com/start')
     ).rejects.toThrow(/Client registration failed: 500/)
-    expect(registerAttempts).toBe(1)
   })
 })
 
