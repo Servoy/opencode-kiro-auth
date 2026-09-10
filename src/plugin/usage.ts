@@ -109,6 +109,7 @@ export function updateAccountQuota(
   }
   account.usedCount = meta.usedCount
   account.limitCount = meta.limitCount
+  account.usageUpdatedAt = Date.now()
   if (usage.email) account.email = usage.email
   if (accountManager) accountManager.updateUsage(account.id, meta)
 }

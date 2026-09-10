@@ -81,8 +81,12 @@ export function mergeAccounts(
         ...existingAcc,
         ...acc,
         lastUsed: Math.max(existingAcc.lastUsed || 0, acc.lastUsed || 0),
-        usedCount: Math.max(existingAcc.usedCount || 0, acc.usedCount || 0),
-        limitCount: Math.max(existingAcc.limitCount || 0, acc.limitCount || 0),
+        // A fresh reading is authoritative, including when it is lower than
+        // what we stored — quotas reset, and Math.max alone ratchets the
+        // counter up forever, which then skews 'lowest-usage' selection and
+        // every usage figure shown to the user.
+        ...pickUsage(acc, existingAcc),
+        usageUpdatedAt: Math.max(existingAcc.usageUpdatedAt || 0, acc.usageUpdatedAt || 0),
         rateLimitResetTime: Math.max(
           existingAcc.rateLimitResetTime || 0,
           acc.rateLimitResetTime || 0
@@ -107,6 +111,28 @@ export function mergeAccounts(
   }
 
   return Array.from(accountMap.values())
+}
+
+// Whichever side carries the newest reading from the service owns the usage
+// numbers. Only when neither side has ever been refreshed does the old
+// "highest wins" guard apply, so an account object that simply has no usage
+// cannot zero a stored figure.
+function pickUsage(
+  incoming: ManagedAccount,
+  existing: ManagedAccount
+): { usedCount: number; limitCount: number } {
+  const incomingAt = incoming.usageUpdatedAt || 0
+  const existingAt = existing.usageUpdatedAt || 0
+
+  if (incomingAt > 0 || existingAt > 0) {
+    const fresher = incomingAt >= existingAt ? incoming : existing
+    return { usedCount: fresher.usedCount || 0, limitCount: fresher.limitCount || 0 }
+  }
+
+  return {
+    usedCount: Math.max(existing.usedCount || 0, incoming.usedCount || 0),
+    limitCount: Math.max(existing.limitCount || 0, incoming.limitCount || 0)
+  }
 }
 
 export function deduplicateAccounts(accounts: ManagedAccount[]): ManagedAccount[] {

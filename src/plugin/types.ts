@@ -47,6 +47,9 @@ export interface ManagedAccount {
   usedCount?: number
   limitCount?: number
   lastSync?: number
+  // When usage was last read back from the service. In-memory only: it marks
+  // the freshly fetched counters as authoritative when merging with the DB row.
+  usageUpdatedAt?: number
   lastUsed?: number
 }
 
