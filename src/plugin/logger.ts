@@ -56,8 +56,7 @@ export function log(message: string, ...args: unknown[]): void {
   writeToFile('INFO', message, ...args)
 }
 
-// Alias for log(). Every other logger in this ecosystem has `info`, and
-// reaching for it in a debug patch used to crash the plugin at runtime.
+/** Alias for {@link log}, for callers that reach for the conventional name. */
 export function info(message: string, ...args: unknown[]): void {
   log(message, ...args)
 }

@@ -84,17 +84,14 @@ function buildTools(config: any, accountManager: AccountManager): Record<string,
 export const createKiroPlugin =
   (id: string) =>
   async ({ client, directory }: any) => {
-    // Which config file actually got loaded is the first thing to check when a
-    // provisioned kiro.json appears to be ignored.
     logger.log(`Kiro plugin init: version=${PLUGIN_VERSION} configDir=${getConfigDir()}`)
     const config = loadConfig(directory)
 
     const showToast: ToastFunction = (message: string, variant: string) => {
       // Flat params, not a `body` wrapper — the SDK maps message/variant at the top level.
+      // Hosts without a TUI drop toasts silently, leaving the log as the only
+      // trace of the failure.
       client.tui.showToast({ message, variant: variant as any }).catch((e: unknown) => {
-        // Hosts without a TUI silently drop toasts, which is how a plugin can
-        // sit there looking like it is still thinking while the only trace of
-        // the real failure is this log line.
         logger.warn('showToast failed; message only reached the log', {
           variant,
           message,

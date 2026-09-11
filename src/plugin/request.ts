@@ -383,9 +383,8 @@ function buildCodeWhispererRequest(
     for (const s of sizes) totalSize += s
     trimSizeBefore = totalSize
 
-    // Trim all the way down to an empty history if needed. Stopping at two
-    // entries left long sessions permanently stuck: every retry re-sent a
-    // payload the service had already rejected as too large.
+    // Down to an empty history if need be: stopping short left long sessions
+    // re-sending a payload the service had already rejected.
     while (history.length > 0 && totalSize > MAX_PAYLOAD_BYTES) {
       // Drop the two oldest entries (typically user + assistant pair).
       totalSize -= (sizes.shift() || 0) + (sizes.shift() || 0)
@@ -421,9 +420,6 @@ function buildCodeWhispererRequest(
     )
   }
 
-  // History is gone and the current message alone is still over the cap —
-  // nothing left to trim, so say so instead of letting the service answer with
-  // an opaque 400.
   if (history.length === 0 && trimSizeAfter > MAX_PAYLOAD_BYTES) {
     logger.warn(
       `[TRIM] current message alone is ~${Math.round(trimSizeAfter / 1024)}KB, over the ${Math.round(MAX_PAYLOAD_BYTES / 1024)}KB cap — the request will be rejected as too large`

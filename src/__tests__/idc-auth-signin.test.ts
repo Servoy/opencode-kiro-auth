@@ -156,10 +156,6 @@ describe('IdcAuthMethod: sign-in resilience', () => {
   })
 
   test('a configured ARN cannot override a conclusive "no profiles" verdict', async () => {
-    // Every region answered and none granted a profile. Signing in anyway on
-    // a locally configured ARN produces an account whose every request 403s —
-    // the reauth loop. The blunt message is what points at the real cause: a
-    // missing Q Developer subscription in Identity Center.
     availableProfileArns = []
     const { method, savedAccounts } = createMethod()
 
@@ -173,8 +169,6 @@ describe('IdcAuthMethod: sign-in resilience', () => {
   })
 
   test('keeps a configured profileArn when the lookup was incomplete', async () => {
-    // A region we could not ask might be the one holding the profile, so an
-    // empty list proves nothing and must not block a working setup.
     availableProfileArns = []
     profileLookupReachedAll = false
     const { method, savedAccounts } = createMethod()

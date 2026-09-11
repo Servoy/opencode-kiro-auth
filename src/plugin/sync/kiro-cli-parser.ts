@@ -69,19 +69,19 @@ export function findClientCredsRecursive(input: unknown): {
   return {}
 }
 
+/**
+ * Synthesise a stable address for an account whose real one is unknown.
+ *
+ * The account id is derived from this address, so it must not contain
+ * anything that changes between sign-ins. An IDC clientId does, which is why
+ * it is excluded there — mirroring createDeterministicAccountId.
+ */
 export function makePlaceholderEmail(
   authMethod: string,
   region: string,
   clientId?: string,
   profileArn?: string
 ): string {
-  // Mirror createDeterministicAccountId: an IDC clientId is re-issued on every
-  // re-auth, so it is not part of the identity. Including it here put it back
-  // in through the back door — the account id is derived from this email, so
-  // every sign-in whose usage lookup could not supply a real address minted a
-  // brand new account row. One user reached eight rows for a single account,
-  // which also switched on the multi-account request queue that is meant for
-  // people who really do have several.
   const seed =
     authMethod === 'idc'
       ? `${authMethod}:${region}:${profileArn || ''}`

@@ -27,21 +27,21 @@ const KIRO_API_PATTERN =
   /^(https?:\/\/)?(q\.[a-z0-9-]+\.amazonaws\.com|runtime\.[a-z0-9-]+\.kiro\.dev)/
 const REAUTH_BASE_COOLDOWN_MS = 5_000
 const REAUTH_MAX_COOLDOWN_MS = 60_000
-// How long to wait for the user to finish the browser sign-in. The device code
-// itself is valid for ~10 minutes; waiting less than that guarantees a timeout
-// for anyone who has to type a password and an MFA code, and every timeout
-// starts a fresh device code and a fresh browser tab — the re-auth loop.
 const REAUTH_MIN_WAIT_MS = 120_000
 const REAUTH_MAX_WAIT_MS = 600_000
 
+/**
+ * How long to wait for a browser sign-in, clamped to [2min, 10min].
+ *
+ * Waiting less than the device code's own lifetime guarantees a timeout for
+ * anyone typing a password plus an MFA code, and each timeout issues a fresh
+ * code and opens another browser tab.
+ */
 export function reauthWaitMs(deviceCodeExpiresInSeconds: number | undefined): number {
   const deviceCodeMs = (deviceCodeExpiresInSeconds ?? 0) * 1000
   return Math.min(REAUTH_MAX_WAIT_MS, Math.max(REAUTH_MIN_WAIT_MS, deviceCodeMs))
 }
 
-// The service tells us *why* a request was rejected in ValidationException's
-// `reason`. Reading it is the difference between "your prompt is too big" and
-// "your conversation id is stale" — two 400s that need opposite handling.
 const CONTEXT_LENGTH_REASONS = new Set(['CONTENT_LENGTH_EXCEEDS_THRESHOLD', 'PROMPT_TOO_LONG'])
 
 function validationReason(error: any): string {
@@ -56,9 +56,8 @@ function isContextLengthError(reason: string, message: string): boolean {
   )
 }
 
+/** OpenAI-shaped 400 so the host compacts the session instead of failing. */
 function contextLengthResponse(message: string): Response {
-  // OpenAI-shaped so the host recognises it and compacts the session instead of
-  // surfacing a bare "Kiro Error: 400" the user can only escape by starting over.
   return new Response(
     JSON.stringify({
       error: {
@@ -71,13 +70,15 @@ function contextLengthResponse(message: string): Response {
   )
 }
 
-// A runaway agent loop was traced to requests that never reached this handler
-// at all, and a silent passthrough gave no way to tell that apart from a
-// handler that ran and succeeded. Name the hosts we decline to handle — once
-// each, capped, so it stays a hint rather than noise.
 const passthroughHostsLogged = new Set<string>()
 const MAX_PASSTHROUGH_HOSTS_LOGGED = 5
 
+/**
+ * Record a host this plugin declines to handle, once each and capped.
+ *
+ * Without it, "never called" and "called and succeeded" both leave the log
+ * empty, which makes a runaway agent loop impossible to place.
+ */
 function logPassthrough(url: string): void {
   let host: string
   try {
@@ -142,6 +143,12 @@ export class RequestHandler {
     return this.enqueueKiroRequest(() => this.handleKiroRequest(url, init, showToast, sessionId))
   }
 
+  /**
+   * Run requests one at a time so several accounts share their rate limits.
+   *
+   * The wait on the predecessor is bounded: ordering is a courtesy, and a
+   * request that never settles must not wedge every later one in the process.
+   */
   private async enqueueKiroRequest<T>(run: () => Promise<T>): Promise<T> {
     const previous = RequestHandler.kiroRequestQueue
     let release!: () => void
@@ -150,11 +157,6 @@ export class RequestHandler {
       release = resolve
     })
 
-    // Never wait on the predecessor indefinitely. This queue is a courtesy that
-    // spreads rate limits across accounts; a single request that never settles
-    // used to wedge it permanently, silently stalling every later request in
-    // the process with nothing in the log to show for it. Losing the ordering
-    // is a far smaller problem than deadlocking the provider.
     const waited = await this.raceWithTimeout(
       previous.catch(() => {}),
       this.queueWaitMs()
@@ -176,7 +178,7 @@ export class RequestHandler {
     return Math.max(30_000, this.config.request_timeout_ms || 120_000)
   }
 
-  // Resolves true when the promise settled first, false when the timeout won.
+  /** True when the promise settled first, false when the timeout won. */
   private raceWithTimeout(promise: Promise<unknown>, ms: number): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined
     return Promise.race([
@@ -360,10 +362,8 @@ export class RequestHandler {
             return contextLengthResponse(message)
           }
 
-          // Only reset the conversation when the service actually says the id
-          // is bad. Doing it for every ValidationException throws away the
-          // conversation mapping and the carried-forward images for nothing,
-          // and costs an extra doomed round-trip.
+          // Resetting on any ValidationException discards the conversation
+          // mapping and carried-forward images for nothing.
           const staleConversation =
             reason === 'INVALID_CONVERSATION_ID' ||
             (!reason && e?.name === 'ValidationException' && /conversation/i.test(message))
@@ -371,8 +371,6 @@ export class RequestHandler {
           if (staleConversation && !forceNewConversation) {
             const { workspace, fingerprint } = sdkPrep.conversationKey
             kiroDb.deleteConversationId(workspace, fingerprint)
-            // The conversation is starting fresh — drop any carried-forward
-            // images too so the new convId doesn't inherit stale state.
             imageCache.delete(workspace, fingerprint)
             logger.warn(
               `[REQ] stale conversationId reset, retrying convId=${sdkPrep.conversationId}`
@@ -668,7 +666,6 @@ export class RequestHandler {
         showToast(`Sign in to Kiro: ${verificationUrl}`, 'warning')
       }
 
-      // Give the user as long as the device code is actually valid.
       const waitMs = reauthWaitMs((auth as any).expiresIn)
 
       const withTimeout = <T>(promise: Promise<T>, label: string): Promise<T> => {
@@ -678,9 +675,6 @@ export class RequestHandler {
           new Promise<T>(
             (_, reject) =>
               (timer = setTimeout(() => {
-                // Stop the abandoned poll; otherwise it keeps hitting the token
-                // endpoint for the rest of the device code's lifetime and can
-                // still complete behind the caller's back.
                 abortController.abort()
                 reject(new Error(`Reauth timed out waiting for ${label}`))
               }, waitMs))

@@ -13,17 +13,13 @@ export function runMigrations(db: SqliteDatabase): void {
   migrateCollapseDuplicateAccounts(db)
 }
 
-// One person is one account. Two rules, run on every open rather than once,
-// because both causes can recur:
-//
-//  1. Same auth method and same address is the same account, full stop.
-//  2. Placeholder addresses used to carry the IDC clientId, which is re-issued
-//     on every re-auth — so the same person got a *different* generated
-//     address each sign-in, which rule 1 cannot see. For those, the region
-//     plus the profile ARN is the identity.
-//
-// The freshest usable row wins; the rest hold dead tokens. Rows with a real
-// address and a distinct identity are never touched.
+/**
+ * Collapse rows that describe the same account, on every open.
+ *
+ * Two rules: same auth method and address is the same account; and IDC
+ * placeholder addresses sharing a region and profile ARN are too, since those
+ * addresses used to differ per sign-in. Freshest usable row wins.
+ */
 function migrateCollapseDuplicateAccounts(db: SqliteDatabase): void {
   collapse(
     db,
@@ -50,6 +46,7 @@ function migrateCollapseDuplicateAccounts(db: SqliteDatabase): void {
   )
 }
 
+/** Delete every row a group query matches except the freshest usable one. */
 function collapse(
   db: SqliteDatabase,
   groupQuery: string,

@@ -16,9 +16,6 @@ const { pollKiroIDCToken, DeviceFlowAbortedError } = await import('../kiro/oauth
 
 describe('re-auth wait window', () => {
   test('waits as long as the device code is valid', () => {
-    // The device code AWS hands out lives for 10 minutes. Waiting 90s meant
-    // anyone typing a password plus an MFA code timed out, and every timeout
-    // opened a new browser tab with a new code — the re-auth loop.
     expect(reauthWaitMs(600)).toBe(600_000)
   })
 
@@ -35,8 +32,6 @@ describe('re-auth wait window', () => {
 
 describe('device-code polling', () => {
   test('stops as soon as the caller gives up', async () => {
-    // An abandoned poll used to keep hitting the token endpoint for the rest of
-    // the code's lifetime, and could still complete behind the caller's back.
     let tokenCalls = 0
     const originalFetch = globalThis.fetch
     globalThis.fetch = (async () => {

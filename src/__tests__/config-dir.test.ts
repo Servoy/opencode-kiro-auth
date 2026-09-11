@@ -5,8 +5,6 @@ const WIN = '\\'
 
 describe('config dir: finding the opencode install', () => {
   test('finds the relocated data dir a distribution installs into', () => {
-    // The Servoy build runs opencode out of ~/.servoy/opencode, so its
-    // provisioned kiro.json lives there — not in %APPDATA%\opencode.
     const modulePath = [
       'C:',
       'Users',
@@ -60,9 +58,6 @@ describe('config dir: which directory wins', () => {
   })
 
   test('provisions next to the install when neither exists', () => {
-    // Previously this always landed in the platform dir, so a distribution's
-    // own kiro.json (start url, region, profile arn) was silently ignored and
-    // the plugin ran on bare defaults.
     const dir = pickConfigDir(installDir, platformDir, () => false)
     expect(dir).toBe(installDir)
   })

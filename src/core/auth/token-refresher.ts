@@ -53,14 +53,14 @@ export class TokenRefresher {
     return await this.handleRefreshError(lastError, account, showToast)
   }
 
-  // Returns true only when the account ends up holding a genuinely new access
-  // token. On failure the account is marked unhealthy so callers escalate to
-  // rotation/reauth instead of retrying the same dead token.
-  //
-  // Every outcome here logs at warn, including the successful ones. This sits
-  // on the bearer-403 escalation path, and a log that says "forcing token
-  // refresh and retrying" followed by nothing at all is the difference between
-  // a diagnosable incident and an hour of silence.
+  /**
+   * Replace the account's access token after a bearer-403.
+   *
+   * Returns true only when the account ends up holding a genuinely new token.
+   * On failure it is marked unhealthy so callers escalate to rotation or
+   * reauth instead of retrying a dead token. Every outcome logs at warn: this
+   * is the escalation path, and silence here is indistinguishable from a hang.
+   */
   async forceRefresh(account: ManagedAccount, auth: KiroAuthDetails): Promise<boolean> {
     const previousToken = account.accessToken
 

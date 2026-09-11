@@ -191,8 +191,6 @@ describe('RequestHandler SDK error recovery', () => {
   })
 
   test('maps CONTENT_LENGTH_EXCEEDS_THRESHOLD to context_length_exceeded', async () => {
-    // The wording Kiro actually returns; matching only on "input is too long"
-    // let this through as a bare 400 the host could not act on.
     sdkErrorMessage = 'Input content length exceeds threshold.'
     sdkErrorName = 'ValidationException'
     sdkErrorReason = 'CONTENT_LENGTH_EXCEEDS_THRESHOLD'
@@ -203,7 +201,6 @@ describe('RequestHandler SDK error recovery', () => {
 
     expect(response.status).toBe(400)
     expect((await response.json()).error.code).toBe('context_length_exceeded')
-    // No pointless conversation reset + retry: the payload is the problem.
     expect(sendCalls).toBe(1)
   })
 
@@ -228,7 +225,6 @@ describe('RequestHandler SDK error recovery', () => {
 
     await expect(request(handler)).rejects.toThrow(/Kiro Error: 400/)
 
-    // One reset, one retry — then it gives up instead of looping.
     expect(sendCalls).toBe(2)
   })
 

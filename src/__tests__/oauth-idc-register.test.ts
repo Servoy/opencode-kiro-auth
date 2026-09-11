@@ -48,13 +48,8 @@ afterEach(() => {
 })
 
 describe('IDC client registration', () => {
-  // Pinned deliberately. A "the bearer token included in the request is
-  // invalid" 403 on every call was chased here first — the registration does
-  // diverge from the Kiro CLI's (which uses PKCE with an issuerUrl and only
-  // the first three scopes) — but the actual cause was a missing Amazon Q
-  // Developer subscription in Identity Center. Once that was granted this
-  // exact shape produced a working token. Changing it needs a reproduction,
-  // not a theory.
+  // Pinned: a "bearer token invalid" 403 was chased to this shape and it was
+  // not the cause. Changing it needs a reproduction, not a theory.
   test('registers the shape that is known to produce a working token', async () => {
     const calls = stubFetch((url) => {
       if (url.endsWith('/client/register')) {
@@ -113,8 +108,6 @@ describe('IDC client registration', () => {
 
 describe('profile lookup across regions', () => {
   test('aggregates profiles found in any probed region', async () => {
-    // Profiles are regional. Probing only the sign-in region made a
-    // correctly-entitled user in another region look like "no profile".
     stubFetch((url) => {
       if (url.includes('eu-central-1')) {
         return new Response(

@@ -81,10 +81,6 @@ export function mergeAccounts(
         ...existingAcc,
         ...acc,
         lastUsed: Math.max(existingAcc.lastUsed || 0, acc.lastUsed || 0),
-        // A fresh reading is authoritative, including when it is lower than
-        // what we stored — quotas reset, and Math.max alone ratchets the
-        // counter up forever, which then skews 'lowest-usage' selection and
-        // every usage figure shown to the user.
         ...pickUsage(acc, existingAcc),
         usageUpdatedAt: Math.max(existingAcc.usageUpdatedAt || 0, acc.usageUpdatedAt || 0),
         rateLimitResetTime: Math.max(
@@ -113,10 +109,14 @@ export function mergeAccounts(
   return Array.from(accountMap.values())
 }
 
-// Whichever side carries the newest reading from the service owns the usage
-// numbers. Only when neither side has ever been refreshed does the old
-// "highest wins" guard apply, so an account object that simply has no usage
-// cannot zero a stored figure.
+/**
+ * Resolve conflicting usage counters.
+ *
+ * The newest reading from the service wins, in either direction — quotas
+ * reset, so "highest wins" ratchets the figure up forever. That guard only
+ * applies when neither side was ever refreshed, where it stops an account
+ * carrying no usage from zeroing a stored one.
+ */
 function pickUsage(
   incoming: ManagedAccount,
   existing: ManagedAccount

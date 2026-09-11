@@ -123,8 +123,7 @@ export async function authorizeKiroIDC(
   }
 }
 
-// Sleep that wakes immediately when the caller gives up, so an abandoned
-// device-code flow stops hammering the token endpoint.
+/** Sleep that resolves early when `signal` aborts. */
 function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve()
@@ -140,6 +139,7 @@ function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+/** Thrown by {@link pollKiroIDCToken} when its caller aborts the flow. */
 export class DeviceFlowAbortedError extends Error {
   constructor() {
     super('Device authorization was cancelled')
@@ -147,6 +147,14 @@ export class DeviceFlowAbortedError extends Error {
   }
 }
 
+/**
+ * Poll the token endpoint until the user completes the device-code sign-in.
+ *
+ * Pass a `signal` to stop an abandoned flow; without one it keeps polling for
+ * the full lifetime of the device code even after the caller has given up.
+ *
+ * @throws {DeviceFlowAbortedError} when `signal` aborts.
+ */
 export async function pollKiroIDCToken(
   clientId: string,
   clientSecret: string,
@@ -288,10 +296,14 @@ export async function pollKiroIDCToken(
   throw timeoutError
 }
 
-// Profiles are regional: a token minted in one region only lists the profiles
-// of the region it is queried in. Probe the caller's candidates first, then the
-// remaining Kiro service regions, so a sign-in that defaulted to the wrong
-// region doesn't look like "no profile assigned".
+/**
+ * List the CodeWhisperer profiles a token can use, across regions.
+ *
+ * Profiles are regional, so `preferredRegions` is probed first and the
+ * remaining Kiro service regions after. `reachedAll` is false when any region
+ * failed to answer, which makes an empty `arns` inconclusive rather than proof
+ * that nothing is granted.
+ */
 export async function listAvailableProfileArnsAcrossRegions(
   accessToken: string,
   preferredRegions: (KiroRegion | undefined)[]
@@ -323,8 +335,6 @@ export async function listAvailableProfileArnsAcrossRegions(
   let reachedAll = true
   for (const r of results) {
     if (r.arns === null) {
-      // A region we could not ask about might be the one holding the profile,
-      // so an empty result is only conclusive when every region answered.
       reachedAll = false
       continue
     }

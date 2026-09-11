@@ -52,10 +52,6 @@ describe('the shared Kiro request queue', () => {
   })
 
   test('a request that never settles no longer wedges the whole process', async () => {
-    // A single stuck request used to hold the static queue promise forever, so
-    // every later request in the process waited on it with nothing in the log.
-    // The queue only spreads rate limits across accounts — losing its ordering
-    // beats deadlocking the provider.
     warnings.length = 0
     // Floor is 30s, so use the minimum and shorten the wait by racing it.
     const handler = createHandler(30_000)

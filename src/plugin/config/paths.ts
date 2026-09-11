@@ -12,12 +12,13 @@ function platformConfigDir(): string {
   return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode')
 }
 
-// opencode does not always live in the platform config dir — distributions
-// relocate its data dir (Servoy's ships as ~/.servoy/opencode) and install
-// plugins underneath it. Deriving the dir from this module's own location is
-// the only reliable way to find the kiro.json that was provisioned next to the
-// opencode install; guessing the platform dir instead silently ignores it and
-// writes a fresh default template somewhere the user never looks.
+/**
+ * Walk up a module path to the opencode install that owns it.
+ *
+ * Distributions relocate opencode's data dir (Servoy ships ~/.servoy/opencode)
+ * and install plugins underneath it, so the platform config dir is not a
+ * reliable place to look for a provisioned kiro.json.
+ */
 export function findOpencodeInstallDir(
   modulePath: string,
   separator: string = sep
@@ -36,16 +37,14 @@ function opencodeInstallDir(): string | undefined {
   }
 }
 
+/** Pick the config dir, preferring one that already holds a kiro.json. */
 export function pickConfigDir(
   installDir: string | undefined,
   platformDir: string,
   hasConfig: (dir: string) => boolean
 ): string {
-  // An existing config wins over both defaults, so nobody's settings move.
   if (installDir && hasConfig(installDir)) return installDir
   if (hasConfig(platformDir)) return platformDir
-
-  // Nothing yet: provision next to the opencode install that loaded us.
   return installDir ?? platformDir
 }
 
@@ -60,10 +59,8 @@ function configExists(dir: string): boolean {
 function resolveBaseDir(): string {
   if (process.env.KIRO_CONFIG_DIR) return process.env.KIRO_CONFIG_DIR
 
-  // The suite imports modules that eagerly open kiro.db and append to
-  // plugin.log. Without this, running the tests mutates the developer's own
-  // account database and litters their log with fake accounts and simulated
-  // failures — which is exactly the file they read when debugging for real.
+  // The suite eagerly opens kiro.db and appends to plugin.log; without this it
+  // does that to the developer's real ones.
   if (process.env.NODE_ENV === 'test') return join(tmpdir(), 'kiro-plugin-test-config')
 
   return pickConfigDir(opencodeInstallDir(), platformConfigDir(), configExists)
@@ -78,7 +75,7 @@ export function getDefaultLogsDir(): string {
   return getConfigDir()
 }
 
-// Test-only: the resolved dir is cached for the process lifetime.
+/** Test-only: the resolved dir is cached for the process lifetime. */
 export function resetConfigDirCache(): void {
   cachedBaseDir = undefined
 }

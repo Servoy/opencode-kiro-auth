@@ -23,9 +23,6 @@ function account(overrides: Partial<ManagedAccount> = {}): ManagedAccount {
 
 describe('usage merge', () => {
   test('a fresh reading wins even when it is lower than the stored one', () => {
-    // Quotas reset. Merging with Math.max ratcheted used_count up forever, so
-    // the stored figure drifted far above reality — skewing 'lowest-usage'
-    // account selection and every usage number shown to the user.
     const stored = account({ usedCount: 7444, limitCount: 10_000 })
     const fresh = account({ usedCount: 1280, limitCount: 10_000 })
     updateAccountQuota(fresh, { usedCount: 1280, limitCount: 10_000 })
@@ -55,9 +52,6 @@ describe('usage merge', () => {
   })
 
   test('a usage sync does not mark the account as Kiro CLI-synced', () => {
-    // lastSync doubles as "this account came from the Kiro CLI"; stamping it on
-    // every usage refresh would make native IDC accounts look CLI-managed and
-    // eligible for stale-account pruning.
     const acc = account()
     updateAccountQuota(acc, { usedCount: 5, limitCount: 100 })
 

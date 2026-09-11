@@ -10,9 +10,6 @@ const PROFILE = 'arn:aws:codewhisperer:eu-central-1:428597928572:profile/HE7XVER
 
 describe('placeholder identity', () => {
   test('an IDC placeholder survives the clientId being re-issued', () => {
-    // The clientId changes on every device-code sign-in. When it fed the
-    // placeholder address, and the account id is derived from that address,
-    // every re-auth minted another row for the same person.
     const first = makePlaceholderEmail('idc', 'eu-central-1', 'client-A', PROFILE)
     const second = makePlaceholderEmail('idc', 'eu-central-1', 'client-B', PROFILE)
 
@@ -81,8 +78,6 @@ describe('collapsing accounts that piled up', () => {
   }
 
   test('eight rows for one account collapse to the freshest one', async () => {
-    // What a real install looked like: one person, eight account rows, which
-    // also switched on the request queue meant for genuinely multiple accounts.
     for (let i = 0; i < 8; i++) {
       await db.upsertAccount(
         account({
@@ -128,8 +123,6 @@ describe('collapsing accounts that piled up', () => {
   })
 
   test('one address is one account, whatever the row says', async () => {
-    // You cannot have two accounts for the same email. Rows that claim
-    // otherwise are leftovers from an id scheme that has since changed.
     await db.upsertAccount(
       account({ id: 'old-scheme', email: 'rene@servoy.com', refreshToken: 'r-1', expiresAt: 1_000 })
     )
@@ -177,8 +170,6 @@ describe('collapsing accounts that piled up', () => {
   })
 
   test('placeholders on different profiles stay separate', async () => {
-    // Different profiles generate different placeholder addresses, so these
-    // are two identities and both must survive.
     const other = `${PROFILE}-other`
     await db.upsertAccount(
       account({

@@ -356,9 +356,6 @@ describe('payload trim preserves valid structure', () => {
   })
 
   test('trims history away entirely rather than staying over the cap', () => {
-    // Trimming used to stop with two entries left, so a session whose last two
-    // turns were already oversized re-sent a payload the service had just
-    // rejected — every retry, forever.
     const body = {
       messages: [
         { role: 'user', content: 'x'.repeat(400_000) },
