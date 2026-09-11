@@ -129,13 +129,44 @@ export class RequestHandler {
       release = resolve
     })
 
-    await previous.catch(() => {})
+    // Never wait on the predecessor indefinitely. This queue is a courtesy that
+    // spreads rate limits across accounts; a single request that never settles
+    // used to wedge it permanently, silently stalling every later request in
+    // the process with nothing in the log to show for it. Losing the ordering
+    // is a far smaller problem than deadlocking the provider.
+    const waited = await this.raceWithTimeout(
+      previous.catch(() => {}),
+      this.queueWaitMs()
+    )
+    if (!waited) {
+      logger.warn(
+        `Kiro request queue: predecessor still running after ${Math.round(this.queueWaitMs() / 1000)}s, proceeding in parallel`
+      )
+    }
 
     try {
       return await run()
     } finally {
       release()
     }
+  }
+
+  private queueWaitMs(): number {
+    return Math.max(30_000, this.config.request_timeout_ms || 120_000)
+  }
+
+  // Resolves true when the promise settled first, false when the timeout won.
+  private raceWithTimeout(promise: Promise<unknown>, ms: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    return Promise.race([
+      promise.then(
+        () => true,
+        () => true
+      ),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), ms)
+      })
+    ]).finally(() => clearTimeout(timer))
   }
 
   private async handleKiroRequest(

@@ -56,6 +56,11 @@ export class TokenRefresher {
   // Returns true only when the account ends up holding a genuinely new access
   // token. On failure the account is marked unhealthy so callers escalate to
   // rotation/reauth instead of retrying the same dead token.
+  //
+  // Every outcome here logs at warn, including the successful ones. This sits
+  // on the bearer-403 escalation path, and a log that says "forcing token
+  // refresh and retrying" followed by nothing at all is the difference between
+  // a diagnosable incident and an hour of silence.
   async forceRefresh(account: ManagedAccount, auth: KiroAuthDetails): Promise<boolean> {
     const previousToken = account.accessToken
 
@@ -69,7 +74,7 @@ export class TokenRefresher {
 
     if (synced && synced.accessToken && synced.accessToken !== previousToken) {
       await this.accountManager.updateFromAuth(account, this.accountManager.toAuthDetails(synced))
-      logger.debug('Force refresh: recovered newer token from CLI sync')
+      logger.warn('Force refresh: recovered newer token from CLI sync')
       return true
     }
 
@@ -83,7 +88,7 @@ export class TokenRefresher {
         return false
       }
 
-      logger.debug('Force refresh: token refreshed via OIDC')
+      logger.warn('Force refresh: token refreshed via OIDC')
       return true
     } catch (e: any) {
       const message = e instanceof Error ? e.message : String(e)
