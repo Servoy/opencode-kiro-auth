@@ -75,7 +75,17 @@ export function makePlaceholderEmail(
   clientId?: string,
   profileArn?: string
 ): string {
-  const seed = `${authMethod}:${region}:${clientId || ''}:${profileArn || ''}`
+  // Mirror createDeterministicAccountId: an IDC clientId is re-issued on every
+  // re-auth, so it is not part of the identity. Including it here put it back
+  // in through the back door — the account id is derived from this email, so
+  // every sign-in whose usage lookup could not supply a real address minted a
+  // brand new account row. One user reached eight rows for a single account,
+  // which also switched on the multi-account request queue that is meant for
+  // people who really do have several.
+  const seed =
+    authMethod === 'idc'
+      ? `${authMethod}:${region}:${profileArn || ''}`
+      : `${authMethod}:${region}:${clientId || ''}:${profileArn || ''}`
   const h = createHash('sha256').update(seed).digest('hex').slice(0, 16)
   return `${authMethod}-placeholder+${h}@awsapps.local`
 }

@@ -10,6 +10,66 @@ export function runMigrations(db: SqliteDatabase): void {
   migrateConversationsTable(db)
   migrateReauthLockTable(db)
   migrateConversationsAgentContinuationId(db)
+  migrateCollapseDuplicateAccounts(db)
+}
+
+// One person is one account. Two rules, run on every open rather than once,
+// because both causes can recur:
+//
+//  1. Same auth method and same address is the same account, full stop.
+//  2. Placeholder addresses used to carry the IDC clientId, which is re-issued
+//     on every re-auth — so the same person got a *different* generated
+//     address each sign-in, which rule 1 cannot see. For those, the region
+//     plus the profile ARN is the identity.
+//
+// The freshest usable row wins; the rest hold dead tokens. Rows with a real
+// address and a distinct identity are never touched.
+function migrateCollapseDuplicateAccounts(db: SqliteDatabase): void {
+  collapse(
+    db,
+    `SELECT auth_method, email FROM accounts
+     GROUP BY auth_method, email HAVING COUNT(*) > 1`,
+    (group) => ({
+      where: 'auth_method = ? AND email = ?',
+      params: [group.auth_method, group.email]
+    })
+  )
+
+  collapse(
+    db,
+    `SELECT COALESCE(region, '') AS region, COALESCE(profile_arn, '') AS profile_arn
+     FROM accounts
+     WHERE auth_method = 'idc' AND email LIKE 'idc-placeholder+%@awsapps.local'
+     GROUP BY COALESCE(region, ''), COALESCE(profile_arn, '')
+     HAVING COUNT(*) > 1`,
+    (group) => ({
+      where: `auth_method = 'idc' AND email LIKE 'idc-placeholder+%@awsapps.local'
+              AND COALESCE(region, '') = ? AND COALESCE(profile_arn, '') = ?`,
+      params: [group.region, group.profile_arn]
+    })
+  )
+}
+
+function collapse(
+  db: SqliteDatabase,
+  groupQuery: string,
+  toFilter: (group: any) => { where: string; params: unknown[] }
+): void {
+  const groups = db.prepare(groupQuery).all() as any[]
+
+  for (const group of groups) {
+    const { where, params } = toFilter(group)
+    const rows = db
+      .prepare(
+        `SELECT id FROM accounts WHERE ${where}
+         ORDER BY is_healthy DESC, expires_at DESC, last_used DESC`
+      )
+      .all(...(params as any[])) as any[]
+
+    for (const row of rows.slice(1)) {
+      db.prepare('DELETE FROM accounts WHERE id = ?').run(row.id)
+    }
+  }
 }
 
 function migrateConversationsTable(db: SqliteDatabase): void {
