@@ -71,6 +71,26 @@ function contextLengthResponse(message: string): Response {
   )
 }
 
+// A runaway agent loop was traced to requests that never reached this handler
+// at all, and a silent passthrough gave no way to tell that apart from a
+// handler that ran and succeeded. Name the hosts we decline to handle — once
+// each, capped, so it stays a hint rather than noise.
+const passthroughHostsLogged = new Set<string>()
+const MAX_PASSTHROUGH_HOSTS_LOGGED = 5
+
+function logPassthrough(url: string): void {
+  let host: string
+  try {
+    host = new URL(url).host
+  } catch {
+    host = url.slice(0, 80)
+  }
+  if (passthroughHostsLogged.has(host)) return
+  if (passthroughHostsLogged.size >= MAX_PASSTHROUGH_HOSTS_LOGGED) return
+  passthroughHostsLogged.add(host)
+  logger.warn(`Kiro fetch passthrough: ${host} is not a Kiro endpoint, forwarding unhandled`)
+}
+
 function extractSessionId(headers: unknown): string | undefined {
   if (!headers) return undefined
   const h = headers as Record<string, string>
@@ -108,6 +128,7 @@ export class RequestHandler {
     const url = typeof input === 'string' ? input : input.url
 
     if (!KIRO_API_PATTERN.test(url)) {
+      logPassthrough(url)
       return fetch(input, init)
     }
 
