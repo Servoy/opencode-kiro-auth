@@ -2,7 +2,7 @@ import type { AccountRepository } from '../../infrastructure/database/account-re
 import { accessTokenExpired } from '../../kiro/auth'
 import type { AccountManager } from '../../plugin/accounts'
 import { KiroTokenRefreshError } from '../../plugin/errors'
-import { isPermanentError } from '../../plugin/health'
+import { isPermanentError, isTransientNetworkError } from '../../plugin/health'
 import * as logger from '../../plugin/logger'
 import { refreshAccessToken } from '../../plugin/token'
 import type { KiroAuthDetails, ManagedAccount } from '../../plugin/types'
@@ -155,10 +155,21 @@ export class TokenRefresher {
       return { account, shouldContinue: true }
     }
 
+    const message = error instanceof Error ? error.message : String(error)
+
+    if (isTransientNetworkError(message) || isTransientNetworkError(error?.code)) {
+      logger.warn('Token refresh: no connectivity, will retry', {
+        email: account.email,
+        message
+      })
+      showToast('Kiro sign-in could not be refreshed — no connection. Retrying.', 'warning')
+      return { account, shouldContinue: true }
+    }
+
     logger.error('Token refresh unrecoverable', {
       email: account.email,
       code: error instanceof KiroTokenRefreshError ? error.code : undefined,
-      message: error instanceof Error ? error.message : String(error)
+      message
     })
     throw error
   }
