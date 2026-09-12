@@ -1,9 +1,10 @@
 import { existsSync } from 'node:fs'
-import { extractRegionFromArn, normalizeRegion } from '../../constants'
+import { extractRegionFromArn, isValidRegion, normalizeRegion } from '../../constants'
 import { createDeterministicAccountId } from '../accounts'
 import * as logger from '../logger'
 import { openDatabase } from '../storage/database-driver'
 import { kiroDb } from '../storage/sqlite'
+import type { KiroRegion } from '../types'
 import { fetchUsageLimits } from '../usage'
 import {
   findClientCredsRecursive,
@@ -43,6 +44,14 @@ export async function syncFromKiroCli() {
     )
     const deviceReg = safeJsonParse(deviceRegRow?.value)
     const regCreds = deviceReg ? findClientCredsRecursive(deviceReg) : {}
+    // The refresh POSTs to oidc.<oidcRegion>.amazonaws.com, and only the region
+    // that issued the device registration will honour it. Deriving that from
+    // the profile ARN breaks any account whose Identity Center and Q profile
+    // live in different regions: the first hour works, then every refresh 400s.
+    const registrationRegion: KiroRegion | undefined =
+      typeof deviceReg?.region === 'string' && isValidRegion(deviceReg.region)
+        ? deviceReg.region
+        : undefined
     const syncedAccounts: SyncedCliAccount[] = []
 
     for (const row of rows) {
@@ -60,10 +69,10 @@ export async function syncFromKiroCli() {
           logger.warn('Kiro CLI sync: IDC token has no profileArn; skipping import')
           continue
         }
-        // serviceRegion wins over data.region: kiro-cli stores data.region as the
-        // OIDC region (often us-east-1) regardless of where the account actually lives.
         const serviceRegion = extractRegionFromArn(profileArn) || normalizeRegion(data.region)
-        const oidcRegion = serviceRegion
+        const sessionRegion: KiroRegion | undefined =
+          typeof data.region === 'string' && isValidRegion(data.region) ? data.region : undefined
+        const oidcRegion = registrationRegion ?? sessionRegion ?? serviceRegion
         const startUrl: string | undefined =
           typeof data.start_url === 'string'
             ? data.start_url
