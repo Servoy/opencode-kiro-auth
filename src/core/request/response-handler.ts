@@ -140,6 +140,8 @@ export class ResponseHandler {
     const toolCallOrder: string[] = []
     let inputTokens = 0
     let outputTokens = 0
+    let cacheReadInputTokens = 0
+    let cacheWriteInputTokens = 0
 
     const eventStream = sdkResponse.generateAssistantResponseResponse
     if (eventStream) {
@@ -169,8 +171,12 @@ export class ResponseHandler {
           }
         }
         if (event.metadataEvent?.tokenUsage) {
-          inputTokens = event.metadataEvent.tokenUsage.inputTokens || 0
-          outputTokens = event.metadataEvent.tokenUsage.outputTokens || 0
+          // TokenUsage has no `inputTokens`; reading it always yielded 0.
+          const tu = event.metadataEvent.tokenUsage
+          inputTokens = tu.uncachedInputTokens || 0
+          outputTokens = tu.outputTokens || 0
+          cacheReadInputTokens = tu.cacheReadInputTokens || 0
+          cacheWriteInputTokens = tu.cacheWriteInputTokens || 0
         }
       }
     }
@@ -181,6 +187,8 @@ export class ResponseHandler {
         (toolCall): toolCall is AccumulatedToolCall & { name: string } =>
           typeof toolCall?.name === 'string'
       )
+
+    const promptTokens = inputTokens + cacheReadInputTokens + cacheWriteInputTokens
 
     const oai: any = {
       id: conversationId,
@@ -195,9 +203,11 @@ export class ResponseHandler {
         }
       ],
       usage: {
-        prompt_tokens: inputTokens,
+        prompt_tokens: promptTokens,
         completion_tokens: outputTokens,
-        total_tokens: inputTokens + outputTokens
+        total_tokens: promptTokens + outputTokens,
+        prompt_tokens_details: { cached_tokens: cacheReadInputTokens },
+        cache_creation_input_tokens: cacheWriteInputTokens
       }
     }
 
