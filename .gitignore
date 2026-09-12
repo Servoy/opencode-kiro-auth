@@ -6,3 +6,7 @@ dist/
 .vscode/*
 .sisyphus
 *.tgz
+
+# npm auth tokens — never commit
+.npmrc
+.npmrc.*

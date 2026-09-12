@@ -1,4 +1,5 @@
 import { tool } from '@opencode-ai/plugin'
+import { createRequire } from 'node:module'
 import { KIRO_CONSTANTS } from './constants.js'
 import { AuthHandler } from './core/auth/auth-handler.js'
 import { RequestHandler } from './core/request/request-handler.js'
@@ -7,6 +8,7 @@ import { AccountRepository } from './infrastructure/database/account-repository.
 import { AccountManager } from './plugin/accounts.js'
 import { bootstrapAuthIfNeeded } from './plugin/auth-bootstrap.js'
 import { loadConfig } from './plugin/config/index.js'
+import { getConfigDir } from './plugin/config/paths.js'
 import { imageCache } from './plugin/image-cache.js'
 import * as logger from './plugin/logger.js'
 import { buildModelRegistry } from './plugin/model-registry.js'
@@ -17,6 +19,17 @@ import { formatWebSearchResults, kiroWebSearch } from './plugin/web-search.js'
 type ToastFunction = (message: string, variant: string) => void
 
 const KIRO_PROVIDER_ID = 'kiro'
+
+// Read once at module load: confirms which published version is actually
+// running, since the plugin loader can silently keep a stale cached install.
+const PLUGIN_VERSION: string = (() => {
+  try {
+    const require = createRequire(import.meta.url)
+    return require('../package.json').version ?? 'unknown'
+  } catch {
+    return 'unknown'
+  }
+})()
 
 // Register Kiro's server-side web search as a custom tool, when enabled and the
 // active account is Pro (has a profileArn). Returns an empty object otherwise so
@@ -71,6 +84,9 @@ function buildTools(config: any, accountManager: AccountManager): Record<string,
 export const createKiroPlugin =
   (id: string) =>
   async ({ client, directory }: any) => {
+    // Which config file actually got loaded is the first thing to check when a
+    // provisioned kiro.json appears to be ignored.
+    logger.log(`Kiro plugin init: version=${PLUGIN_VERSION} configDir=${getConfigDir()}`)
     const config = loadConfig(directory)
 
     const showToast: ToastFunction = (message: string, variant: string) => {
