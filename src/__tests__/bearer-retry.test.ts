@@ -40,6 +40,15 @@ afterAll(() => {
   sendSpy.mockRestore()
 })
 
+const originalFetch = globalThis.fetch
+globalThis.fetch = (async () => {
+  throw new Error('no network in tests')
+}) as unknown as typeof fetch
+
+afterAll(() => {
+  globalThis.fetch = originalFetch
+})
+
 function createHarness() {
   clearSdkClientCache()
   sendCalls = 0

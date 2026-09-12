@@ -8,7 +8,10 @@ mock.module('../plugin/logger.js', () => ({
   error: () => {},
   log: () => {},
   warn: () => {},
-  getTimestamp: () => '2026-07-22T00:00:00.000Z'
+  getTimestamp: () => '2026-07-22T00:00:00.000Z',
+  logApiError: () => {},
+  logApiRequest: () => {},
+  logApiResponse: () => {}
 }))
 
 const { TokenRefresher } = await import('../core/auth/token-refresher.js')

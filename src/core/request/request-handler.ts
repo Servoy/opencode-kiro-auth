@@ -7,6 +7,7 @@ import { THINKING_BUDGETS } from '../../plugin/effort'
 import { isPermanentError } from '../../plugin/health'
 import { imageCache } from '../../plugin/image-cache'
 import * as logger from '../../plugin/logger'
+import { refreshModelCatalog } from '../../plugin/models'
 import { transformToSdkRequest } from '../../plugin/request'
 import { createSdkClient } from '../../plugin/sdk-client'
 import { kiroDb } from '../../plugin/storage/sqlite'
@@ -269,6 +270,10 @@ export class RequestHandler {
         await this.sleep(500)
         continue
       }
+
+      // Not awaited: this only sharpens a token estimate, and no request
+      // should wait on it. Cached, so it runs at most once every five minutes.
+      void refreshModelCatalog(auth)
 
       const sdkPrep = this.prepareSdkRequest(body, model, auth, think, budget, showToast, sessionId)
 

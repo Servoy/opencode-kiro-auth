@@ -1,5 +1,5 @@
 import { EFFORT_LEVELS, supportsEffort, supportsXHighEffort, THINKING_BUDGETS } from './effort.js'
-import { resolveKiroModel } from './models.js'
+import { getCatalogContextLimit, resolveKiroModel } from './models.js'
 
 type Modalities = {
   input: Array<'text' | 'image' | 'pdf'>
@@ -141,10 +141,16 @@ const MODEL_SPECS: Record<string, ModelSpec> = {
 }
 
 /**
- * Context limit for a model, read from MODEL_SPECS. `-thinking` ids share their base's limit.
- * The registry and the streaming transformers both call this, so they can't disagree.
+ * Context limit for a model.
+ *
+ * Prefers the window the account's own catalog reports, falling back to
+ * MODEL_SPECS. `-thinking` ids share their base's limit. The registry and the
+ * streaming transformers both call this, so they can't disagree.
  */
 export function getModelContextLimit(model: string): number {
+  const discovered = getCatalogContextLimit(model)
+  if (discovered !== undefined) return discovered
+
   const base = model.endsWith('-thinking') ? model.slice(0, -'-thinking'.length) : model
   return (
     MODEL_SPECS[base]?.limit.context ?? MODEL_SPECS[model]?.limit.context ?? CONTEXT_200K.context
