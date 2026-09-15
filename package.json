@@ -1,6 +1,6 @@
 {
   "name": "@servoy/opencode-kiro-auth",
-  "version": "2.0.4",
+  "version": "2.1.0",
   "description": "OpenCode plugin for AWS Kiro (CodeWhisperer) providing access to Claude models",
   "type": "module",
   "main": "dist/index.js",
