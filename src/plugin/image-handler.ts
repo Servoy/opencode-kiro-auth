@@ -6,7 +6,51 @@ interface UnifiedImage {
 }
 
 export const MAX_KIRO_IMAGES = 4
+/** Decoded image bytes, matching how image-cache measures the same budget. */
 export const MAX_KIRO_IMAGE_BYTES = 3_750_000
+
+/** The only formats ImageBlock accepts; anything else is rejected outright. */
+const KIRO_IMAGE_FORMATS = new Set(['gif', 'jpeg', 'png', 'webp'])
+
+/**
+ * Canonical format for a media type, or undefined when unsupported.
+ *
+ * Handles the spellings that reach us in practice: `image/jpg` is not a real
+ * media type but is emitted widely, parameters like `;charset=` ride along on
+ * data URLs, and casing varies.
+ */
+function formatFromMediaType(mediaType: string): string | undefined {
+  const subtype = mediaType.split(';')[0]?.trim().toLowerCase().split('/')[1]
+  if (!subtype) return undefined
+  const canonical = subtype === 'jpg' ? 'jpeg' : subtype
+  return KIRO_IMAGE_FORMATS.has(canonical) ? canonical : undefined
+}
+
+/**
+ * Format read from the image's own magic bytes.
+ *
+ * The service rejects a request outright when the declared format and the
+ * actual bytes disagree, so the bytes win over whatever the caller labelled it.
+ */
+function formatFromBytes(b: Uint8Array): string | undefined {
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47)
+    return 'png'
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpeg'
+  if (b.length >= 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'gif'
+  if (
+    b.length >= 12 &&
+    b[0] === 0x52 &&
+    b[1] === 0x49 &&
+    b[2] === 0x46 &&
+    b[3] === 0x46 &&
+    b[8] === 0x57 &&
+    b[9] === 0x45 &&
+    b[10] === 0x42 &&
+    b[11] === 0x50
+  )
+    return 'webp'
+  return undefined
+}
 
 export interface KiroImage {
   format: string
@@ -71,24 +115,31 @@ export function extractAllImages(content: any): UnifiedImage[] {
   return images
 }
 
+/**
+ * Convert images to the wire shape, dropping what the service would reject.
+ *
+ * An image is skipped when its format is not one of the four ImageBlock
+ * accepts, and the budget is counted in decoded bytes — measuring base64
+ * characters made the cap a third tighter than intended.
+ */
 export function convertImagesToKiroFormat(images: UnifiedImage[]): ImageConversionResult {
-  const selected: UnifiedImage[] = []
-  let totalBase64Chars = 0
+  const converted: KiroImage[] = []
+  let totalBytes = 0
 
   for (const img of images) {
-    if (selected.length >= MAX_KIRO_IMAGES) break
-    if (totalBase64Chars + img.data.length > MAX_KIRO_IMAGE_BYTES) break
-    selected.push(img)
-    totalBase64Chars += img.data.length
+    if (converted.length >= MAX_KIRO_IMAGES) break
+
+    const bytes = base64ToUint8Array(img.data)
+    const format = formatFromBytes(bytes) ?? formatFromMediaType(img.mediaType)
+    if (!format) continue
+
+    if (totalBytes + bytes.byteLength > MAX_KIRO_IMAGE_BYTES) break
+
+    converted.push({ format, source: { bytes } })
+    totalBytes += bytes.byteLength
   }
 
-  return {
-    images: selected.map((img) => {
-      const format = img.mediaType.split('/')[1] || 'png'
-      return { format, source: { bytes: base64ToUint8Array(img.data) } }
-    }),
-    omitted: images.length - selected.length
-  }
+  return { images: converted, omitted: images.length - converted.length }
 }
 
 export function extractTextFromParts(parts: any[]): string {

@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  budgetToEffort,
+  EFFORT_LEVELS,
   getEffectiveEffort,
+  isEffort,
   resolveEffort,
   supportsEffort,
   supportsXHighEffort
@@ -60,60 +61,45 @@ describe('effort module', () => {
     })
   })
 
-  describe('budgetToEffort', () => {
-    test('returns undefined for unsupported models', () => {
-      expect(budgetToEffort(100000, 'claude-haiku-4.5')).toBeUndefined()
+  describe('getEffectiveEffort', () => {
+    test('returns undefined for a model with no dial', () => {
+      expect(getEffectiveEffort('claude-haiku-4.5', true, 'max')).toBeUndefined()
     })
 
-    test('maps reference budgets to their effort level', () => {
-      expect(budgetToEffort(16384, 'claude-opus-4.8')).toBe('low')
-      expect(budgetToEffort(32768, 'claude-opus-4.8')).toBe('medium')
-      expect(budgetToEffort(65536, 'claude-opus-4.8')).toBe('high')
-      expect(budgetToEffort(98304, 'claude-opus-4.8')).toBe('xhigh')
-      expect(budgetToEffort(128000, 'claude-opus-4.8')).toBe('max')
+    test('uses the level the request named', () => {
+      for (const level of EFFORT_LEVELS) {
+        if (level === 'xhigh') continue
+        expect(getEffectiveEffort('claude-opus-5', true, level)).toBe(level)
+      }
     })
 
-    test('maps sub-band and over-ceiling budgets', () => {
-      expect(budgetToEffort(1024, 'claude-opus-4.8')).toBe('low')
-      expect(budgetToEffort(20000, 'claude-opus-4.8')).toBe('medium')
-      expect(budgetToEffort(200000, 'claude-opus-4.8')).toBe('max')
+    test('a level applies even when nothing else asked for thinking', () => {
+      expect(getEffectiveEffort('claude-opus-4.8', false, 'high')).toBe('high')
     })
 
-    test('reaches xhigh on every xhigh-capable model', () => {
-      expect(budgetToEffort(98304, 'claude-opus-4.7')).toBe('xhigh')
-      expect(budgetToEffort(98304, 'claude-opus-5')).toBe('xhigh')
+    test('returns undefined when nothing asks for anything', () => {
+      // Undefined lets Kiro apply its own default; it does not mean off.
+      expect(getEffectiveEffort('claude-opus-4.8', false)).toBeUndefined()
     })
 
-    test('clamps the xhigh band to max for non-xhigh models', () => {
-      expect(budgetToEffort(98304, 'claude-sonnet-4.6')).toBe('max')
-      expect(budgetToEffort(98304, 'claude-opus-4.6')).toBe('max')
+    test('clamps a level the model does not have', () => {
+      expect(getEffectiveEffort('claude-sonnet-4.6', true, 'xhigh')).toBe('max')
     })
   })
+})
 
-  describe('getEffectiveEffort', () => {
-    test('returns undefined for unsupported models', () => {
-      expect(getEffectiveEffort('claude-haiku-4.5', true, 100000)).toBeUndefined()
-    })
+describe('reading an effort that OpenCode sends back', () => {
+  test('accepts every level Kiro documents', () => {
+    for (const level of EFFORT_LEVELS) {
+      expect(isEffort(level)).toBe(true)
+    }
+  })
 
-    test('uses explicit config when provided', () => {
-      expect(getEffectiveEffort('claude-opus-4.8', true, 20000, 'max')).toBe('max')
-      expect(getEffectiveEffort('claude-opus-4.8', false, 20000, 'high')).toBe('high')
-    })
-
-    test('returns undefined when not thinking and no config', () => {
-      expect(getEffectiveEffort('claude-opus-4.8', false, 20000)).toBeUndefined()
-    })
-
-    test('uses budget mapping when thinking and auto-mapping enabled', () => {
-      expect(getEffectiveEffort('claude-opus-4.8', true, 128000, undefined, true)).toBe('max')
-      expect(getEffectiveEffort('claude-opus-4.8', true, 20000, undefined, true)).toBe('medium')
-      expect(getEffectiveEffort('claude-opus-5', true, 98304, undefined, true)).toBe('xhigh')
-      expect(getEffectiveEffort('claude-opus-5', true, 32768, undefined, true)).toBe('medium')
-      expect(getEffectiveEffort('claude-opus-5', true, 8192, undefined, true)).toBe('low')
-    })
-
-    test('falls back to medium when auto-mapping disabled', () => {
-      expect(getEffectiveEffort('claude-opus-4.8', true, 128000, undefined, false)).toBe('medium')
-    })
+  test('rejects anything that is not one', () => {
+    // A non-level must fall back rather than be passed to the service, which
+    // rejects an unknown effort outright.
+    for (const value of ['', 'none', 'HIGH', 'extreme', undefined, null, 3]) {
+      expect(isEffort(value)).toBe(false)
+    }
   })
 })

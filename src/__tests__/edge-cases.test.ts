@@ -326,7 +326,7 @@ describe('payload trim preserves valid structure', () => {
     }
     const result = transformToSdkRequest(body, 'auto', auth)
     const payload = JSON.stringify(result.conversationState)
-    expect(payload.length).toBeLessThanOrEqual(4_000_000)
+    expect(payload.length).toBeLessThanOrEqual(5_000_000)
   })
 
   test('respects a custom max_payload_bytes override', () => {
@@ -347,7 +347,6 @@ describe('payload trim preserves valid structure', () => {
       undefined,
       '',
       true,
-      undefined,
       undefined,
       500_000
     )
@@ -373,7 +372,6 @@ describe('payload trim preserves valid structure', () => {
       undefined,
       '',
       true,
-      undefined,
       undefined,
       100_000
     )
@@ -825,7 +823,10 @@ describe('image carry-forward: no images on tool-result turns', () => {
     ])
   }
 
-  test('images are NOT carried forward onto a tool-result turn', () => {
+  test('images ARE carried forward onto a tool-result turn', () => {
+    // Captured from kiro-cli: two tool-result turns carrying an image, both
+    // answered 200. Withholding them blinded the model on the turn where it
+    // calls a tool about the image.
     const workspace = '/ws-carry-fwd-toolresult'
     seedCache(workspace, 'look at this')
 
@@ -856,7 +857,7 @@ describe('image carry-forward: no images on tool-result turns', () => {
 
     const uim = result.conversationState.currentMessage?.userInputMessage as any
     expect((uim?.userInputMessageContext?.toolResults ?? []).length).toBeGreaterThan(0)
-    expect((uim?.images ?? []).length).toBe(0)
+    expect((uim?.images ?? []).length).toBeGreaterThan(0)
   })
 
   test('images ARE carried forward on a normal (non-tool-result) turn', () => {
@@ -902,7 +903,7 @@ describe('payload trim performance', () => {
 
     // Result must still be under the limit.
     const size = JSON.stringify(result.conversationState).length
-    expect(size).toBeLessThanOrEqual(4_000_000)
+    expect(size).toBeLessThanOrEqual(5_000_000)
     // Allow 100ms on slow CI; fail if we regress to seconds (O(N²)).
     expect(elapsed).toBeLessThan(100)
   })
@@ -977,5 +978,95 @@ describe('parallel sessions in same workspace get distinct convIds', () => {
     }
     const r1 = transformToSdkRequest(body, 'auto', auth, false, 16000, undefined, '/some/dir', true)
     expect(r1.conversationKey.workspace).toBe('/some/dir')
+  })
+})
+
+describe('conversation identity survives an edited history', () => {
+  const auth2: any = {
+    access: 'a',
+    refresh: 'r',
+    expires: 0,
+    authMethod: 'idc',
+    region: 'us-east-1'
+  }
+
+  function convIdFor(firstText: string, sessionId?: string) {
+    const result = transformToSdkRequest(
+      { messages: [{ role: 'user', content: [{ type: 'text', text: firstText }] }] },
+      'auto',
+      auth2,
+      false,
+      0,
+      undefined,
+      '/ws-conv-identity',
+      true,
+      sessionId
+    )
+    return result.conversationId
+  }
+
+  test('reverting the first message keeps the same conversation', () => {
+    // Revert, edit and compaction all rewrite the first message. Keying the
+    // conversation on its text made Kiro see a new conversation each time,
+    // which is how a follow-up question lost everything before it.
+    const before = convIdFor('look at this invoice', 'ses_same')
+    const after = convIdFor('look at this invoice again, rephrased', 'ses_same')
+
+    expect(after).toBe(before)
+  })
+
+  test('a different session is a different conversation', () => {
+    expect(convIdFor('hello', 'ses_one')).not.toBe(convIdFor('hello', 'ses_two'))
+  })
+
+  test('without a session id the first message still separates conversations', () => {
+    expect(convIdFor('topic one')).not.toBe(convIdFor('topic two'))
+  })
+})
+
+describe('payload size is measured as it travels', () => {
+  const authM: any = {
+    access: 'a',
+    refresh: 'r',
+    expires: 0,
+    authMethod: 'idc',
+    region: 'us-east-1'
+  }
+
+  test('an attachment is sized as base64, not as a numeric object', () => {
+    // JSON.stringify renders a Uint8Array as {"0":137,"1":80,...} — roughly
+    // eight times its real size. Measuring that way trimmed attachments away
+    // as if they were enormous, and cost a quarter second per megabyte.
+    const png = Buffer.alloc(600_000, 9)
+    png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const image = {
+      type: 'image_url',
+      image_url: { url: `data:image/png;base64,${png.toString('base64')}` }
+    }
+
+    const started = Date.now()
+    const result = transformToSdkRequest(
+      {
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'look' }, image] },
+          { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+          { role: 'user', content: [{ type: 'text', text: 'and now?' }] }
+        ]
+      },
+      'auto',
+      authM,
+      false,
+      0,
+      undefined,
+      '/ws-wire-size',
+      true,
+      'ses_wire_size'
+    )
+
+    const history = (result.conversationState as any).history ?? []
+    const images = history.flatMap((h: any) => h.userInputMessage?.images ?? [])
+
+    expect(images).toHaveLength(1)
+    expect(Date.now() - started).toBeLessThan(500)
   })
 })

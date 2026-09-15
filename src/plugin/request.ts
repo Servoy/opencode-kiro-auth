@@ -1,6 +1,5 @@
 import * as crypto from 'crypto'
-import * as os from 'os'
-import { KIRO_CONSTANTS, buildUrl, extractRegionFromArn } from '../constants.js'
+import { KIRO_CONSTANTS, extractRegionFromArn } from '../constants.js'
 import {
   buildHistory,
   extractToolNamesFromHistory,
@@ -17,6 +16,7 @@ import {
   createToolNameRegistry,
   deduplicateToolResults
 } from '../infrastructure/transformers/tool-transformer.js'
+import { convertDocumentsToKiroFormat, extractAllDocuments } from './document-handler.js'
 import { getEffectiveEffort } from './effort.js'
 import { imageCache } from './image-cache.js'
 import {
@@ -27,6 +27,7 @@ import {
   type KiroImage
 } from './image-handler.js'
 import * as logger from './logger.js'
+import { buildModelRequestFields } from './model-request-fields.js'
 import { resolveKiroModel } from './models.js'
 import { resolveKiroEndpoint } from './sdk-client.js'
 import { kiroDb } from './storage/sqlite.js'
@@ -34,28 +35,27 @@ import type {
   CodeWhispererRequest,
   Effort,
   KiroAuthDetails,
-  PreparedRequest,
   SdkPreparedRequest,
   ToolNameMap
 } from './types'
 
-interface EffortConfig {
-  effort?: Effort
-  autoEffortMapping?: boolean
-}
-
-// Look up or mint a stable convId per (workspace, fingerprint) pair.
-// On a cache miss (new session or new prompt) we mint UUIDs; on a hit we
-// reuse the stored ones so continuations land in the same conversation.
+/**
+ * Look up or mint a stable convId for this conversation.
+ *
+ * A host session is one conversation, so when the host gives us a session id
+ * that alone identifies it. Mixing the first message's text into the key made
+ * the identity depend on text that legitimately changes — reverting a message,
+ * editing one, or compacting the history all rewrote it, and Kiro then saw a
+ * brand new conversation that remembered nothing. Without a session id the
+ * text is all we have to tell two conversations in a directory apart.
+ */
 function deriveConversationIds(
   workspace: string,
-  firstUserContent: string
+  firstUserContent: string,
+  hasSessionId: boolean
 ): { convId: string; agentContinuationId: string; fingerprint: string } {
-  const fingerprint = crypto
-    .createHash('sha256')
-    .update(workspace + '\0' + (firstUserContent || '_empty_'))
-    .digest('hex')
-    .slice(0, 32)
+  const identity = hasSessionId ? workspace : workspace + '\0' + (firstUserContent || '_empty_')
+  const fingerprint = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 32)
 
   const existing = kiroDb.getConversationId(workspace, fingerprint)
   if (existing) {
@@ -98,7 +98,7 @@ function buildCodeWhispererRequest(
   workspace = '',
   carryForward = true,
   sessionId?: string,
-  maxPayloadBytes = 4_000_000
+  maxPayloadBytes = 5_000_000
 ): TransformResult {
   const req = typeof body === 'string' ? JSON.parse(body) : body
   const { messages, tools, system } = req
@@ -133,7 +133,8 @@ function buildCodeWhispererRequest(
   logger.debug(`[CONV] ws=${workspaceKey} sessionId=${sessionId ?? 'none'} msgs=${msgs.length}`)
   const { convId, agentContinuationId, fingerprint } = deriveConversationIds(
     workspaceKey,
-    firstUserContent
+    firstUserContent,
+    !!sessionId
   )
   const resolved = resolveKiroModel(model)
   const normalizedTools = Array.isArray(tools) ? tools : []
@@ -171,6 +172,7 @@ function buildCodeWhispererRequest(
   let curContent = ''
   const curTrs: any[] = []
   const curImgs: any[] = []
+  const curDocs: any[] = []
 
   if (curMsg.role === 'assistant') {
     const arm: any = { content: '' }
@@ -245,6 +247,15 @@ function buildCodeWhispererRequest(
         curImgs.push(...images)
         if (omitted > 0) {
           curContent += `\n\n[${omitted} image(s) omitted due to API limits]`
+        }
+      }
+
+      const unifiedDocuments = extractAllDocuments(curMsg.content)
+      if (unifiedDocuments.length > 0) {
+        const { documents, omitted } = convertDocumentsToKiroFormat(unifiedDocuments)
+        curDocs.push(...documents)
+        if (omitted > 0) {
+          curContent += `\n\n[${omitted} document(s) omitted due to API limits]`
         }
       }
     } else curContent = getContentText(curMsg)
@@ -326,6 +337,7 @@ function buildCodeWhispererRequest(
   if (uim) {
     uim.content = curContent
     if (curImgs.length) uim.images = curImgs
+    if (curDocs.length) uim.documents = curDocs
     const ctx: any = {}
     if (finalCurTrs.length) ctx.toolResults = deduplicateToolResults(finalCurTrs)
     if (cwTools.length) ctx.tools = cwTools
@@ -367,26 +379,47 @@ function buildCodeWhispererRequest(
   // Kiro rejects oversized payloads with CONTENT_LENGTH_EXCEEDS_THRESHOLD. The
   // hard limit is structure-dependent (verified against the live API): a single
   // message survives up to ~7.6MB, but many-entry histories are rejected as low
-  // as ~5.9MB. The configurable maxPayloadBytes (default 4MB) stays safely below
-  // the lowest observed failure regardless of history shape.
+  // as ~5.9MB. The configurable maxPayloadBytes (default 5MB) stays below the
+  // lowest observed failure. It was 4MB while attachments were measured eight
+  // times too large; with that corrected, 4MB rejected a 3MB screenshot that
+  // the service would have taken.
   // Compute per-entry sizes once and shrink incrementally to avoid O(N²)
   // re-stringifying the full request on every iteration.
   const MAX_PAYLOAD_BYTES = maxPayloadBytes
   const trimStartLen = history.length
   let trimSizeBefore = 0
   let trimSizeAfter = 0
+  let droppedAttachments = 0
   if (history.length > 0) {
-    const sizes = history.map((h) => JSON.stringify(h).length + 1)
+    const sizes = history.map((h) => wireSize(h) + 1)
     const baseRequest: any = { ...request, conversationState: { ...request.conversationState } }
     delete baseRequest.conversationState.history
-    let totalSize = JSON.stringify(baseRequest).length + 2 // for `"history":[]`
+    let totalSize = wireSize(baseRequest) + 2 // for `"history":[]`
     for (const s of sizes) totalSize += s
     trimSizeBefore = totalSize
+
+    // An attachment is only ever sent on the turn it arrived, so dropping the
+    // entry that carries it loses it from the conversation for good. Spend the
+    // text-only turns first and come back for these only if still over cap.
+    const attachmentCount = (h: any): number =>
+      (h?.userInputMessage?.documents?.length ?? 0) + (h?.userInputMessage?.images?.length ?? 0)
+    const carriesAttachment = (h: any): boolean => attachmentCount(h) > 0
+
+    for (let i = 0; history.length > 2 && totalSize > MAX_PAYLOAD_BYTES && i < history.length;) {
+      if (carriesAttachment(history[i])) {
+        i++
+        continue
+      }
+      totalSize -= sizes[i] || 0
+      sizes.splice(i, 1)
+      history.splice(i, 1)
+    }
 
     // Down to an empty history if need be: stopping short left long sessions
     // re-sending a payload the service had already rejected.
     while (history.length > 0 && totalSize > MAX_PAYLOAD_BYTES) {
       // Drop the two oldest entries (typically user + assistant pair).
+      droppedAttachments += attachmentCount(history[0]) + attachmentCount(history[1])
       totalSize -= (sizes.shift() || 0) + (sizes.shift() || 0)
       history.splice(0, 2)
 
@@ -420,6 +453,16 @@ function buildCodeWhispererRequest(
     )
   }
 
+  // An attachment is only sent on the turn it arrives, so one dropped here is
+  // gone from the conversation. Say so rather than let the model answer about
+  // a file it never received.
+  if (droppedAttachments > 0 && uim) {
+    uim.content += `\n\n[${droppedAttachments} attachment(s) dropped: this conversation exceeds Kiro's request size limit]`
+    logger.warn(
+      `[TRIM] dropped ${droppedAttachments} attachment(s) to fit ${Math.round(MAX_PAYLOAD_BYTES / 1024)}KB`
+    )
+  }
+
   if (history.length === 0 && trimSizeAfter > MAX_PAYLOAD_BYTES) {
     logger.warn(
       `[TRIM] current message alone is ~${Math.round(trimSizeAfter / 1024)}KB, over the ${Math.round(MAX_PAYLOAD_BYTES / 1024)}KB cap — the request will be rejected as too large`
@@ -448,13 +491,17 @@ function buildCodeWhispererRequest(
     }
   }
 
-  // Image carry-forward: cache surviving images; on turns without fresh images,
-  // restore from cache — but never onto a tool-result turn (Kiro 400 on
-  // images+toolResults). Skip the history scan entirely if this conversation
-  // has never carried images — saves O(N) over 1000+ entry sessions.
+  // Image carry-forward: every turn of an image-bearing conversation repeats the
+  // images on the current message, which is what the Kiro CLI does and what the
+  // model actually reads — an image left only in history does not reliably reach
+  // it. Fresh images come first; the cache fills the rest, so the attachment
+  // survives OpenCode stripping the bytes off earlier messages. Tool-result
+  // turns carry images too: skipping them blinded the model on exactly the turn
+  // where it calls a tool about the image. Conversations that never carried an
+  // image skip the scan entirely, sparing O(N) over 1000+ entry sessions.
   if (carryForward && uim) {
     const cmImgs = (uim.images as KiroImage[] | undefined) ?? []
-    const wireImages: KiroImage[] = cmImgs.length > 0 ? [...cmImgs] : []
+    const wireImages: KiroImage[] = [...cmImgs]
     if (
       wireImages.length < MAX_KIRO_IMAGES &&
       imageCache.hasEverHadImages(workspaceKey, fingerprint)
@@ -467,17 +514,10 @@ function buildCodeWhispererRequest(
       }
     }
 
-    if (wireImages.length > 0) {
-      imageCache.upsert(workspaceKey, fingerprint, wireImages)
-    } else {
-      const hasToolResults = (uim.userInputMessageContext?.toolResults?.length ?? 0) > 0
-      if (!hasToolResults) {
-        const cached = imageCache.get(workspaceKey, fingerprint)
-        if (cached && cached.length > 0) {
-          uim.images = cached.slice(0, MAX_KIRO_IMAGES)
-        }
-      }
-    }
+    if (wireImages.length > 0) imageCache.upsert(workspaceKey, fingerprint, wireImages)
+
+    const carried = imageCache.get(workspaceKey, fingerprint)
+    if (carried && carried.length > 0) uim.images = carried.slice(0, MAX_KIRO_IMAGES)
   }
 
   return {
@@ -490,56 +530,30 @@ function buildCodeWhispererRequest(
   }
 }
 
-export function transformToCodeWhisperer(
-  url: string,
-  body: any,
-  model: string,
-  auth: KiroAuthDetails,
-  think = false,
-  budget = 20000,
-  workspace = '',
-  carryForward = true,
-  sessionId?: string
-): PreparedRequest {
-  const { request, resolved, convId, toolNameMap } = buildCodeWhispererRequest(
-    body,
-    model,
-    auth,
-    think,
-    budget,
-    undefined,
-    workspace,
-    carryForward,
-    sessionId
-  )
-  const osP = os.platform(),
-    osR = os.release(),
-    nodeV = process.version.replace('v', '')
-  const osN =
-    osP === 'win32' ? `windows#${osR}` : osP === 'darwin' ? `macos#${osR}` : `${osP}#${osR}`
-  const ua = `aws-sdk-js/3.738.0 ua/2.1 os/${osN} lang/js md/nodejs#${nodeV} api/codewhisperer#3.738.0 m/E KiroIDE`
-  return {
-    url: buildUrl(KIRO_CONSTANTS.BASE_URL, extractRegionFromArn(auth.profileArn) ?? auth.region),
-    init: {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Authorization: `Bearer ${auth.access}`,
-        'amz-sdk-invocation-id': crypto.randomUUID(),
-        'amz-sdk-request': 'attempt=1; max=1',
-        'x-amzn-kiro-agent-mode': 'vibe',
-        'x-amz-user-agent': 'aws-sdk-js/3.738.0 KiroIDE',
-        'user-agent': ua,
-        Connection: 'close'
-      },
-      body: JSON.stringify(request)
-    },
-    streaming: true,
-    effectiveModel: resolved,
-    conversationId: convId,
-    toolNameMap
+/**
+ * Bytes an object costs on the wire.
+ *
+ * Attachments are Uint8Arrays that the SDK base64-encodes, but JSON.stringify
+ * renders them as {"0":137,"1":80,...} — about eight times their real size,
+ * and a quarter second of CPU per megabyte. Measuring that way both
+ * overstated the payload, so attachments were trimmed away as if they were
+ * enormous, and made every request pay for the mismeasurement.
+ */
+function wireSize(value: any): number {
+  let attachmentChars = 0
+  const strip = (node: any): any => {
+    if (!node || typeof node !== 'object') return node
+    if (node instanceof Uint8Array) {
+      attachmentChars += Math.ceil(node.byteLength / 3) * 4
+      return ''
+    }
+    if (Array.isArray(node)) return node.map(strip)
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(node)) out[k] = strip(v)
+    return out
   }
+
+  return JSON.stringify(strip(value)).length + attachmentChars
 }
 
 export function transformToSdkRequest(
@@ -552,8 +566,10 @@ export function transformToSdkRequest(
   workspace = '',
   carryForward = true,
   sessionId?: string,
-  effortConfig?: EffortConfig,
-  maxPayloadBytes = 4_000_000
+  maxPayloadBytes = 5_000_000,
+  thinkingDisabled = false,
+  maxTokens?: number,
+  requestedEffort?: Effort
 ): SdkPreparedRequest {
   const { request, resolved, convId, fingerprint, toolNameMap } = buildCodeWhispererRequest(
     body,
@@ -569,13 +585,8 @@ export function transformToSdkRequest(
   )
 
   // Resolve effort level based on config and model capabilities
-  const effort = getEffectiveEffort(
-    resolved,
-    think,
-    budget,
-    effortConfig?.effort,
-    effortConfig?.autoEffortMapping ?? true
-  )
+  const effort = thinkingDisabled ? undefined : getEffectiveEffort(resolved, think, requestedEffort)
+  const modelRequestFields = buildModelRequestFields(resolved, effort, thinkingDisabled, maxTokens)
 
   const region = extractRegionFromArn(auth.profileArn) ?? auth.region
   // resolveKiroEndpoint returns the full URL including /generateAssistantResponse.
@@ -583,12 +594,14 @@ export function transformToSdkRequest(
   const endpointFull = resolveKiroEndpoint(auth)
   const endpoint = endpointFull.replace(/\/generateAssistantResponse$/, '')
   const workspaceKey = sessionId ? `sess:${sessionId}` : workspace
-  if (process.env.DEBUG || process.env.OPENCODE_LOG_LEVEL === 'debug') {
-    const finalBytes = JSON.stringify(request.conversationState).length
-    logger.debug(
-      `[PAYLOAD] convId=${convId} ~${Math.round(finalBytes / 1024)}KB history=${request.conversationState.history?.length ?? 0} entries`
-    )
-  }
+  // Payload size is the strongest predictor of how long Kiro takes to answer —
+  // 4s below 100k tokens, over a minute past 300k — so it belongs on trace
+  // rather than behind an environment variable nobody remembers to set.
+  // Measuring costs a fraction of a millisecond; debug() decides the rest.
+  logger.debug(
+    `[PAYLOAD] convId=${convId} ~${Math.round(wireSize(request.conversationState) / 1024)}KB` +
+      ` history=${request.conversationState.history?.length ?? 0} entries`
+  )
   return {
     conversationState: request.conversationState,
     profileArn: request.profileArn,
@@ -599,6 +612,7 @@ export function transformToSdkRequest(
     region,
     endpoint,
     toolNameMap,
-    effort
+    effort,
+    modelRequestFields
   }
 }

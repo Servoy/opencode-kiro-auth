@@ -1,4 +1,5 @@
 import { KIRO_CONSTANTS } from '../../constants.js'
+import { convertDocumentsToKiroFormat, extractAllDocuments } from '../../plugin/document-handler.js'
 import {
   convertImagesToKiroFormat,
   extractAllImages,
@@ -107,6 +108,15 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
           uim.images = images
           if (omitted > 0) {
             uim.content += `\n\n[${omitted} image(s) omitted due to API limits]`
+          }
+        }
+
+        const unifiedDocuments = extractAllDocuments(m.content)
+        if (unifiedDocuments.length > 0) {
+          const { documents, omitted } = convertDocumentsToKiroFormat(unifiedDocuments)
+          uim.documents = documents
+          if (omitted > 0) {
+            uim.content += `\n\n[${omitted} document(s) omitted due to API limits]`
           }
         }
       } else {
