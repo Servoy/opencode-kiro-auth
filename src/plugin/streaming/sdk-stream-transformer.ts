@@ -3,6 +3,7 @@ import {
   deduplicateToolCallsByContent,
   restoreToolName
 } from '../../infrastructure/transformers/tool-transformer.js'
+import { describeError } from '../describe-error.js'
 import * as logger from '../logger.js'
 import { getModelContextLimit } from '../model-registry.js'
 import { estimateTokens } from '../response.js'
@@ -49,6 +50,15 @@ export async function* transformSdkStream(
   let cacheReadInputTokens: number | undefined
   let cacheWriteInputTokens: number | undefined
   let realOutputTokens: number | undefined
+  // Credits the service charged for this request. Reported, not derived: Kiro
+  // bills per credit rather than per token, so this is the only exact figure.
+  let credits: number | undefined
+  let creditUnit = 'credit'
+  // Time to the first token is one number and the answer is another. The
+  // second is usually the larger by far — a 7k-token reply streams for
+  // minutes — and it was the one nothing measured.
+  const streamStart = Date.now()
+  let firstTokenAt = 0
   const toolCalls: ToolCallState[] = []
   const activeToolCalls = new Map<string, ToolCallState>()
   let lastToolUseId: string | null = null
@@ -74,6 +84,7 @@ export async function* transformSdkStream(
         }
       } else if (event.assistantResponseEvent?.content) {
         const text = event.assistantResponseEvent.content
+        if (!firstTokenAt) firstTokenAt = Date.now()
         totalContent += text
         textOnlyContent += text
 
@@ -271,9 +282,8 @@ export async function* transformSdkStream(
         }
       } else if ((event as any).meteringEvent) {
         const me = (event as any).meteringEvent
-        logger.debug(
-          `[CREDITS] usage=${me.usage} ${me.unit || 'credit'}${me.usage !== 1 ? 's' : ''}`
-        )
+        if (typeof me.usage === 'number') credits = me.usage
+        if (me.unit) creditUnit = me.unit
       }
     }
 
@@ -432,6 +442,19 @@ export async function* transformSdkStream(
     if (uncachedInputTokens !== undefined) inputTokens = uncachedInputTokens
     if (realOutputTokens !== undefined) outputTokens = realOutputTokens
 
+    const elapsed = Date.now() - streamStart
+    const generating = firstTokenAt ? Date.now() - firstTokenAt : elapsed
+    const perSecond = generating > 0 ? Math.round((outputTokens * 1000) / generating) : 0
+
+    if (credits !== undefined) {
+      logger.debug(
+        `[CREDITS] usage=${credits} ${creditUnit}${credits !== 1 ? 's' : ''}` +
+          ` in=${inputTokens} out=${outputTokens} took=${elapsed}ms (${perSecond} tok/s)` +
+          ` cacheRead=${cacheReadInputTokens ?? 0} cacheWrite=${cacheWriteInputTokens ?? 0}` +
+          ` model=${model}`
+      )
+    }
+
     {
       const _c = convertToOpenAI(
         {
@@ -455,9 +478,7 @@ export async function* transformSdkStream(
       if (_c !== null) yield _c
     }
   } catch (e) {
-    logger.debug(
-      `[STREAM] Error in transformSdkStream: ${e instanceof Error ? e.message : String(e)}`
-    )
+    logger.debug(`[STREAM] Error in transformSdkStream: ${describeError(e)}`)
     for (const tc of activeToolCalls.values()) {
       logger.debug(
         `[STREAM] Incomplete tool call: name=${tc.name} id=${tc.toolUseId} inputLen=${tc.input.length}`

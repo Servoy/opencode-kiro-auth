@@ -1,7 +1,9 @@
 import { CodeWhispererStreamingClient } from '@aws/codewhisperer-streaming-client'
 import * as crypto from 'crypto'
 import { KIRO_CONSTANTS, buildUrl, extractRegionFromArn } from '../constants.js'
-import type { Effort, KiroAuthDetails } from './types'
+import { kiroHeaders } from './http-headers.js'
+import type { AdditionalModelRequestFields } from './model-request-fields.js'
+import type { KiroAuthDetails } from './types'
 
 const KIRO_VERSION = '0.11.63'
 const KIRO_CLI_MAX_ATTEMPTS = 3
@@ -34,14 +36,14 @@ export function resolveKiroEndpoint(auth: KiroAuthDetails): string {
 }
 
 /**
- * Cache key includes effort to ensure separate clients for different effort levels,
- * since middleware is configured at client creation time.
+ * Cache key includes the request fields, since the middleware that injects
+ * them is bound when the client is created.
  */
 interface ClientCacheEntry {
   client: CodeWhispererStreamingClient
   token: string
   endpoint: string
-  effort?: Effort
+  fieldsKey: string
 }
 
 const clientCache = new Map<string, ClientCacheEntry>()
@@ -49,16 +51,18 @@ const clientCache = new Map<string, ClientCacheEntry>()
 export function createSdkClient(
   auth: KiroAuthDetails,
   region: string,
-  effort?: Effort
+  fields?: AdditionalModelRequestFields,
+  requestTimeoutMs = 300_000
 ): CodeWhispererStreamingClient {
   const endpoint = resolveKiroEndpoint(auth)
+  const fieldsKey = fields ? JSON.stringify(fields) : 'none'
   // Cache key includes endpoint so a token refresh that also changes endpoint
-  // (unlikely but possible) gets a fresh client, and effort so different effort
-  // levels get separate clients (middleware is bound at creation time).
-  const cacheKey = `${region}:${auth.email || 'default'}:${endpoint}:${effort || 'none'}`
+  // (unlikely but possible) gets a fresh client, and the request fields so
+  // each combination gets its own (middleware is bound at creation time).
+  const cacheKey = `${region}:${auth.email || 'default'}:${endpoint}:${fieldsKey}:${requestTimeoutMs}`
   const cached = clientCache.get(cacheKey)
 
-  if (cached && cached.token === auth.access && cached.effort === effort) {
+  if (cached && cached.token === auth.access && cached.fieldsKey === fieldsKey) {
     return cached.client
   }
 
@@ -85,22 +89,31 @@ export function createSdkClient(
     customUserAgent: [[`${KIRO_CONSTANTS.USER_AGENT}-${KIRO_VERSION}-${machineId}`]],
     requestHandler: {
       connectionTimeout: 10000,
-      requestTimeout: 120000
+      // How long Kiro may take to start answering. The timer is cleared once
+      // the response headers arrive, so it does not limit how long the answer
+      // itself may stream. Five minutes because the wait grows with the
+      // conversation: a 300k-token history has been measured at 77s, and this
+      // aborts rather than warns, so the margin has to be real.
+      requestTimeout: requestTimeoutMs,
+      // Without this the timeout only logs a warning and the request hangs on.
+      throwOnRequestTimeout: true
     }
   })
 
   // Add Kiro-specific headers
   client.middlewareStack.add(
     (next: any) => async (args: any) => {
-      args.request.headers['x-amzn-kiro-agent-mode'] = 'vibe'
-      args.request.headers['x-amzn-codewhisperer-optout'] = 'true'
+      for (const [k, v] of Object.entries(kiroHeaders(auth.profileArn))) {
+        args.request.headers[k] = v
+      }
       return next(args)
     },
     { step: 'build', name: 'addKiroHeaders' }
   )
 
-  // Inject additionalModelRequestFields for effort-based thinking control
-  if (effort) {
+  // Inject additionalModelRequestFields — the reasoning channel, the off
+  // switch and the output ceiling all travel in this one block.
+  if (fields) {
     client.middlewareStack.add(
       (next: any) => async (args: any) => {
         // The SDK serializes input to args.input, we need to modify the body
@@ -108,11 +121,7 @@ export function createSdkClient(
         if (args.request?.body) {
           try {
             const body = JSON.parse(args.request.body)
-            body.additionalModelRequestFields = {
-              output_config: {
-                effort
-              }
-            }
+            body.additionalModelRequestFields = fields
             args.request.body = JSON.stringify(body)
           } catch {
             // If body parsing fails, continue without modification
@@ -124,8 +133,36 @@ export function createSdkClient(
     )
   }
 
-  clientCache.set(cacheKey, { client, token, endpoint, effort })
+  clientCache.set(cacheKey, { client, token, endpoint, fieldsKey })
+  registerProcessCleanup()
   return client
+}
+
+/**
+ * Close everything we hold when the process is winding down.
+ *
+ * OpenCode never calls the plugin's dispose hook — it has not fired once in
+ * any log — so the cleanup there has never run, and an open client with live
+ * sockets is left for the process to sort out. `beforeExit` fires when the
+ * loop would otherwise be done, which is the moment to let go.
+ *
+ * Registered once per process, not once per project: OpenCode loads a separate
+ * copy of this module for every open project, and 26 listeners on one signal
+ * is its own problem.
+ */
+const CLEANUP_REGISTERED = Symbol.for('kiro.sdkClientCleanupRegistered')
+
+function registerProcessCleanup(): void {
+  const g = globalThis as Record<symbol, unknown>
+  if (g[CLEANUP_REGISTERED]) return
+  g[CLEANUP_REGISTERED] = true
+  process.once('beforeExit', () => {
+    try {
+      clearSdkClientCache()
+    } catch {
+      // Nothing useful left to do while the process is on its way out.
+    }
+  })
 }
 
 export function clearSdkClientCache(): void {

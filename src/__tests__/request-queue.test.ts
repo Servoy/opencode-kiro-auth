@@ -37,12 +37,12 @@ describe('the shared Kiro request queue', () => {
     const handler = createHandler(120_000)
     const order: string[] = []
 
-    const first = handler.enqueueKiroRequest(async () => {
+    const first = handler.enqueueKiroRequest('acc-1', async () => {
       await new Promise((r) => setTimeout(r, 30))
       order.push('first')
       return 'a'
     })
-    const second = handler.enqueueKiroRequest(async () => {
+    const second = handler.enqueueKiroRequest('acc-1', async () => {
       order.push('second')
       return 'b'
     })
@@ -59,6 +59,7 @@ describe('the shared Kiro request queue', () => {
 
     let stuckReleased = false
     const stuck = handler.enqueueKiroRequest(
+      'acc-1',
       () =>
         new Promise(() => {
           stuckReleased = false
@@ -66,7 +67,7 @@ describe('the shared Kiro request queue', () => {
     )
     void stuck
 
-    const after = await handler.enqueueKiroRequest(async () => 'went through')
+    const after = await handler.enqueueKiroRequest('acc-1', async () => 'went through')
 
     expect(after).toBe('went through')
     expect(stuckReleased).toBe(false)
@@ -76,5 +77,122 @@ describe('the shared Kiro request queue', () => {
   test('the wait never drops below half a minute', () => {
     expect(createHandler(1_000).queueWaitMs()).toBe(30_000)
     expect(createHandler(300_000).queueWaitMs()).toBe(300_000)
+  })
+})
+
+describe("lanes keep accounts out of each other's way", () => {
+  test('two accounts run side by side instead of end to end', async () => {
+    // A single lane made a fan-out of subagents run sequentially even when
+    // each had its own account, which is the reason to have a second one.
+    const handler = createHandler(120_000)
+    const order: string[] = []
+    let releaseA!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      releaseA = resolve
+    })
+
+    const a = handler.enqueueKiroRequest('acc-a', async () => {
+      order.push('a-start')
+      await blocked
+      order.push('a-end')
+    })
+    const b = handler.enqueueKiroRequest('acc-b', async () => {
+      order.push('b-ran')
+    })
+
+    await b
+    expect(order).toEqual(['a-start', 'b-ran'])
+
+    releaseA()
+    await a
+    expect(order).toEqual(['a-start', 'b-ran', 'a-end'])
+  })
+
+  test('one account still runs its requests in order', async () => {
+    const handler = createHandler(120_000)
+    const order: string[] = []
+    let releaseFirst!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+
+    const first = handler.enqueueKiroRequest('acc-a', async () => {
+      order.push('first-start')
+      await blocked
+      order.push('first-end')
+    })
+    const second = handler.enqueueKiroRequest('acc-a', async () => {
+      order.push('second')
+    })
+
+    releaseFirst()
+    await Promise.all([first, second])
+    expect(order).toEqual(['first-start', 'first-end', 'second'])
+  })
+})
+
+describe('sessions do not hold each other up', () => {
+  /** The lane a request queues in, given what the store knows about it. */
+  function laneFor(handler: any, sessionId?: string): string {
+    return handler.queueLane(sessionId)
+  }
+
+  test('two fresh sessions get lanes of their own', async () => {
+    // An orchestrator fans out subagents that have never run before, so none
+    // of them has an account yet. Sharing one lane made that fan-out run one
+    // at a time, which is exactly what the lanes exist to prevent.
+    const handler = createHandler(120_000)
+    const a = laneFor(handler, 'ses_a')
+    const b = laneFor(handler, 'ses_b')
+
+    expect(a).not.toBe(b)
+  })
+
+  test('a fan-out of fresh sessions overlaps instead of queueing', async () => {
+    const handler = createHandler(120_000)
+    let running = 0
+    let peak = 0
+    const release: Array<() => void> = []
+
+    const work = ['ses_1', 'ses_2', 'ses_3', 'ses_4', 'ses_5'].map((session) =>
+      handler.enqueueKiroRequest(laneFor(handler, session), async () => {
+        running++
+        peak = Math.max(peak, running)
+        await new Promise<void>((resolve) => release.push(resolve))
+        running--
+      })
+    )
+
+    // Give every one of them a chance to start before any finishes.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(peak).toBe(5)
+
+    for (const done of release) done()
+    await Promise.all(work)
+  })
+
+  test('turns of one session still run in order', async () => {
+    // Parallelism between sessions, never within one: a conversationId is only
+    // valid on the account that made it, and a turn depends on the last.
+    const handler = createHandler(120_000)
+    const order: string[] = []
+    let releaseFirst!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+
+    const lane = laneFor(handler, 'ses_same')
+    const first = handler.enqueueKiroRequest(lane, async () => {
+      order.push('first-start')
+      await blocked
+      order.push('first-end')
+    })
+    const second = handler.enqueueKiroRequest(lane, async () => {
+      order.push('second')
+    })
+
+    releaseFirst()
+    await Promise.all([first, second])
+    expect(order).toEqual(['first-start', 'first-end', 'second'])
   })
 })

@@ -3,10 +3,12 @@ import type { AccountRepository } from '../../infrastructure/database/account-re
 import { isPermanentlyUnusable, isUsableAccount } from '../../plugin/account-usability'
 import type { AccountManager } from '../../plugin/accounts'
 import type { KiroConfig } from '../../plugin/config'
-import { THINKING_BUDGETS } from '../../plugin/effort'
+import type { Effort } from '../../plugin/config/schema'
+import { isEffort, THINKING_BUDGETS } from '../../plugin/effort'
 import { isPermanentError } from '../../plugin/health'
 import { imageCache } from '../../plugin/image-cache'
 import * as logger from '../../plugin/logger'
+import { EFFORT_OFF } from '../../plugin/model-request-fields'
 import { refreshModelCatalog } from '../../plugin/models'
 import { transformToSdkRequest } from '../../plugin/request'
 import { createSdkClient } from '../../plugin/sdk-client'
@@ -93,6 +95,36 @@ function logPassthrough(url: string): void {
   logger.warn(`Kiro fetch passthrough: ${host} is not a Kiro endpoint, forwarding unhandled`)
 }
 
+/**
+ * Everything OpenCode sends, minus the bulk.
+ *
+ * Messages, tools and the system prompt are summarised rather than printed —
+ * they are the payload, and the question this answers is what OpenCode says
+ * *about* a request: which variant was chosen, what options ride along, which
+ * headers arrive. A setting that never shows up here was never sent.
+ */
+function logIncomingRequest(body: any, init: any): void {
+  const BULK = new Set(['messages', 'tools', 'system', 'prompt'])
+  const rest: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(body ?? {})) {
+    if (!BULK.has(key)) rest[key] = value
+  }
+
+  // The shape of the tail is what tells you whether a turn is a tool loop or a
+  // fresh question; the first hundred of a long conversation are just noise.
+  const allRoles = Array.isArray(body?.messages)
+    ? body.messages.map((m: any) => String(m?.role ?? '?')[0]).join('')
+    : ''
+  const roles = allRoles.length > 40 ? `…${allRoles.slice(-40)}` : allRoles
+
+  logger.debug(
+    `[IN] messages=${body?.messages?.length ?? 0}(${roles}) tools=${body?.tools?.length ?? 0}` +
+      ` systemChars=${typeof body?.system === 'string' ? body.system.length : 0}` +
+      ` rest=${JSON.stringify(rest)}` +
+      ` headers=${JSON.stringify(init?.headers ?? null)}`
+  )
+}
+
 function extractSessionId(headers: unknown): string | undefined {
   if (!headers) return undefined
   const h = headers as Record<string, string>
@@ -109,7 +141,10 @@ export class RequestHandler {
   private reauthInFlight: Promise<boolean> | null = null
   private lastFailedReauthAt = 0
   private reauthFailureStreak = 0
-  private static kiroRequestQueue: Promise<void> = Promise.resolve()
+  /** One lane per account: different accounts must not wait on each other. */
+  private static kiroRequestQueues = new Map<string, Promise<void>>()
+  /** Requests in flight right now, so the log can show whether work overlapped. */
+  private static inFlight = 0
 
   constructor(
     private accountManager: AccountManager,
@@ -141,37 +176,74 @@ export class RequestHandler {
       return this.handleKiroRequest(url, init, showToast, sessionId)
     }
 
-    return this.enqueueKiroRequest(() => this.handleKiroRequest(url, init, showToast, sessionId))
+    return this.enqueueKiroRequest(this.queueLane(sessionId), () =>
+      this.handleKiroRequest(url, init, showToast, sessionId)
+    )
   }
 
   /**
-   * Run requests one at a time so several accounts share their rate limits.
+   * The lane a request queues in: the account that will serve it.
+   *
+   * Session affinity already decided that, so the lane is known before the
+   * account is selected. A session on its first turn has no account yet and
+   * shares one lane, which is the rare case.
+   */
+  private queueLane(sessionId?: string): string {
+    if (!sessionId) return 'unpinned'
+    try {
+      // A session has no account until its first turn has been served. Putting
+      // those in one lane made a fan-out of fresh subagents run one at a time,
+      // which is the case the lanes exist for — so an unpinned session is its
+      // own lane, and joins its account's lane once it has one.
+      const accountId = kiroDb.getSessionAccount(sessionId)
+      return accountId ? `acc:${accountId}` : `new:${sessionId}`
+    } catch {
+      return `new:${sessionId}`
+    }
+  }
+
+  /**
+   * Run one request at a time per account, so they share their rate limits.
+   *
+   * Serialising every request instead made two sessions on two accounts wait
+   * on each other, which is the opposite of what a second account is for — a
+   * fan-out of subagents ran end to end rather than side by side.
    *
    * The wait on the predecessor is bounded: ordering is a courtesy, and a
    * request that never settles must not wedge every later one in the process.
    */
-  private async enqueueKiroRequest<T>(run: () => Promise<T>): Promise<T> {
-    const previous = RequestHandler.kiroRequestQueue
+  private async enqueueKiroRequest<T>(lane: string, run: () => Promise<T>): Promise<T> {
+    const previous = RequestHandler.kiroRequestQueues.get(lane) ?? Promise.resolve()
     let release!: () => void
 
-    RequestHandler.kiroRequestQueue = new Promise((resolve) => {
+    const mine = new Promise<void>((resolve) => {
       release = resolve
     })
+    RequestHandler.kiroRequestQueues.set(lane, mine)
 
+    const queueStart = Date.now()
     const waited = await this.raceWithTimeout(
       previous.catch(() => {}),
       this.queueWaitMs()
     )
+    const queuedMs = Date.now() - queueStart
     if (!waited) {
       logger.warn(
         `Kiro request queue: predecessor still running after ${Math.round(this.queueWaitMs() / 1000)}s, proceeding in parallel`
       )
+    } else if (queuedMs > 100) {
+      logger.debug(`[QUEUE] lane=${lane} waited=${queuedMs}ms`)
     }
 
     try {
       return await run()
     } finally {
       release()
+      // Drop the lane once nothing is behind us, so the map tracks live work
+      // rather than every account ever used.
+      if (RequestHandler.kiroRequestQueues.get(lane) === mine) {
+        RequestHandler.kiroRequestQueues.delete(lane)
+      }
     }
   }
 
@@ -199,31 +271,52 @@ export class RequestHandler {
     showToast: ToastFunction,
     sessionId?: string
   ): Promise<Response> {
+    // Counted around the whole request, not each retry, and released however
+    // it ends — a counter that only comes down on success climbs forever.
+    RequestHandler.inFlight++
+    const concurrent = RequestHandler.inFlight
+    try {
+      return await this.runKiroRequest(url, init, showToast, sessionId, concurrent)
+    } finally {
+      RequestHandler.inFlight--
+    }
+  }
+
+  private async runKiroRequest(
+    url: string,
+    init: any,
+    showToast: ToastFunction,
+    sessionId: string | undefined,
+    concurrent: number
+  ): Promise<Response> {
     const body = init?.body ? JSON.parse(init.body) : {}
+    logIncomingRequest(body, init)
     const model = this.extractModel(url) || body.model || 'claude-sonnet-4-5'
 
-    // Resolve thinking mode + budget.
-    //
-    // Priority order:
-    //   1. Model ID ends with '-thinking'  → adaptive thinking, 'medium' default budget
-    //   2. providerOptions["kiro"].reasoningEffort  → adaptive mode, effort-based budget
-    //      (OpenCode sends this when the user picks low/medium/high in the UI)
-    //   3. providerOptions.thinkingConfig.thinkingBudget → explicit budget (legacy)
-    //
-    // Budgets come from plugin/effort.ts's THINKING_BUDGETS, the same reference
-    // scale getEffectiveEffort uses to map a budget back to an effort level —
-    // keeping a second budget table here would let the two drift apart.
-    const provOpts = body.providerOptions?.['kiro'] ?? body.providerOptions ?? {}
-    const reasoningEffort: string | undefined = provOpts.reasoningEffort
-    const thinkingConfig = body.providerOptions?.thinkingConfig
+    // What asks for thinking, in the order it is read:
+    //   1. the variant chosen for this request  → the level it names
+    //   2. a `-thinking` model id               → legacy, means adaptive
+    //   3. thinkingConfig.thinkingBudget        → legacy, a budget to map
+    // getEffectiveEffort decides between them; this only gathers them.
+    // OpenCode sends the chosen variant as a top-level `reasoning_effort`.
+    // That is the only shape there is: this is an OpenCode plugin, so there is
+    // no other host to be compatible with, and a version that changes its mind
+    // shows up in the [IN] trace line the next time anyone looks.
+    const reasoningEffort: string | undefined = body.reasoning_effort
 
-    const think = model.endsWith('-thinking') || !!reasoningEffort || !!thinkingConfig
+    // `off` is a real choice, not the absence of one: sending nothing lets the
+    // service apply its own default, which the catalog reports as high.
+    const thinkingDisabled = reasoningEffort === EFFORT_OFF
+    const think = !thinkingDisabled && (model.endsWith('-thinking') || !!reasoningEffort)
 
-    let uiEffort: 'low' | 'medium' | 'high' = 'medium'
-    if (reasoningEffort === 'low') uiEffort = 'low'
-    else if (reasoningEffort === 'high') uiEffort = 'high'
+    const requestedEffort: Effort | undefined = isEffort(reasoningEffort)
+      ? reasoningEffort
+      : undefined
+    // The <thinking_mode> prefix needs a number to state a ceiling with.
+    const budget: number = THINKING_BUDGETS[requestedEffort ?? 'medium']
 
-    const budget: number = thinkingConfig?.thinkingBudget || THINKING_BUDGETS[uiEffort]
+    const maxTokens: number | undefined =
+      typeof body.max_tokens === 'number' && body.max_tokens > 0 ? body.max_tokens : undefined
 
     let retry = 0
     let bearerRetried = false
@@ -245,15 +338,17 @@ export class RequestHandler {
         continue
       }
 
-      let acc = await this.accountSelector.selectHealthyAccount(showToast).catch(async (e) => {
-        if (e instanceof Error && e.message.includes('reauth required')) {
-          const reauthed = await this.triggerReauth(showToast)
-          if (!reauthed)
-            throw new Error('All accounts are unhealthy or rate-limited. Please re-authenticate.')
-          return null
-        }
-        throw e
-      })
+      let acc = await this.accountSelector
+        .selectHealthyAccount(showToast, sessionId)
+        .catch(async (e) => {
+          if (e instanceof Error && e.message.includes('reauth required')) {
+            const reauthed = await this.triggerReauth(showToast)
+            if (!reauthed)
+              throw new Error('All accounts are unhealthy or rate-limited. Please re-authenticate.')
+            return null
+          }
+          throw e
+        })
       if (!acc) {
         consecutiveNullAccounts++
         const backoffDelay = Math.min(1000 * Math.pow(2, consecutiveNullAccounts - 1), 10000)
@@ -262,6 +357,7 @@ export class RequestHandler {
       }
 
       consecutiveNullAccounts = 0
+      const tSelected = Date.now()
       const auth = this.accountManager.toAuthDetails(acc)
 
       const tokenResult = await this.tokenRefresher.refreshIfNeeded(acc, auth, showToast)
@@ -275,13 +371,31 @@ export class RequestHandler {
       // should wait on it. Cached, so it runs at most once every five minutes.
       void refreshModelCatalog(auth)
 
-      const sdkPrep = this.prepareSdkRequest(body, model, auth, think, budget, showToast, sessionId)
+      const tAuthed = Date.now()
+      const sdkPrep = this.prepareSdkRequest(
+        body,
+        model,
+        auth,
+        think,
+        budget,
+        showToast,
+        sessionId,
+        thinkingDisabled,
+        maxTokens,
+        requestedEffort
+      )
+      const tPrepared = Date.now()
 
       const histLen = (sdkPrep.conversationState as any).history?.length || 0
       const agentContId = (sdkPrep.conversationState as any).agentContinuationId || 'none'
       logger.debug(
-        `[REQ] convId=${sdkPrep.conversationId} history=${histLen} agentCont=${agentContId} model=${model}`
+        `[REQ] convId=${sdkPrep.conversationId} history=${histLen} agentCont=${agentContId} model=${model} effort=${sdkPrep.effort ?? 'none'}`
       )
+
+      // Attachments are the thing you most need to see when a model claims it
+      // cannot find an image, so this rides on trace rather than on the much
+      // heavier full request log.
+      this.logImageDiagnostic(sdkPrep)
 
       const apiTimestamp = this.config.enable_log_api_request ? logger.getTimestamp() : null
       if (apiTimestamp) {
@@ -289,13 +403,26 @@ export class RequestHandler {
       }
 
       try {
-        const client = createSdkClient(auth, sdkPrep.region, sdkPrep.effort)
+        const client = createSdkClient(
+          auth,
+          sdkPrep.region,
+          sdkPrep.modelRequestFields,
+          this.config.request_timeout_ms
+        )
         const command = new GenerateAssistantResponseCommand({
           conversationState: sdkPrep.conversationState as any,
           profileArn: sdkPrep.profileArn
         })
 
         const sdkResponse = await client.send(command)
+        const tUpstream = Date.now()
+        // The SDK retries throttling and transient failures on its own, with
+        // backoff, and says so only here. Without it a request that was
+        // retried twice is indistinguishable from one Kiro simply took a long
+        // time over — the difference between our problem and theirs.
+        const meta = (
+          sdkResponse as { $metadata?: { attempts?: number; totalRetryDelay?: number } }
+        ).$metadata
 
         if (apiTimestamp) {
           this.logSdkResponse(sdkPrep, apiTimestamp)
@@ -314,6 +441,17 @@ export class RequestHandler {
           sdkPrep.conversationId,
           sdkPrep.streaming,
           sdkPrep.toolNameMap
+        )
+        // Which side is slow is otherwise unanswerable. `upstream` is the wait
+        // for Kiro to start answering and dominates everything else; `handoff`
+        // is wrapping its stream, not reading it, since generation continues
+        // after this returns.
+        const done = Date.now()
+        logger.debug(
+          `[TIMING] convId=${sdkPrep.conversationId} auth=${tAuthed - tSelected}ms` +
+            ` prep=${tPrepared - tAuthed}ms upstream=${tUpstream - tPrepared}ms` +
+            ` handoff=${done - tUpstream}ms inFlight=${concurrent}` +
+            ` attempts=${meta?.attempts ?? 1} retryDelay=${meta?.totalRetryDelay ?? 0}ms`
         )
         logger.debug(`[REQ] done convId=${sdkPrep.conversationId}`)
         return result
@@ -456,7 +594,10 @@ export class RequestHandler {
     think: boolean,
     budget: number,
     showToast?: (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void,
-    sessionId?: string
+    sessionId?: string,
+    thinkingDisabled = false,
+    maxTokens?: number,
+    requestedEffort?: Effort
   ): SdkPreparedRequest {
     return transformToSdkRequest(
       body,
@@ -468,8 +609,10 @@ export class RequestHandler {
       this.workspace,
       this.config.image_carry_forward,
       sessionId,
-      { effort: this.config.effort, autoEffortMapping: this.config.auto_effort_mapping },
-      this.config.max_payload_bytes
+      this.config.max_payload_bytes,
+      thinkingDisabled,
+      maxTokens,
+      requestedEffort
     )
   }
 
@@ -487,11 +630,8 @@ export class RequestHandler {
 
   private logSdkRequest(prep: SdkPreparedRequest, acc: ManagedAccount, timestamp: string): void {
     // Mirrors what the sdk-client middleware injects, so logs reflect the wire body.
-    const additionalModelRequestFields = prep.effort
-      ? { output_config: { effort: prep.effort } }
-      : undefined
+    const additionalModelRequestFields = prep.modelRequestFields
 
-    this.logImageDiagnostic(prep)
     logger.logApiRequest(
       {
         url: `${prep.endpoint}/generateAssistantResponse`,
@@ -515,12 +655,15 @@ export class RequestHandler {
     )
   }
 
+  /** What attachments actually went out, on the current turn and in history. */
   private logImageDiagnostic(prep: SdkPreparedRequest): void {
     const kb = (bytes: number): number => Math.round(bytes / 1024)
     const sumBytes = (imgs: { source?: { bytes?: { byteLength?: number } } }[]): number =>
       imgs.reduce((n, im) => n + (im.source?.bytes?.byteLength ?? 0), 0)
 
-    const cmImgs = prep.conversationState.currentMessage?.userInputMessage?.images ?? []
+    const uim = prep.conversationState.currentMessage?.userInputMessage as any
+    const cmImgs = uim?.images ?? []
+    const cmDocs = uim?.documents ?? []
     const history = (prep.conversationState as any).history ?? []
     const histDetail: string[] = []
     let histImgs = 0
@@ -535,9 +678,14 @@ export class RequestHandler {
     }
 
     const detail = histDetail.length ? ` detail=[${histDetail.join(',')}]` : ''
-    logger.log(
-      `[IMG] convId=${prep.conversationId} cur=${cmImgs.length}(${kb(sumBytes(cmImgs))}KB)` +
-        ` hist=${histImgs}/${history.length}(${histKb}KB)${detail}`
+    const histDocs = history.reduce(
+      (n: number, h: any) => n + (h?.userInputMessage?.documents?.length ?? 0),
+      0
+    )
+    logger.debug(
+      `[IMG] convId=${prep.conversationId} curImg=${cmImgs.length}(${kb(sumBytes(cmImgs))}KB)` +
+        ` curDoc=${cmDocs.length} histImg=${histImgs}/${history.length}(${histKb}KB)` +
+        ` histDoc=${histDocs}${detail}`
     )
   }
 

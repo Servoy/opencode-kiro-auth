@@ -1,5 +1,7 @@
 import type { AccountRepository } from '../../infrastructure/database/account-repository'
 import type { AccountManager } from '../../plugin/accounts'
+import * as logger from '../../plugin/logger'
+import { kiroDb } from '../../plugin/storage/sqlite'
 import type { ManagedAccount } from '../../plugin/types'
 import { summarizeUsage } from '../../plugin/usage'
 
@@ -22,8 +24,27 @@ export class AccountSelector {
     private repository: AccountRepository
   ) {}
 
-  async selectHealthyAccount(showToast: ToastFunction): Promise<ManagedAccount | null> {
+  /**
+   * Pick an account to serve this request.
+   *
+   * A session sticks to the account that first served it. A conversationId is
+   * only valid on the account that created it, so a pool rotating mid-session
+   * makes the service reject the id and the conversation restarts — which is
+   * what the "stale conversationId" retries were. The pin is advisory: an
+   * unhealthy or rate-limited account falls through to normal selection and
+   * the session is re-pinned to whoever answers.
+   */
+  async selectHealthyAccount(
+    showToast: ToastFunction,
+    sessionId?: string
+  ): Promise<ManagedAccount | null> {
     this.checkCircuitBreaker()
+
+    const pinned = sessionId ? this.pinnedAccount(sessionId) : null
+    if (pinned) {
+      this.resetCircuitBreaker()
+      return pinned
+    }
 
     let count = this.accountManager.getAccountCount()
 
@@ -53,6 +74,7 @@ export class AccountSelector {
     }
 
     this.resetCircuitBreaker()
+    if (sessionId) this.pinAccount(sessionId, acc.id)
 
     const used = acc.usedCount ?? 0
     const limit = acc.limitCount ?? 0
@@ -61,6 +83,32 @@ export class AccountSelector {
     }
 
     return acc
+  }
+
+  private pinnedAccount(sessionId: string): ManagedAccount | null {
+    let accountId: string | undefined
+    try {
+      accountId = kiroDb.getSessionAccount(sessionId)
+    } catch {
+      // The store is optional; without it every request just selects normally.
+      return null
+    }
+    if (!accountId) return null
+
+    const acc = this.accountManager.getUsableById(accountId)
+    if (!acc) {
+      logger.debug(`[AFFINITY] ${sessionId} pinned account unusable, reselecting`)
+      return null
+    }
+    return acc
+  }
+
+  private pinAccount(sessionId: string, accountId: string): void {
+    try {
+      kiroDb.setSessionAccount(sessionId, accountId)
+    } catch (e) {
+      logger.debug(`[AFFINITY] could not pin (${e instanceof Error ? e.message : e})`)
+    }
   }
 
   private async handleEmptyAccounts(): Promise<void> {

@@ -97,6 +97,24 @@ export class AccountManager {
     const waits = this.accounts.map((a) => (a.rateLimitResetTime || 0) - now).filter((t) => t > 0)
     return waits.length > 0 ? Math.min(...waits) : 0
   }
+  /**
+   * The account with this id, but only while it is usable.
+   *
+   * Session affinity asks for a specific account; an unhealthy or rate-limited
+   * one must still fall through to normal selection rather than stall the
+   * session on a dead account.
+   */
+  getUsableById(id: string): ManagedAccount | null {
+    const acc = this.accounts.find((a) => a.id === id)
+    if (!acc || !evaluateAccount(acc, Date.now()).usable) return null
+    if (!acc.isHealthy) {
+      acc.isHealthy = true
+      delete acc.unhealthyReason
+      delete acc.recoveryTime
+    }
+    return acc
+  }
+
   getCurrentOrNext(): ManagedAccount | null {
     const now = Date.now()
     const available = this.accounts.filter((a) => {

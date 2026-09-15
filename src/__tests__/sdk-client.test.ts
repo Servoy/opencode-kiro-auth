@@ -70,7 +70,7 @@ describe('SDK client', () => {
   test('injects effort before content-length is computed', async () => {
     clearSdkClientCache()
 
-    const client = createSdkClient(auth(), 'us-east-1', 'max')
+    const client = createSdkClient(auth(), 'us-east-1', { output_config: { effort: 'max' } })
     const { body, request } = await captureRequest(client)
 
     expect(body.additionalModelRequestFields.output_config.effort).toBe('max')
@@ -93,7 +93,7 @@ describe('SDK client', () => {
   test('injects xhigh, the level that was previously unreachable', async () => {
     clearSdkClientCache()
 
-    const client = createSdkClient(auth(), 'us-east-1', 'xhigh')
+    const client = createSdkClient(auth(), 'us-east-1', { output_config: { effort: 'xhigh' } })
     const { body, request } = await captureRequest(client)
 
     expect(body.additionalModelRequestFields.output_config.effort).toBe('xhigh')
@@ -105,9 +105,9 @@ describe('SDK client', () => {
   test('does not reuse a cached client across different effort levels', () => {
     clearSdkClientCache()
 
-    const max = createSdkClient(auth(), 'us-east-1', 'max')
-    const xhigh = createSdkClient(auth(), 'us-east-1', 'xhigh')
-    const maxAgain = createSdkClient(auth(), 'us-east-1', 'max')
+    const max = createSdkClient(auth(), 'us-east-1', { output_config: { effort: 'max' } })
+    const xhigh = createSdkClient(auth(), 'us-east-1', { output_config: { effort: 'xhigh' } })
+    const maxAgain = createSdkClient(auth(), 'us-east-1', { output_config: { effort: 'max' } })
 
     expect(xhigh).not.toBe(max)
     expect(maxAgain).toBe(max)
@@ -144,5 +144,19 @@ describe('resolveKiroEndpoint region consistency', () => {
     expect(resolveKiroEndpoint(a)).toBe(
       'https://q.us-east-1.amazonaws.com/generateAssistantResponse'
     )
+  })
+})
+
+describe('letting go when the process winds down', () => {
+  test('only one cleanup listener exists however many projects are open', () => {
+    // OpenCode loads a separate copy of this module per project. Twenty-six
+    // listeners on one event is a warning and a leak, not cleanup.
+    const before = process.listenerCount('beforeExit')
+
+    createSdkClient(auth(), 'us-east-1', { output_config: { effort: 'low' } })
+    createSdkClient(auth(), 'eu-central-1', { output_config: { effort: 'high' } })
+    createSdkClient(auth(), 'us-west-2')
+
+    expect(process.listenerCount('beforeExit')).toBeLessThanOrEqual(before + 1)
   })
 })
