@@ -80,6 +80,20 @@ export function collapseAgenticLoops(history: CodeWhispererMessage[]): CodeWhisp
   return result
 }
 
+/**
+ * Content a history entry can be sent with.
+ *
+ * An entry whose content is empty is treated as nothing — and takes whatever
+ * rode along with it, which is how an image pasted without a caption stopped
+ * reaching the model two turns later. Every other Kiro client guards this the
+ * same way, on both sides of the conversation.
+ */
+const EMPTY_HISTORY_CONTENT = '(empty)'
+
+function withContent(content: string): string {
+  return content.trim() ? content : EMPTY_HISTORY_CONTENT
+}
+
 export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessage[] {
   let history: CodeWhispererMessage[] = []
   for (let i = 0; i < msgs.length - 1; i++) {
@@ -123,6 +137,7 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
         uim.content = getContentText(m)
       }
 
+      uim.content = withContent(uim.content)
       if (trs.length) uim.userInputMessageContext = { toolResults: deduplicateToolResults(trs) }
       const prev = history[history.length - 1]
       if (prev && prev.userInputMessage)
@@ -188,6 +203,7 @@ export function buildHistory(msgs: any[], resolved: string): CodeWhispererMessag
       if (!arm.content && !arm.toolUses) {
         continue
       }
+      arm.content = withContent(arm.content ?? '')
 
       const prevMsg = history[history.length - 1]
       if (prevMsg && prevMsg.assistantResponseMessage) {

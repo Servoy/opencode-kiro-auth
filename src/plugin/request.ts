@@ -491,33 +491,34 @@ function buildCodeWhispererRequest(
     }
   }
 
-  // Image carry-forward: every turn of an image-bearing conversation repeats the
-  // images on the current message, which is what the Kiro CLI does and what the
-  // model actually reads — an image left only in history does not reliably reach
-  // it. Fresh images come first; the cache fills the rest, so the attachment
-  // survives OpenCode stripping the bytes off earlier messages. Tool-result
-  // turns carry images too: skipping them blinded the model on exactly the turn
-  // where it calls a tool about the image. Conversations that never carried an
-  // image skip the scan entirely, sparing O(N) over 1000+ entry sessions.
+  // Image carry-forward: put an image back only where it went missing.
+  //
+  // OpenCode strips the bytes off earlier messages, so an image the user sent
+  // ten turns ago can vanish from history entirely — and then the model is
+  // asked about something it cannot see. The cache exists to restore that.
+  //
+  // What it must not do is repeat an image that history already carries. Doing
+  // that attached a screenshot from turn 566 to every question for the next
+  // 145 turns: 87KB on each request, and a model being shown a picture as
+  // though it belonged to whatever was just asked.
   if (carryForward && uim) {
-    const cmImgs = (uim.images as KiroImage[] | undefined) ?? []
-    const wireImages: KiroImage[] = [...cmImgs]
-    if (
-      wireImages.length < MAX_KIRO_IMAGES &&
-      imageCache.hasEverHadImages(workspaceKey, fingerprint)
-    ) {
+    const freshImages = (uim.images as KiroImage[] | undefined) ?? []
+    const historyImages: KiroImage[] = []
+    if (imageCache.hasEverHadImages(workspaceKey, fingerprint) || freshImages.length > 0) {
       for (const h of history) {
         const imgs = h.userInputMessage?.images as KiroImage[] | undefined
-        if (!imgs || imgs.length === 0) continue
-        wireImages.push(...imgs)
-        if (wireImages.length >= MAX_KIRO_IMAGES) break
+        if (imgs && imgs.length > 0) historyImages.push(...imgs)
       }
     }
 
-    if (wireImages.length > 0) imageCache.upsert(workspaceKey, fingerprint, wireImages)
+    const known = [...freshImages, ...historyImages]
+    if (known.length > 0) imageCache.upsert(workspaceKey, fingerprint, known)
 
-    const carried = imageCache.get(workspaceKey, fingerprint)
-    if (carried && carried.length > 0) uim.images = carried.slice(0, MAX_KIRO_IMAGES)
+    // History still holds them, or the user just attached one: nothing to do.
+    if (freshImages.length === 0 && historyImages.length === 0) {
+      const carried = imageCache.get(workspaceKey, fingerprint)
+      if (carried && carried.length > 0) uim.images = carried.slice(0, MAX_KIRO_IMAGES)
+    }
   }
 
   return {

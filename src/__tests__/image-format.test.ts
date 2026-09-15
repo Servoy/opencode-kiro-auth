@@ -122,9 +122,10 @@ describe('an image stays visible for the rest of the conversation', () => {
     return (current.images ?? []).length
   }
 
-  test('a later question repeats the image, even when history still holds it', async () => {
-    // The model reads what is on the current message; an image left only in
-    // history reached it as nothing, and it went hunting for the file on disk.
+  test('a later question does not repeat an image history still holds', async () => {
+    // Repeating it attached a screenshot from turn 566 to every question for
+    // the next 145 turns — 87KB on each request, and a model shown a picture
+    // as though it belonged to whatever was just asked.
     const session = `ses_carry_kept_${Date.now()}`
     const first = [{ role: 'user', content: [{ type: 'text', text: 'what is this?' }, attachment] }]
     expect(await currentTurnImages(first, session)).toBe(1)
@@ -134,11 +135,11 @@ describe('an image stays visible for the rest of the conversation', () => {
         [
           ...first,
           { role: 'assistant', content: [{ type: 'text', text: 'A screenshot.' }] },
-          { role: 'user', content: [{ type: 'text', text: 'what is the last green word?' }] }
+          { role: 'user', content: [{ type: 'text', text: 'and something unrelated?' }] }
         ],
         session
       )
-    ).toBe(1)
+    ).toBe(0)
   })
 
   test('and when OpenCode has stripped the bytes off the earlier turn', async () => {
@@ -158,5 +159,121 @@ describe('an image stays visible for the rest of the conversation', () => {
         session
       )
     ).toBe(1)
+  })
+})
+
+describe('an image that history has lost', () => {
+  const auth: any = {
+    access: 'a',
+    refresh: 'r',
+    expires: 0,
+    authMethod: 'idc',
+    region: 'eu-central-1'
+  }
+  const attachment = { type: 'image_url', image_url: { url: `data:image/png;base64,${PNG}` } }
+
+  async function turn(messages: any[], sessionId: string) {
+    const { transformToSdkRequest } = await import('../plugin/request.js')
+    const result = transformToSdkRequest(
+      { messages },
+      'auto',
+      auth,
+      false,
+      0,
+      undefined,
+      '/ws-restore',
+      true,
+      sessionId
+    )
+    const state = result.conversationState as any
+    return {
+      current: (state.currentMessage.userInputMessage.images ?? []).length,
+      history: (state.history ?? []).reduce(
+        (n: number, h: any) => n + (h.userInputMessage?.images ?? []).length,
+        0
+      )
+    }
+  }
+
+  test('is put back once, and not again once history carries it', async () => {
+    const session = `ses_restore_${Date.now()}`
+    await turn([{ role: 'user', content: [{ type: 'text', text: 'look' }, attachment] }], session)
+
+    // OpenCode has stripped the bytes: nothing in history, nothing attached.
+    const stripped = [
+      { role: 'user', content: [{ type: 'text', text: 'look' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'A screenshot.' }] },
+      { role: 'user', content: [{ type: 'text', text: 'what colour?' }] }
+    ]
+    const restored = await turn(stripped, session)
+    expect(restored.current).toBe(1)
+
+    // History has it again: the current message is left alone.
+    const carried = [
+      { role: 'user', content: [{ type: 'text', text: 'look' }, attachment] },
+      { role: 'assistant', content: [{ type: 'text', text: 'A screenshot.' }] },
+      { role: 'user', content: [{ type: 'text', text: 'what colour?' }] }
+    ]
+    const kept = await turn(carried, session)
+    expect(kept.history).toBe(1)
+    expect(kept.current).toBe(0)
+  })
+})
+
+describe('what a history entry is allowed to look like', () => {
+  const auth: any = {
+    access: 'a',
+    refresh: 'r',
+    expires: 0,
+    authMethod: 'idc',
+    region: 'eu-central-1'
+  }
+  const attachment = { type: 'image_url', image_url: { url: `data:image/png;base64,${PNG}` } }
+
+  async function historyOf(messages: any[]) {
+    const { transformToSdkRequest } = await import('../plugin/request.js')
+    const result = transformToSdkRequest(
+      { messages },
+      'auto',
+      auth,
+      false,
+      0,
+      undefined,
+      '/ws-empty',
+      true,
+      `ses_empty_${Date.now()}_${Math.random()}`
+    )
+    return ((result.conversationState as any).history ?? []) as any[]
+  }
+
+  test('an image pasted without a caption still says something', async () => {
+    // An entry with empty content is treated as nothing, and takes whatever
+    // rode along with it — which is how the image stopped reaching the model
+    // two turns later. Every other Kiro client guards this the same way.
+    const history = await historyOf([
+      { role: 'user', content: [attachment] },
+      { role: 'assistant', content: [{ type: 'text', text: 'A screenshot.' }] },
+      { role: 'user', content: [{ type: 'text', text: 'and?' }] }
+    ])
+
+    const withImage = history.find((h) => (h.userInputMessage?.images ?? []).length > 0)
+    expect(withImage).toBeDefined()
+    expect(withImage.userInputMessage.content.length).toBeGreaterThan(0)
+  })
+
+  test('no entry on either side is sent empty', async () => {
+    const history = await historyOf([
+      { role: 'user', content: [attachment] },
+      { role: 'assistant', content: [{ type: 'text', text: '' }] },
+      { role: 'user', content: [{ type: 'text', text: '   ' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+      { role: 'user', content: [{ type: 'text', text: 'what was in it?' }] }
+    ])
+
+    for (const entry of history) {
+      const content = entry.userInputMessage?.content ?? entry.assistantResponseMessage?.content
+      expect(typeof content).toBe('string')
+      expect(content.trim().length).toBeGreaterThan(0)
+    }
   })
 })
