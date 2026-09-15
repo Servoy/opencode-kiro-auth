@@ -339,3 +339,70 @@ describe('a catalog cached by an older version', () => {
     expect(getCatalogCapabilities('claude-haiku-4-5')?.supportsRequestFields).toBe(false)
   })
 })
+
+describe('a catalog that could not be fetched', () => {
+  async function withFetch(failing: boolean, entries: unknown[] = []) {
+    const { refreshModelCatalog, resetMemoryOnly, getCatalogCapabilities } =
+      await import('../plugin/models.js')
+    resetMemoryOnly()
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => {
+      if (failing) throw new Error('network is down')
+      return new Response(JSON.stringify({ models: entries }), { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+    } finally {
+      globalThis.fetch = original
+    }
+    return getCatalogCapabilities
+  }
+
+  const HAIKU = { modelId: 'claude-haiku-4.5', tokenLimits: { maxInputTokens: 200000 } }
+
+  test('never replaces what another project already learned', async () => {
+    // kiro.db is shared by every project on the machine. A cold start whose
+    // first fetch fails used to write an empty map over a good row, and with
+    // no catalog a model that rejects additionalModelRequestFields is sent it
+    // again — the 400 this release was meant to end.
+    await withFetch(false, [HAIKU])
+
+    const afterFailure = await withFetch(true)
+    expect(afterFailure('claude-haiku-4-5')?.supportsRequestFields).toBe(false)
+  })
+
+  test('a stored row carrying no models is not treated as an answer', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    const { refreshModelCatalog, resetMemoryOnly, getCatalogCapabilities } =
+      await import('../plugin/models.js')
+    kiroDb.setModelCatalog('eu-central-1:', { __catalogVersion: 2 }, Date.now(), 5 * 60 * 1000)
+    resetMemoryOnly()
+
+    let fetched = false
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => {
+      fetched = true
+      return new Response(JSON.stringify({ models: [HAIKU] }), { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+    } finally {
+      globalThis.fetch = original
+    }
+
+    expect(fetched).toBe(true)
+    expect(getCatalogCapabilities('claude-haiku-4-5')?.supportsRequestFields).toBe(false)
+  })
+})

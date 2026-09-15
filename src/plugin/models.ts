@@ -158,7 +158,15 @@ export async function refreshModelCatalog(auth: KiroAuthDetails): Promise<void> 
       catalogAttemptedAt = Date.now()
       catalogTtl = CATALOG_RETRY_MS
       catalogKey = key
-      persist(key, catalogByKiroModel ?? new Map(), catalogAttemptedAt, CATALOG_RETRY_MS)
+      // Only back off in the shared store if there is something to back off
+      // with. kiro.db is shared by every project on the machine, so writing an
+      // empty map over a good row — which is what a cold start whose first
+      // fetch fails used to do — left all of them with no catalog for five
+      // minutes. With no catalog, a model that rejects additionalModel-
+      // RequestFields is sent it again and answers 400.
+      if (catalogByKiroModel && catalogByKiroModel.size > 0) {
+        persist(key, catalogByKiroModel, catalogAttemptedAt, CATALOG_RETRY_MS)
+      }
       logger.warn('Model catalog: discovery failed, keeping the built-in limits', {
         error: e instanceof Error ? e.message : String(e)
       })
@@ -191,7 +199,12 @@ function readStoredCatalog(key: string): boolean {
   const entries: Array<[string, ModelCapabilities]> = Object.entries(row.models)
     .filter(([model]) => model !== VERSION_KEY)
     .map(([model, value]) => [model, (value ?? {}) as ModelCapabilities])
-  catalogByKiroModel = entries.length > 0 ? new Map(entries) : catalogByKiroModel
+
+  // A row carrying no models answers nothing, so it must not count as an
+  // answer: saying otherwise short-circuits the fetch that would have got one.
+  if (entries.length === 0) return false
+
+  catalogByKiroModel = new Map(entries)
   catalogAttemptedAt = row.attemptedAt
   catalogTtl = row.ttlMs
   catalogKey = key

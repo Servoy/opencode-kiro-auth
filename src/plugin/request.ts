@@ -405,14 +405,22 @@ function buildCodeWhispererRequest(
       (h?.userInputMessage?.documents?.length ?? 0) + (h?.userInputMessage?.images?.length ?? 0)
     const carriesAttachment = (h: any): boolean => attachmentCount(h) > 0
 
-    for (let i = 0; history.length > 2 && totalSize > MAX_PAYLOAD_BYTES && i < history.length;) {
-      if (carriesAttachment(history[i])) {
-        i++
+    // In pairs, because history alternates user and assistant and the builder
+    // goes out of its way to keep it that way — it injects a placeholder turn
+    // rather than let two user entries meet. Removing one entry at a time
+    // undid that: a 200KB cap over an image-bearing conversation produced
+    // `uuaua`, a shape the service is never sent by anything else.
+    for (
+      let i = 0;
+      history.length > 2 && totalSize > MAX_PAYLOAD_BYTES && i + 1 < history.length;
+    ) {
+      if (carriesAttachment(history[i]) || carriesAttachment(history[i + 1])) {
+        i += 2
         continue
       }
-      totalSize -= sizes[i] || 0
-      sizes.splice(i, 1)
-      history.splice(i, 1)
+      totalSize -= (sizes[i] || 0) + (sizes[i + 1] || 0)
+      sizes.splice(i, 2)
+      history.splice(i, 2)
     }
 
     // Down to an empty history if need be: stopping short left long sessions
