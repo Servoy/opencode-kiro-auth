@@ -1,9 +1,9 @@
 name: Release
 
+# Never on its own. Publishing is a decision, not a consequence of tagging:
+# run it from the Actions tab when the release is meant to go out.
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
 
 jobs:
   release:
@@ -15,12 +15,15 @@ jobs:
 
       - run: bun install
 
+      # A tag is the last place to find out the suite is red.
+      - run: bun test
+
       - run: bun run typecheck
 
       - run: bun run build
 
       - name: Setup Node.js for npm publish
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
