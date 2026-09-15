@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { isEffort } from '../plugin/effort.js'
 import { EFFORT_OFF } from '../plugin/model-request-fields.js'
+import { readRequestOptions } from '../plugin/request-options.js'
 
 /**
  * Exactly what OpenCode 1.18 puts on the wire for a chosen variant, captured
@@ -17,33 +17,42 @@ const OPENCODE_BODY = {
   stream_options: { include_usage: true }
 }
 
-/** The reading the request handler performs, kept in one place to compare. */
-function readEffort(body: any): string | undefined {
-  const provOpts = body.providerOptions?.['kiro'] ?? body.providerOptions ?? {}
-  return body.reasoning_effort ?? body.reasoningEffort ?? provOpts.reasoningEffort
-}
-
 describe('the options OpenCode sends', () => {
+  // These call the same function the request handler runs. An earlier version
+  // of this file restated the reading logic and passed while the plugin looked
+  // in the wrong place entirely — the dial did nothing for days.
   test('the variant is read from the top of the body', () => {
-    expect(readEffort(OPENCODE_BODY)).toBe('low')
-    expect(isEffort(readEffort(OPENCODE_BODY))).toBe(true)
+    expect(readRequestOptions(OPENCODE_BODY, 'claude-sonnet-5').requestedEffort).toBe('low')
   })
 
-  test('off arrives the same way', () => {
-    expect(readEffort({ ...OPENCODE_BODY, reasoning_effort: EFFORT_OFF })).toBe(EFFORT_OFF)
-  })
-
-  test('a nested spelling still works', () => {
-    // Kept so a host that sends it under providerOptions is not broken.
-    expect(readEffort({ providerOptions: { kiro: { reasoningEffort: 'max' } } })).toBe('max')
+  test('off is a choice, not an absence', () => {
+    const options = readRequestOptions(
+      { ...OPENCODE_BODY, reasoning_effort: EFFORT_OFF },
+      'claude-sonnet-5'
+    )
+    expect(options.thinkingDisabled).toBe(true)
+    expect(options.think).toBe(false)
+    expect(options.requestedEffort).toBeUndefined()
   })
 
   test('no variant reads as nothing, which is not the same as off', () => {
-    expect(readEffort({ model: 'claude-sonnet-5' })).toBeUndefined()
+    const options = readRequestOptions({ model: 'claude-sonnet-5' }, 'claude-sonnet-5')
+    expect(options.requestedEffort).toBeUndefined()
+    expect(options.thinkingDisabled).toBe(false)
   })
 
-  test('max_tokens is a top-level number too', () => {
-    expect(OPENCODE_BODY.max_tokens).toBe(32000)
+  test('max_tokens is read from the top of the body too', () => {
+    expect(readRequestOptions(OPENCODE_BODY, 'claude-sonnet-5').maxTokens).toBe(32000)
+  })
+
+  test('a missing or nonsense ceiling is left alone', () => {
+    for (const max_tokens of [undefined, 0, -1, 'lots']) {
+      expect(readRequestOptions({ max_tokens }, 'claude-sonnet-5').maxTokens).toBeUndefined()
+    }
+  })
+
+  test('a -thinking model id still means adaptive', () => {
+    expect(readRequestOptions({}, 'claude-sonnet-5-thinking').think).toBe(true)
   })
 })
 

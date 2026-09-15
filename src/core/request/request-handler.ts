@@ -4,13 +4,12 @@ import { isPermanentlyUnusable, isUsableAccount } from '../../plugin/account-usa
 import type { AccountManager } from '../../plugin/accounts'
 import type { KiroConfig } from '../../plugin/config'
 import type { Effort } from '../../plugin/config/schema'
-import { isEffort, THINKING_BUDGETS } from '../../plugin/effort'
 import { isPermanentError } from '../../plugin/health'
 import { imageCache } from '../../plugin/image-cache'
 import * as logger from '../../plugin/logger'
-import { EFFORT_OFF } from '../../plugin/model-request-fields'
 import { refreshModelCatalog } from '../../plugin/models'
 import { transformToSdkRequest } from '../../plugin/request'
+import { readRequestOptions } from '../../plugin/request-options'
 import { createSdkClient } from '../../plugin/sdk-client'
 import { kiroDb } from '../../plugin/storage/sqlite'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
@@ -293,31 +292,11 @@ export class RequestHandler {
     logIncomingRequest(body, init)
     const model = this.extractModel(url) || body.model || 'claude-sonnet-4-5'
 
-    // What asks for thinking, in the order it is read:
-    //   1. the variant chosen for this request  → the level it names
-    //   2. a `-thinking` model id               → legacy, means adaptive
-    //   3. thinkingConfig.thinkingBudget        → legacy, a budget to map
-    // getEffectiveEffort decides between them; this only gathers them.
-    // OpenCode sends the chosen variant as a top-level `reasoning_effort`.
-    // That is the only shape there is: this is an OpenCode plugin, so there is
-    // no other host to be compatible with, and a version that changes its mind
-    // shows up in the [IN] trace line the next time anyone looks.
-    const reasoningEffort: string | undefined = body.reasoning_effort
-
-    // `off` is a real choice, not the absence of one: sending nothing lets the
-    // service apply its own default, which the catalog reports as high.
-    const thinkingDisabled = reasoningEffort === EFFORT_OFF
-    const think = !thinkingDisabled && (model.endsWith('-thinking') || !!reasoningEffort)
-
-    const requestedEffort: Effort | undefined = isEffort(reasoningEffort)
-      ? reasoningEffort
-      : undefined
-    // The <thinking_mode> prefix needs a number to state a ceiling with.
-    const budget: number = THINKING_BUDGETS[requestedEffort ?? 'medium']
-
-    const maxTokens: number | undefined =
-      typeof body.max_tokens === 'number' && body.max_tokens > 0 ? body.max_tokens : undefined
-
+    // Read where OpenCode actually puts them; see request-options.ts.
+    const { requestedEffort, thinkingDisabled, think, maxTokens, budget } = readRequestOptions(
+      body,
+      model
+    )
     let retry = 0
     let bearerRetried = false
     let consecutiveNullAccounts = 0

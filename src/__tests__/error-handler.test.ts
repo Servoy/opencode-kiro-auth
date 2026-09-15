@@ -3,6 +3,8 @@ import { ErrorHandler } from '../core/request/error-handler.js'
 import { AccountManager } from '../plugin/accounts.js'
 import type { ManagedAccount } from '../plugin/types.js'
 
+const sessionStore = new Map<string, string>()
+
 mock.module('../plugin/storage/sqlite.js', () => ({
   kiroDb: {
     getAccounts: () => [],
@@ -15,7 +17,13 @@ mock.module('../plugin/storage/sqlite.js', () => ({
     // fails depending on run order (see #tool-compatibility.test.ts).
     getConversationId: () => undefined,
     setConversationId: () => {},
-    deleteConversationId: () => {}
+    deleteConversationId: () => {},
+    // Added with session affinity. mock.module is global to the run, so a
+    // stub missing a method silently disables the feature in other files.
+    getSessionAccount: (sessionId: string) => sessionStore.get(sessionId),
+    setSessionAccount: (sessionId: string, accountId: string) => {
+      sessionStore.set(sessionId, accountId)
+    }
   }
 }))
 mock.module('../plugin/sync/kiro-cli.js', () => ({
