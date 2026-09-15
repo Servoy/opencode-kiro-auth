@@ -22,8 +22,8 @@ models with substantial trial quotas.
 - **Native Thinking Mode**: Streams Kiro's native reasoning to OpenCode's thinking
   block, with the reasoning flags declared on every thinking model, so it renders
   without any model configuration.
-- **Kiro Effort Mapping**: Maps OpenCode thinking budgets to Kiro's native effort
-  levels automatically, across the full `low`–`max` ladder.
+- **Reasoning Dial**: Every model that has one carries `off` through `max` as
+  OpenCode variants, set per model or per agent.
 - **Automated Recovery**: Exponential backoff for rate limits and automated token
   refresh.
 
@@ -33,26 +33,21 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
 
 ```json
 {
-  "plugin": ["@zhafron/opencode-kiro-auth"]
+  "plugin": ["@servoy/opencode-kiro-auth"]
 }
 ```
 
 That is the whole configuration. The plugin registers the `kiro` provider and
-advertises every model Kiro exposes, including a `-thinking` companion for each
-model that supports reasoning effort. Run `/models` to pick one.
+advertises every model Kiro exposes, each with its own reasoning dial. Run
+`/models` to pick one.
 
 Defining `provider.kiro.models` yourself replaces the plugin's registry entirely.
-Only do that to rename or restrict models, and see the reasoning flags below if
-any of them are `-thinking` models.
+Only do that to rename or restrict models, and see the reasoning flags below.
 
 ### Thinking Effort Configuration
 
-Every effort-capable Claude model gets a `-thinking` companion, already carrying
-the reasoning flags and an effort ladder as variants. Nothing to configure: pick a
-`-thinking` model and cycle its variants to change reasoning depth.
-
-Each `-thinking` entry declares two fields that OpenCode needs in order to render
-reasoning:
+Every model with a reasoning dial declares two fields OpenCode needs in order to
+render what comes back:
 
 ```json
 {
@@ -67,38 +62,33 @@ delta this plugin emits. If either is missing, OpenCode silently drops every
 reasoning chunk and no thinking block appears.
 
 If you override `provider.kiro.models` in your own config, you replace the
-plugin's registry wholesale — copy both fields onto any `-thinking` model you
-define, or reasoning will stop rendering.
+plugin's registry wholesale — copy both fields onto any model you define that
+should reason, or reasoning will stop rendering.
 
 Reasoning itself comes from the API: Kiro streams `reasoningContentEvent` on
 thinking models, and the plugin forwards each one as a `reasoning_content` delta.
 Nothing needs to be enabled for that. Models that instead inline reasoning as
 `<thinking>` tags in their answer are still handled, via a fallback scraper.
 
-Variants set `thinkingConfig.thinkingBudget`, which the plugin maps to Kiro's
-native `effort` field. Bands are scaled to Kiro's real thinking ceiling
-(1024-128000 on opus-4.8/opus-5), so every effort level including `xhigh` is
-reachable from a budget alone:
+Every model the catalog says has a reasoning dial carries it as OpenCode
+variants: `off`, `low`, `medium`, `high`, `xhigh`, `max`. Pick one per model, or
+per agent with `"variant"` in `opencode.json`. OpenCode sends the choice as a
+top-level `reasoning_effort` and the plugin passes that level on as it is.
 
-| OpenCode budget | Kiro effort |
-| --------------- | ----------- |
-| `<= 16384` | `low` |
-| `<= 32768` | `medium` |
-| `<= 65536` | `high` |
-| `<= 98304` | `xhigh` |
-| `> 98304` | `max` |
+`off` is a real position: it sends `thinking.type = disabled`. Choosing no
+variant is not the same thing — the service then applies its own default, which
+its catalog reports as `high`.
 
-`xhigh` is only available on opus-4.7, opus-4.8, opus-5 and sonnet-5. Those models
-get a five-variant ladder; the rest get four, and a budget in the `xhigh` band is
-clamped to `max`.
+`xhigh` appears only on models whose catalog entry lists it; the rest offer four
+levels. The Claude family reads `output_config.effort` and the GPT family reads
+`reasoning.effort`, so each gets the channel it understands.
 
-Kiro's GPT-5.6 tiers are not advertised. They configure reasoning through
-`reasoning.effort` / `reasoning.mode` instead of `output_config.effort`, so they
-need a separate request path.
+Temperature and top_p do nothing: CodeWhisperer has no such fields, and the
+plugin says so, so OpenCode stops offering them.
 
 Use `~/.config/opencode/kiro.json` for plugin-wide behavior such as auth sync,
-account selection, retry limits, and `auto_effort_mapping`. A top-level `effort`
-setting is a global override for all supported models, not a per-model setting.
+account selection and retry limits. Every setting with a default is listed in
+that file, and a setting added by a later version is appended on start.
 
 ## Setup
 
@@ -201,52 +191,58 @@ credentials.
 and that `kiro-cli login` succeeds.
 
 The plugin supports extensive configuration options.
-Edit `~/.config/opencode/kiro.json`:
+Edit `~/.config/opencode/kiro.json`. The file is created with every setting
+below, and any setting added by a later version is appended to it on start,
+so it always lists what the plugin actually does.
 
 ```json
 {
-  "auto_sync_kiro_cli": true,
   "account_selection_strategy": "lowest-usage",
   "default_region": "us-east-1",
-  "idc_start_url": "https://your-company.awsapps.com/start",
-  "idc_region": "us-east-1",
   "rate_limit_retry_delay_ms": 5000,
   "rate_limit_max_retries": 3,
   "max_request_iterations": 20,
-  "request_timeout_ms": 120000,
-  "token_expiry_buffer_ms": 120000,
+  "request_timeout_ms": 300000,
+  "token_expiry_buffer_ms": 300000,
   "usage_sync_max_retries": 3,
   "usage_tracking_enabled": true,
-  "auto_effort_mapping": true,
-  "enable_log_api_request": false
+  "auto_sync_kiro_cli": true,
+  "enable_log_api_request": false,
+  "web_search_enabled": true,
+  "image_carry_forward": true,
+  "max_payload_bytes": 5000000,
+  "trace": false,
+  "show_usage_in_model_name": true
 }
 ```
 
 ### Configuration Options
 
-- `auto_sync_kiro_cli`: Automatically sync sessions from Kiro CLI (default: `true`).
-- `account_selection_strategy`: Account rotation strategy (`sticky`, `round-robin`,
-  `lowest-usage`).
-- `default_region`: AWS region (`us-east-1`, `us-west-2`).
-- `idc_start_url`: Default IAM Identity Center Start URL (e.g.
-  `https://your-company.awsapps.com/start`). Leave unset/blank to default to AWS Builder
-  ID.
-- `idc_region`: IAM Identity Center (SSO OIDC) region (`sso_region`). Defaults to
-  `us-east-1`.
-- `rate_limit_retry_delay_ms`: Delay between rate limit retries (1000-60000ms).
-- `rate_limit_max_retries`: Maximum retry attempts for rate limits (0-10).
-- `max_request_iterations`: Maximum loop iterations to prevent hangs (10-1000).
-- `request_timeout_ms`: Request timeout in milliseconds (60000-600000ms).
-- `token_expiry_buffer_ms`: Token refresh buffer time (30000-300000ms).
-- `usage_sync_max_retries`: Retry attempts for usage sync (0-5).
-- `auth_server_port_start`: Legacy/ignored (no local auth server).
-- `auth_server_port_range`: Legacy/ignored (no local auth server).
-- `usage_tracking_enabled`: Enable usage tracking and toast notifications.
-- `auto_effort_mapping`: Automatically map OpenCode thinking budgets to Kiro effort
-  levels for supported models (default: `true`).
-- `enable_log_api_request`: Enable detailed API request logging. Request logs
-  include the resolved `additionalModelRequestFields`, so this is how you confirm
-  which effort level actually went out on the wire.
+- `account_selection_strategy`: Which account serves a new session: `sticky`, `round-robin` or `lowest-usage`. A session then stays on whichever one answered. Default: `"lowest-usage"`.
+- `default_region`: AWS region used when an account does not name one. Default: `"us-east-1"`.
+- `rate_limit_retry_delay_ms`: How long to wait after a 429 before trying again. Default: `5000`.
+- `rate_limit_max_retries`: How many times, before the error is shown instead. Default: `3`.
+- `max_request_iterations`: Attempts within one request — account switches, token refreshes, retries. Not agent steps: the guard against a request that never settles. Default: `20`.
+- `request_timeout_ms`: How long Kiro may take to _start_ answering, and how long we keep retrying one request. Not a limit on the answer: once it starts streaming it runs to the end. The wait grows with the conversation — a 300k-token history has been measured at 77 seconds. Default: `300000`.
+- `token_expiry_buffer_ms`: Refresh a token this long before it expires, so it never expires mid-answer. Default: `300000`.
+- `usage_sync_max_retries`: Attempts to read your quota. Failing leaves the last known percentage in place. Default: `3`.
+- `usage_tracking_enabled`: Track quota and warn as it runs out. Default: `true`.
+- `auto_sync_kiro_cli`: Import accounts the Kiro CLI has already signed in. Default: `true`.
+- `enable_log_api_request`: Log the full request and response bodies. Heavy; `trace` is usually enough. Default: `false`.
+- `web_search_enabled`: Offer Kiro's web_search tool. Default: `true`.
+- `image_carry_forward`: Repeat an image on later turns of the conversation it arrived in. Without it the model loses sight of it after the first answer. Default: `true`.
+- `max_payload_bytes`: Trim the conversation to fit this before sending. Default: `5000000`.
+- `trace`: Log what each request carries and where its time went. Default: `false`.
+- `show_usage_in_model_name`: Append the account quota to every model name — the one place OpenCode renders for a provider in all its clients. Default: `true`.
+
+### Optional
+
+These have no default and stay out of the file — setting a value turns them
+on rather than describing them.
+
+- `idc_start_url`: IAM Identity Center start URL. Unset means AWS Builder ID.
+- `idc_region`: IAM Identity Center (SSO OIDC) region. Defaults to `us-east-1`.
+- `idc_profile_arn`: Q Developer profile ARN, when your organisation requires one.
 
 ## Storage
 
