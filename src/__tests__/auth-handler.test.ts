@@ -133,3 +133,40 @@ describe('AuthHandler.refreshUsageFromApi', () => {
     }
   })
 })
+
+describe('what the sign-in form offers', () => {
+  function promptsFor(config: Record<string, unknown>) {
+    const handler = new AuthHandler(config as any, {} as any)
+    handler.setAccountManager({} as any)
+    return handler.getMethods().flatMap((m: any) => m.prompts ?? [])
+  }
+
+  test('shows the configured values, since OpenCode cannot prefill a field', () => {
+    // A text prompt takes message, placeholder, validate and when — there is
+    // no default. The placeholder is the only place a known value can show.
+    const prompts = promptsFor({
+      idc_start_url: 'https://d-996749b310.awsapps.com/start',
+      idc_region: 'eu-central-1',
+      idc_profile_arn: 'arn:aws:codewhisperer:eu-central-1:1:profile/AAA'
+    })
+
+    const placeholders = prompts.map((p: any) => p.placeholder)
+    expect(placeholders).toContain('https://d-996749b310.awsapps.com/start')
+    expect(placeholders).toContain('eu-central-1')
+    expect(placeholders).toContain('arn:aws:codewhisperer:eu-central-1:1:profile/AAA')
+  })
+
+  test('falls back to an example when nothing is configured', () => {
+    const prompts = promptsFor({})
+    const startUrl = prompts.find((p: any) => p.key === 'start_url')
+    expect(startUrl.placeholder).toBe('https://your-company.awsapps.com/start')
+  })
+
+  test('leaving a field blank is allowed when a value is already stored', () => {
+    const prompts = promptsFor({
+      idc_profile_arn: 'arn:aws:codewhisperer:eu-central-1:1:profile/AAA'
+    })
+    const arn = prompts.find((p: any) => p.key === 'profile_arn')
+    expect(arn.validate('')).toBeUndefined()
+  })
+})

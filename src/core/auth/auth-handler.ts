@@ -9,6 +9,49 @@ import { TokenRefresher } from './token-refresher.js'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
+/**
+ * The two prompts every IAM Identity Center method asks for.
+ *
+ * OpenCode has no way to prefill a text field, so a configured value goes in
+ * the placeholder: the user sees their own start URL and region rather than a
+ * stranger's example, and an empty answer keeps what is already there.
+ */
+function idcPrompts(configStartUrl?: string, configRegion?: string) {
+  return [
+    {
+      type: 'text' as const,
+      key: 'start_url',
+      message: configStartUrl
+        ? 'IAM Identity Center Start URL (leave blank to keep the current one)'
+        : 'IAM Identity Center Start URL (leave blank for AWS Builder ID)',
+      placeholder: configStartUrl || 'https://your-company.awsapps.com/start',
+      validate: (value: string) => {
+        if (!value) return undefined
+        try {
+          new URL(value)
+          return undefined
+        } catch {
+          return 'Please enter a valid URL'
+        }
+      }
+    },
+    {
+      type: 'text' as const,
+      key: 'idc_region',
+      message: configRegion
+        ? 'IAM Identity Center region (sso_region) (leave blank to keep the current one)'
+        : 'IAM Identity Center region (sso_region) (leave blank for us-east-1)',
+      placeholder: configRegion || 'us-east-1',
+      validate: (value: string) => {
+        if (!value) return undefined
+        return RegionSchema.safeParse(value.trim()).success
+          ? undefined
+          : 'Please enter a valid AWS region'
+      }
+    }
+  ]
+}
+
 export class AuthHandler {
   private accountManager?: any
   private startupUsageFetched = false
@@ -122,85 +165,23 @@ export class AuthHandler {
       {
         label: 'AWS Builder ID / IAM Identity Center',
         type: 'oauth' as const,
-        prompts: [
-          {
-            type: 'text' as const,
-            key: 'start_url',
-            message: configStartUrl
-              ? `IAM Identity Center Start URL (current: ${configStartUrl}, leave blank to keep)`
-              : 'IAM Identity Center Start URL (leave blank for AWS Builder ID)',
-            placeholder: 'https://your-company.awsapps.com/start',
-            validate: (value: string) => {
-              if (!value) return undefined
-              try {
-                new URL(value)
-                return undefined
-              } catch {
-                return 'Please enter a valid URL'
-              }
-            }
-          },
-          {
-            type: 'text' as const,
-            key: 'idc_region',
-            message:
-              configRegion && configRegion !== 'us-east-1'
-                ? `IAM Identity Center region (sso_region) (current: ${configRegion}, leave blank to keep)`
-                : 'IAM Identity Center region (sso_region) (leave blank for us-east-1)',
-            placeholder: 'us-east-1',
-            validate: (value: string) => {
-              if (!value) return undefined
-              return RegionSchema.safeParse(value.trim()).success
-                ? undefined
-                : 'Please enter a valid AWS region'
-            }
-          }
-        ],
+        prompts: [...idcPrompts(configStartUrl, configRegion)],
         authorize: (inputs?: any) => idcMethod.authorize(inputs)
       },
       {
         label: 'IAM Identity Center with Profile ARN',
         type: 'oauth' as const,
         prompts: [
-          {
-            type: 'text' as const,
-            key: 'start_url',
-            message: configStartUrl
-              ? `IAM Identity Center Start URL (current: ${configStartUrl}, leave blank to keep)`
-              : 'IAM Identity Center Start URL (leave blank for AWS Builder ID)',
-            placeholder: 'https://your-company.awsapps.com/start',
-            validate: (value: string) => {
-              if (!value) return undefined
-              try {
-                new URL(value)
-                return undefined
-              } catch {
-                return 'Please enter a valid URL'
-              }
-            }
-          },
-          {
-            type: 'text' as const,
-            key: 'idc_region',
-            message:
-              configRegion && configRegion !== 'us-east-1'
-                ? `IAM Identity Center region (sso_region) (current: ${configRegion}, leave blank to keep)`
-                : 'IAM Identity Center region (sso_region) (leave blank for us-east-1)',
-            placeholder: 'us-east-1',
-            validate: (value: string) => {
-              if (!value) return undefined
-              return RegionSchema.safeParse(value.trim()).success
-                ? undefined
-                : 'Please enter a valid AWS region'
-            }
-          },
+          ...idcPrompts(configStartUrl, configRegion),
           {
             type: 'text' as const,
             key: 'profile_arn',
             message: this.config.idc_profile_arn
-              ? `Profile ARN (current: ${this.config.idc_profile_arn}, leave blank to keep)`
-              : 'Profile ARN (e.g. arn:aws:codewhisperer:eu-central-1:428597928572:profile/HE7XVERQ9VXW)',
-            placeholder: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/XXXXXXXXXX',
+              ? 'Profile ARN (leave blank to keep the current one)'
+              : 'Profile ARN',
+            placeholder:
+              this.config.idc_profile_arn ||
+              'arn:aws:codewhisperer:us-east-1:123456789012:profile/XXXXXXXXXX',
             validate: (value: string) => {
               if (!value && this.config.idc_profile_arn) return undefined
               if (!value) return 'Profile ARN is required for this method'
