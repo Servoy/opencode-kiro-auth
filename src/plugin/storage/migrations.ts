@@ -11,6 +11,45 @@ export function runMigrations(db: SqliteDatabase): void {
   migrateReauthLockTable(db)
   migrateConversationsAgentContinuationId(db)
   migrateCollapseDuplicateAccounts(db)
+  migrateModelCatalogTable(db)
+  migrateSessionAccountsTable(db)
+}
+
+/**
+ * Which account served a session, so later turns go back to the same one.
+ *
+ * A conversationId is only valid on the account that created it, so a pool
+ * rotating mid-conversation makes the service reject it. Shared across
+ * projects for the same reason the catalog is.
+ */
+function migrateSessionAccountsTable(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_accounts (
+      session_id TEXT    PRIMARY KEY,
+      account_id TEXT    NOT NULL,
+      last_used  INTEGER NOT NULL
+    )
+  `)
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_session_accounts_last_used ON session_accounts(last_used)'
+  )
+}
+
+/**
+ * Model context windows, shared by every project on this machine.
+ *
+ * OpenCode gives each project its own plugin module, so an in-memory cache is
+ * held per project — with dozens open that was a catalog lookup each.
+ */
+function migrateModelCatalogTable(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS model_catalog (
+      key          TEXT    PRIMARY KEY,
+      models       TEXT    NOT NULL,
+      attempted_at INTEGER NOT NULL,
+      ttl_ms       INTEGER NOT NULL
+    )
+  `)
 }
 
 /**

@@ -69,8 +69,15 @@ export function warn(message: string, ...args: unknown[]): void {
   writeToFile('WARN', message, ...args)
 }
 
+let debugEnabled = false
+
+/** Turn on the debug-level diagnostics, from kiro.json's `trace`. */
+export function setDebugEnabled(enabled: boolean): void {
+  debugEnabled = enabled
+}
+
 export function debug(message: string, ...args: unknown[]): void {
-  if (process.env.DEBUG || process.env.OPENCODE_LOG_LEVEL === 'debug') {
+  if (debugEnabled || process.env.DEBUG || process.env.OPENCODE_LOG_LEVEL === 'debug') {
     writeToFile('DEBUG', message, ...args)
   }
 }

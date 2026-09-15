@@ -14,11 +14,53 @@ import * as logger from './plugin/logger.js'
 import { buildModelRegistry } from './plugin/model-registry.js'
 import { clearSdkClientCache } from './plugin/sdk-client.js'
 import { kiroDb } from './plugin/storage/sqlite.js'
+import { summarizeUsage } from './plugin/usage.js'
 import { formatWebSearchResults, kiroWebSearch } from './plugin/web-search.js'
 
 type ToastFunction = (message: string, variant: string) => void
 
 const KIRO_PROVIDER_ID = 'kiro'
+
+/**
+ * Quota marker for the model picker, e.g. "· 13%".
+ *
+ * Returns an empty string when no account reports a limit, so a model name is
+ * never decorated with a number nobody can act on.
+ */
+/**
+ * The models object OpenCode was handed, kept so the quota in each name can be
+ * refreshed in place.
+ *
+ * The registry is built once, in the config hook, and the percentage baked
+ * into every name froze there — it still read 13% after a morning's work took
+ * it to 14.5%. Whether OpenCode re-reads these names or snapshots them is its
+ * own business; updating the object we gave it is the only offer we can make.
+ */
+let installedModels: Record<string, unknown> | null = null
+let installedSuffix = ''
+
+function refreshQuotaInModelNames(accountManager: AccountManager): void {
+  if (!installedModels) return
+  const suffix = usageSuffix(accountManager)
+  if (!suffix || suffix === installedSuffix) return
+
+  for (const model of Object.values(installedModels)) {
+    const entry = model as { name?: string }
+    if (typeof entry.name !== 'string') continue
+    entry.name = installedSuffix
+      ? entry.name.replace(installedSuffix, suffix)
+      : `${entry.name} ${suffix}`
+  }
+  logger.debug(`[MODELS] quota suffix updated ${installedSuffix || '(none)'} -> ${suffix}`)
+  installedSuffix = suffix
+}
+
+function usageSuffix(accountManager: AccountManager): string {
+  const account = accountManager.getAccounts().find((a) => (a.limitCount ?? 0) > 0)
+  if (!account) return ''
+  const { pct } = summarizeUsage(account.usedCount ?? 0, account.limitCount ?? 0)
+  return `· ${pct}%`
+}
 
 // Read once at module load: confirms which published version is actually
 // running, since the plugin loader can silently keep a stale cached install.
@@ -86,6 +128,7 @@ export const createKiroPlugin =
   async ({ client, directory }: any) => {
     logger.log(`Kiro plugin init: version=${PLUGIN_VERSION} configDir=${getConfigDir()}`)
     const config = loadConfig(directory)
+    logger.setDebugEnabled(config.trace === true)
 
     const showToast: ToastFunction = (message: string, variant: string) => {
       // Flat params, not a `body` wrapper — the SDK maps message/variant at the top level.
@@ -133,7 +176,14 @@ export const createKiroPlugin =
           input.provider[id].api = baseURL
         }
         if (!input.provider[id].models) {
-          input.provider[id].models = buildModelRegistry()
+          const quota = config.show_usage_in_model_name === true ? usageSuffix(accountManager) : ''
+          logger.debug(`[MODELS] registry built, quota suffix=${quota || 'off'}`)
+          const models = buildModelRegistry(quota)
+          input.provider[id].models = models
+          if (config.show_usage_in_model_name === true) {
+            installedModels = models
+            installedSuffix = quota
+          }
         }
       },
       auth: {
@@ -148,7 +198,13 @@ export const createKiroPlugin =
             // always has a valid URL. The custom fetch below intercepts all Kiro
             // API calls, so this value is only used for URL construction.
             baseURL,
-            fetch: (input: any, init?: any) => requestHandler.handle(input, init, showToast)
+            fetch: async (input: any, init?: any) => {
+              const response = await requestHandler.handle(input, init, showToast)
+              // The usage tracker refreshes on its own cooldown; this is simply
+              // the next moment we are running after it may have done so.
+              refreshQuotaInModelNames(accountManager)
+              return response
+            }
           }
         },
         methods: authHandler.getMethods()

@@ -20,20 +20,16 @@ describe('context limit: one number per model', () => {
   })
 
   test('the advertised limit and the internally used limit are the same number', () => {
-    for (const id of [
-      'claude-sonnet-5',
-      'claude-opus-5',
-      'claude-sonnet-5-thinking',
-      'claude-opus-5-thinking'
-    ]) {
+    for (const id of ['claude-sonnet-5', 'claude-opus-5']) {
       const entry = registry[id]
       expect(entry).toBeDefined()
       expect(getModelContextLimit(id)).toBe(entry!.limit.context)
     }
   })
 
-  test('a -thinking id inherits its base model limit', () => {
-    for (const id of Object.keys(registry).filter((k) => k.endsWith('-thinking'))) {
+  test('a legacy -thinking id inherits its base model limit', () => {
+    // No longer advertised, but a config naming one must still get a limit.
+    for (const id of Object.keys(registry).map((k) => `${k}-thinking`)) {
       expect(getModelContextLimit(id)).toBe(getModelContextLimit(id.replace(/-thinking$/, '')))
     }
   })

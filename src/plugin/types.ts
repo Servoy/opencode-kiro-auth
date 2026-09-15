@@ -1,5 +1,6 @@
 import z from 'zod'
 import { EffortSchema, RegionSchema } from './config/schema'
+import type { AdditionalModelRequestFields } from './model-request-fields.js'
 
 export type KiroAuthMethod = 'idc' | 'desktop'
 export type KiroRegion = z.infer<typeof RegionSchema>
@@ -58,6 +59,7 @@ export interface CodeWhispererMessage {
     modelId: string
     origin: string
     images?: Array<{ format: string; source: { bytes: Uint8Array } }>
+    documents?: Array<{ name: string; format: string; source: { bytes: Uint8Array } }>
     userInputMessageContext?: {
       toolResults?: Array<{
         toolUseId: string
@@ -131,6 +133,8 @@ export interface SdkPreparedRequest {
   toolNameMap?: ToolNameMap
   /** Resolved effort level for thinking models */
   effort?: Effort
+  /** The additionalModelRequestFields block this request carries, if any. */
+  modelRequestFields?: AdditionalModelRequestFields
   // Resolved endpoint base URL (q.amazonaws.com or runtime.kiro.dev).
   // Set by transformToSdkRequest so callers and logs can show the real target.
   endpoint: string

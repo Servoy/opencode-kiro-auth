@@ -244,3 +244,40 @@ describe('KiroDatabase: conversations', () => {
     expect(() => db.deleteConversationId('ws', 'missing')).not.toThrow()
   })
 })
+
+describe('KiroDatabase: session affinity', () => {
+  test('remembers nothing for a session that has not been served', () => {
+    expect(db.getSessionAccount('ses_unknown')).toBeUndefined()
+  })
+
+  test('gives back the account that served the session', () => {
+    db.setSessionAccount('ses_a', 'acc-2')
+    expect(db.getSessionAccount('ses_a')).toBe('acc-2')
+  })
+
+  test('re-pinning moves the session to the new account', () => {
+    // The pin is advisory: when the pinned account is rate-limited the
+    // selector falls through and the session follows whoever answered.
+    db.setSessionAccount('ses_a', 'acc-2')
+    db.setSessionAccount('ses_a', 'acc-3')
+    expect(db.getSessionAccount('ses_a')).toBe('acc-3')
+  })
+
+  test('keeps sessions apart', () => {
+    db.setSessionAccount('ses_a', 'acc-2')
+    db.setSessionAccount('ses_b', 'acc-3')
+    expect(db.getSessionAccount('ses_a')).toBe('acc-2')
+    expect(db.getSessionAccount('ses_b')).toBe('acc-3')
+  })
+
+  test('forgets a pin older than its TTL', async () => {
+    const ONE_MS_IN_DAYS = 1 / (24 * 60 * 60 * 1000)
+    db.setSessionAccount('ses_old', 'acc-2')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    // Any write sweeps what fell outside the window.
+    db.setSessionAccount('ses_new', 'acc-3', ONE_MS_IN_DAYS)
+
+    expect(db.getSessionAccount('ses_old')).toBeUndefined()
+    expect(db.getSessionAccount('ses_new')).toBe('acc-3')
+  })
+})

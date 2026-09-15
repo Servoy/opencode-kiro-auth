@@ -69,33 +69,15 @@ export const KiroConfigSchema = z.object({
 
   max_request_iterations: z.number().min(5).max(1000).default(20),
 
-  request_timeout_ms: z.number().min(30000).max(600000).default(120000),
+  request_timeout_ms: z.number().min(30000).max(600000).default(300000),
 
   token_expiry_buffer_ms: z.number().min(30000).max(300000).default(300000),
 
   usage_sync_max_retries: z.number().min(0).max(5).default(3),
 
-  auth_server_port_start: z.number().min(1024).max(65535).default(19847),
-
-  auth_server_port_range: z.number().min(1).max(100).default(10),
-
   usage_tracking_enabled: z.boolean().default(true),
   auto_sync_kiro_cli: z.boolean().default(true),
   enable_log_api_request: z.boolean().default(false),
-
-  /**
-   * Default effort level for thinking models. Controls reasoning depth.
-   * When set, this overrides the automatic budget-based mapping.
-   * Values: 'low', 'medium', 'high', 'xhigh' (see XHIGH_CAPABLE_MODELS), 'max'
-   */
-  effort: EffortSchema.optional(),
-
-  /**
-   * Enable automatic effort mapping from OpenCode's thinking budget.
-   * When true (default), maps budget ranges to effort levels.
-   * When false, only uses explicit effort config or falls back to 'medium'.
-   */
-  auto_effort_mapping: z.boolean().default(true),
 
   // Expose Kiro's server-side web search as a `kiro_web_search` tool. Kiro runs
   // the search on its own infrastructure (billed as Kiro credits) and returns
@@ -120,10 +102,32 @@ export const KiroConfigSchema = z.object({
   // The 4MB default stays safely below the lowest observed failure regardless of
   // structure, while allowing far more context than a conservative cap. Raising
   // it risks 400s on long many-turn sessions; lowering it trims context sooner.
-  max_payload_bytes: z.number().min(100_000).max(5_500_000).default(4_000_000)
+  max_payload_bytes: z.number().min(100_000).max(5_500_000).default(5_000_000),
+
+  /** Write the debug-level diagnostics ([REQ], [TRIM], [IMG]) to plugin.log. */
+  trace: z.boolean().default(false),
+
+  /** Append the account's quota percentage to each model name in the picker. */
+  show_usage_in_model_name: z.boolean().default(true)
 })
 
 export type KiroConfig = z.infer<typeof KiroConfigSchema>
+
+/**
+ * Settings this plugin used to have.
+ *
+ * They are removed from a user's file rather than left behind pretending to
+ * do something. Only names we retired ourselves: a key we simply do not
+ * recognise is reported, never deleted, because it may be a typo worth seeing
+ * or a setting from a version newer than this one.
+ */
+export const RETIRED_SETTINGS = [
+  'auth_server_port_start',
+  'auth_server_port_range',
+  'auto_effort_mapping',
+  'effort',
+  'prompt_caching'
+] as const
 
 export const DEFAULT_CONFIG: KiroConfig = {
   account_selection_strategy: 'lowest-usage',
@@ -131,16 +135,15 @@ export const DEFAULT_CONFIG: KiroConfig = {
   rate_limit_retry_delay_ms: 5000,
   rate_limit_max_retries: 3,
   max_request_iterations: 20,
-  request_timeout_ms: 120000,
+  request_timeout_ms: 300000,
   token_expiry_buffer_ms: 300000,
   usage_sync_max_retries: 3,
-  auth_server_port_start: 19847,
-  auth_server_port_range: 10,
   usage_tracking_enabled: true,
   auto_sync_kiro_cli: true,
   enable_log_api_request: false,
-  auto_effort_mapping: true,
   web_search_enabled: true,
   image_carry_forward: true,
-  max_payload_bytes: 4_000_000
+  max_payload_bytes: 5_000_000,
+  trace: false,
+  show_usage_in_model_name: true
 }

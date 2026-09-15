@@ -6,7 +6,7 @@ import { openDatabase, type SqliteDatabase } from './database-driver'
 import { deduplicateAccounts, mergeAccounts, withDatabaseLock } from './locked-operations'
 import { runMigrations } from './migrations'
 
-export const DB_PATH = join(getConfigDir(), 'kiro.db')
+const DB_PATH = join(getConfigDir(), 'kiro.db')
 
 export class KiroDatabase {
   private db: SqliteDatabase
@@ -323,6 +323,82 @@ export class KiroDatabase {
       : undefined
   }
 
+  /** The account that served this session, if one is still remembered. */
+  getSessionAccount(sessionId: string): string | undefined {
+    const row = this.db
+      .prepare('SELECT account_id FROM session_accounts WHERE session_id = ?')
+      .get(sessionId) as { account_id: string } | undefined
+    return row?.account_id
+  }
+
+  /**
+   * Remember which account served a session, dropping entries past ttlDays.
+   *
+   * The conversation rows they pair with expire on the same schedule, so a
+   * session that outlives its conversationId is not held to a stale account.
+   */
+  setSessionAccount(sessionId: string, accountId: string, ttlDays = 7): void {
+    const now = Date.now()
+    const cutoff = now - ttlDays * 24 * 60 * 60 * 1000
+    this.db.exec('BEGIN TRANSACTION')
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO session_accounts (session_id, account_id, last_used)
+           VALUES (?, ?, ?)
+           ON CONFLICT(session_id) DO UPDATE SET account_id = excluded.account_id, last_used = excluded.last_used`
+        )
+        .run(sessionId, accountId, now)
+      this.db.prepare('DELETE FROM session_accounts WHERE last_used < ?').run(cutoff)
+      this.db.exec('COMMIT')
+    } catch (e) {
+      this.db.exec('ROLLBACK')
+      throw e
+    }
+  }
+
+  /** The stored catalog for an account, whether or not it is still fresh. */
+  getModelCatalog(
+    key: string
+  ): { models: Record<string, unknown>; attemptedAt: number; ttlMs: number } | undefined {
+    const row = this.db
+      .prepare('SELECT models, attempted_at, ttl_ms FROM model_catalog WHERE key = ?')
+      .get(key) as { models: string; attempted_at: number; ttl_ms: number } | undefined
+    if (!row) return undefined
+    try {
+      return {
+        models: JSON.parse(row.models),
+        attemptedAt: row.attempted_at,
+        ttlMs: row.ttl_ms
+      }
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Record a catalog lookup so other projects reuse it instead of repeating it. */
+  setModelCatalog(
+    key: string,
+    models: Record<string, unknown>,
+    attemptedAt: number,
+    ttlMs: number
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO model_catalog (key, models, attempted_at, ttl_ms) VALUES (?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           models = excluded.models,
+           attempted_at = excluded.attempted_at,
+           ttl_ms = excluded.ttl_ms`
+      )
+      .run(key, JSON.stringify(models), attemptedAt, ttlMs)
+  }
+
+  /** Test-only: forget the stored catalog so the next lookup refetches. */
+  deleteModelCatalog(): void {
+    this.db.prepare('DELETE FROM model_catalog').run()
+  }
+
   deleteConversationId(workspace: string, fingerprint: string): void {
     this.db
       .prepare('DELETE FROM conversations WHERE workspace = ? AND fingerprint = ?')
@@ -357,10 +433,6 @@ export class KiroDatabase {
       throw e
     }
   }
-}
-
-export function createDatabase(path?: string): KiroDatabase {
-  return new KiroDatabase(path)
 }
 
 export const kiroDb = new KiroDatabase()
