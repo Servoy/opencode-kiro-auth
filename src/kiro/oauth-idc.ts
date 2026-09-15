@@ -5,6 +5,7 @@ import {
   buildUrl,
   normalizeRegion
 } from '../constants'
+import { kiroHeaders } from '../plugin/http-headers.js'
 import * as logger from '../plugin/logger'
 import type { KiroRegion } from '../plugin/types'
 
@@ -359,7 +360,7 @@ export async function listAvailableProfileArns(
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/x-amz-json-1.0',
       'X-Amz-Target': 'AmazonCodeWhispererService.ListAvailableProfiles',
-      'x-amzn-kiro-agent-mode': 'vibe'
+      ...kiroHeaders()
     },
     body: '{}'
   })

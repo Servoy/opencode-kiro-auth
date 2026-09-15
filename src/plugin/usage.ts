@@ -1,3 +1,4 @@
+import { kiroHeaders } from './http-headers.js'
 import { KiroAuthDetails, ManagedAccount } from './types'
 
 export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<any> {
@@ -24,7 +25,7 @@ export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<any> {
         headers: {
           Authorization: `Bearer ${auth.access}`,
           'Content-Type': 'application/json',
-          'x-amzn-kiro-agent-mode': 'vibe',
+          ...kiroHeaders(auth.profileArn),
           'amz-sdk-request': 'attempt=1; max=1'
         }
       })

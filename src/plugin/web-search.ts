@@ -1,6 +1,7 @@
 import { KIRO_CONSTANTS } from '../constants.js'
 import { accessTokenExpired } from '../kiro/auth.js'
 import type { AccountManager } from './accounts.js'
+import { kiroHeaders } from './http-headers.js'
 import * as logger from './logger.js'
 import { refreshAccessToken } from './token.js'
 import type { KiroAuthDetails } from './types'
@@ -57,7 +58,7 @@ export async function kiroWebSearch(
       Authorization: `Bearer ${auth.access}`,
       'Content-Type': 'application/x-amz-json-1.0',
       'X-Amz-Target': MCP_TARGET,
-      'x-amzn-kiro-agent-mode': 'vibe'
+      ...kiroHeaders(auth.profileArn)
     },
     body: JSON.stringify({
       profileArn: auth.profileArn,
