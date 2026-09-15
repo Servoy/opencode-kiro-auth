@@ -1,9 +1,6 @@
 import { StreamEvent, StreamState } from './types.js'
 
-export function ensureBlockStart(
-  blockType: 'thinking' | 'text',
-  streamState: StreamState
-): StreamEvent[] {
+function ensureBlockStart(blockType: 'thinking' | 'text', streamState: StreamState): StreamEvent[] {
   if (blockType === 'thinking') {
     if (streamState.thinkingBlockIndex != null) return []
     const idx = streamState.nextBlockIndex++

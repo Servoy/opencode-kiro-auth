@@ -74,8 +74,3 @@ export function getConfigDir(): string {
 export function getDefaultLogsDir(): string {
   return getConfigDir()
 }
-
-/** Test-only: the resolved dir is cached for the process lifetime. */
-export function resetConfigDirCache(): void {
-  cachedBaseDir = undefined
-}

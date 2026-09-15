@@ -1,9 +1,8 @@
 import crypto from 'crypto'
 import type { ToolNameMap } from '../../plugin/types.js'
 
-export const CODEWHISPERER_TOOL_NAME_MAX_LENGTH = 64
-export const CODEWHISPERER_DESCRIPTION_MAX_LENGTH = 1024
-export const CODEWHISPERER_SCHEMA_MAX_DEPTH = 32
+const CODEWHISPERER_DESCRIPTION_MAX_LENGTH = 1024
+const CODEWHISPERER_SCHEMA_MAX_DEPTH = 32
 
 // Hyphens are legal: CodeWhisperer only constrains length, not charset. Excluding `-` here
 // forced every tool of any hyphenated MCP server name into an alias, causing name-mismatch
@@ -325,7 +324,7 @@ function sanitizeSchemaNode(
  * Reduces modern JSON Schema to CodeWhisperer's conservative supported subset. Local references
  * and common composites are flattened before unsupported keywords are discarded.
  */
-export function sanitizeCodeWhispererSchema(schema: unknown): JsonObject {
+function sanitizeCodeWhispererSchema(schema: unknown): JsonObject {
   const root = isRecord(schema) ? schema : {}
   const sanitized = sanitizeSchemaNode(root, root, 0, new WeakSet())
 
