@@ -1,5 +1,8 @@
 import { decodeRefreshToken, encodeRefreshToken } from '../kiro/auth'
+import { describeError } from './describe-error.js'
 import { KiroTokenRefreshError } from './errors'
+import { isTransientNetworkError } from './health.js'
+import { kiroHeaders } from './http-headers.js'
 import type { KiroAuthDetails, RefreshParts } from './types'
 
 export async function refreshAccessToken(auth: KiroAuthDetails): Promise<KiroAuthDetails> {
@@ -36,7 +39,7 @@ export async function refreshAccessToken(auth: KiroAuthDetails): Promise<KiroAut
         'Content-Type': 'application/json',
         Accept: 'application/json',
         'amz-sdk-request': 'attempt=1; max=1',
-        'x-amzn-kiro-agent-mode': 'vibe',
+        ...kiroHeaders(),
         'user-agent': ua,
         Connection: 'close'
       },
@@ -84,9 +87,26 @@ export async function refreshAccessToken(auth: KiroAuthDetails): Promise<KiroAut
   } catch (error) {
     if (error instanceof KiroTokenRefreshError) throw error
     throw new KiroTokenRefreshError(
-      `Token refresh failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      describeRefreshFailure(error),
       'NETWORK_ERROR',
       error instanceof Error ? error : undefined
     )
   }
+}
+
+/**
+ * Say what a failed refresh actually means.
+ *
+ * The transport says "Unable to connect. Is the computer able to access the
+ * url?" and "Was there a typo in the url or port?" when a laptop sleeps or the
+ * link drops. Forwarding that verbatim sent people looking for a typo in a URL
+ * they never typed, while the real state was simply: no network yet, nothing
+ * to fix, it will be tried again.
+ */
+function describeRefreshFailure(error: unknown): string {
+  const detail = describeError(error)
+  if (isTransientNetworkError(detail)) {
+    return `Token refresh could not reach AWS — no network. It will be retried. (${detail})`
+  }
+  return `Token refresh failed: ${detail}`
 }

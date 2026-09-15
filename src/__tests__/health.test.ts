@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { isPermanentError } from '../plugin/health.js'
+import { isPermanentError, isTransientNetworkError } from '../plugin/health.js'
 
 describe('isPermanentError', () => {
   test('returns false for undefined', () => {
@@ -67,5 +67,31 @@ describe('isPermanentError', () => {
 
   test('detects Account Suspended', () => {
     expect(isPermanentError('Account Suspended')).toBe(true)
+  })
+})
+
+describe('what a failed token refresh tells the user', () => {
+  const NETWORK = [
+    'Unable to connect. Is the computer able to access the url?',
+    'Was there a typo in the url or port?',
+    'fetch failed',
+    'ECONNRESET'
+  ]
+
+  test('a dropped link is named as one', () => {
+    // Forwarded verbatim, these sent people hunting for a typo in a URL they
+    // never typed, while the real state was: asleep or offline, nothing to fix.
+    for (const reason of NETWORK) {
+      expect(isTransientNetworkError(reason)).toBe(true)
+      expect(isPermanentError(reason)).toBe(false)
+    }
+  })
+
+  test('a rejected credential is not mistaken for a network blip', () => {
+    // The two need opposite responses: wait and retry, or sign in again.
+    for (const reason of ['invalid_grant', 'Invalid refresh token', 'expired_token']) {
+      expect(isPermanentError(reason)).toBe(true)
+      expect(isTransientNetworkError(reason)).toBe(false)
+    }
   })
 })

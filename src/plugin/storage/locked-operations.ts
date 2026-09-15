@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto'
 import { existsSync, promises as fs } from 'node:fs'
 import lockfile from 'proper-lockfile'
 import { isPermanentError } from '../health'
+import * as logger from '../logger'
 import type { ManagedAccount } from '../types'
 
 const LOCK_OPTIONS = {
@@ -33,9 +33,22 @@ export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>):
   }
 
   let release: (() => Promise<void>) | null = null
+  const waitStart = Date.now()
   try {
     release = await lockfile.lock(dbPath, LOCK_OPTIONS)
-    return await fn()
+    const waited = Date.now() - waitStart
+    const workStart = Date.now()
+    try {
+      return await fn()
+    } finally {
+      // Contention on the shared database is invisible until it is slow, and
+      // then it looks like the request was slow. Only the notable cases: a
+      // wait or a hold of a few milliseconds is the normal, healthy shape.
+      const held = Date.now() - workStart
+      if (waited > 50 || held > 250) {
+        logger.debug(`[LOCK] waited=${waited}ms held=${held}ms`)
+      }
+    }
   } finally {
     if (release) {
       try {
@@ -46,16 +59,6 @@ export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>):
     }
     resolveInProcess()
   }
-}
-
-export function createDeterministicId(
-  email: string,
-  authMethod: string,
-  clientId?: string,
-  profileArn?: string
-): string {
-  const parts = [email, authMethod, clientId || '', profileArn || ''].join(':')
-  return createHash('sha256').update(parts).digest('hex')
 }
 
 export function mergeAccounts(
