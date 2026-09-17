@@ -154,7 +154,7 @@ export class RequestHandler {
   ) {
     this.accountSelector = new AccountSelector(accountManager, config, syncFromKiroCli, repository)
     this.tokenRefresher = new TokenRefresher(config, accountManager, syncFromKiroCli, repository)
-    this.errorHandler = new ErrorHandler(config, accountManager, repository)
+    this.errorHandler = new ErrorHandler(config, accountManager)
     this.responseHandler = new ResponseHandler()
     this.usageTracker = new UsageTracker(config, accountManager, repository)
     this.retryStrategy = new RetryStrategy(config)

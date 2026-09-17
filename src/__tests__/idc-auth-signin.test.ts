@@ -80,7 +80,7 @@ describe('IdcAuthMethod: sign-in resilience', () => {
     profileLookupReachedAll = true
     profileLookupRegions = []
     availableProfileArns = ['arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC']
-    globalThis.fetch = (async (input: any, init?: any) => {
+    globalThis.fetch = (async (_input: any, init?: any) => {
       const target = init?.headers?.['X-Amz-Target'] || ''
       if (target.includes('ListAvailableProfiles')) {
         return new Response(

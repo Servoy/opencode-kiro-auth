@@ -58,15 +58,6 @@ function makeAccount(overrides: Partial<ManagedAccount> = {}): ManagedAccount {
   }
 }
 
-function makeRepo(accounts: ManagedAccount[]) {
-  return {
-    findAll: async () => accounts,
-    batchSave: async () => {},
-    save: async () => {},
-    invalidateCache: () => {}
-  } as any
-}
-
 function makeResponse(status: number, body: any, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -80,7 +71,7 @@ describe('ErrorHandler: 400', () => {
   test('returns shouldRetry=false', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = makeResponse(400, { message: 'Bad Request' })
     const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
     expect(result.shouldRetry).toBe(false)
@@ -93,7 +84,7 @@ describe('ErrorHandler: 401', () => {
   test('retries when under max retries', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = makeResponse(401, { message: 'Unauthorized' })
     const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
     expect(result.shouldRetry).toBe(true)
@@ -103,7 +94,7 @@ describe('ErrorHandler: 401', () => {
   test('stops retrying at max retries', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = makeResponse(401, { message: 'Unauthorized' })
     const result = await handler.handle(null, res, acc, { retry: 3 }, noToast)
     expect(result.shouldRetry).toBe(false)
@@ -116,7 +107,7 @@ describe('ErrorHandler: 403 single account', () => {
   test('bearer token invalid 403 forces token refresh and retries', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = makeResponse(403, {
       message: 'The bearer token included in the request is invalid'
     })
@@ -134,7 +125,7 @@ describe('ErrorHandler: 403 single account', () => {
   test('TEMPORARILY_SUSPENDED marks account unhealthy', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = makeResponse(403, { reason: 'TEMPORARILY_SUSPENDED', message: 'Suspended' })
     const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
     expect(result.shouldRetry).toBe(false)
@@ -144,7 +135,7 @@ describe('ErrorHandler: 403 single account', () => {
   test('non-permanent 403 retries with backoff', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = makeResponse(403, { message: 'Forbidden' })
     const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
     expect(result.shouldRetry).toBe(true)
@@ -154,7 +145,7 @@ describe('ErrorHandler: 403 single account', () => {
   test('INVALID_MODEL_ID throws immediately', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = makeResponse(403, { reason: 'INVALID_MODEL_ID', message: 'bad model' })
     await expect(handler.handle(null, res, acc, { retry: 0 }, noToast)).rejects.toThrow(
       'Invalid model: bad model'
@@ -169,7 +160,7 @@ describe('ErrorHandler: 403 multi account', () => {
     const a = makeAccount({ id: 'a' })
     const b = makeAccount({ id: 'b', email: 'b@example.com' })
     const mgr = new AccountManager([a, b])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([a, b]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = makeResponse(403, { message: 'Forbidden' })
     const result = await handler.handle(null, res, a, { retry: 0 }, noToast)
     expect(result.shouldRetry).toBe(true)
@@ -186,7 +177,7 @@ describe('ErrorHandler: 429', () => {
   test('single account is NOT marked rate-limited — nothing to switch to, and marking it made the selector sleep', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = new Response('', { status: 429, headers: { 'retry-after': '60' } })
     const before = acc.rateLimitResetTime
     const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
@@ -197,7 +188,7 @@ describe('ErrorHandler: 429', () => {
   test('single account NEVER sleeps — it retries immediately, bounded, then fails', async () => {
     const acc = makeAccount()
     const mgr = new AccountManager([acc])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = () => new Response('', { status: 429, headers: { 'retry-after': '60' } })
 
     const start = Date.now()
@@ -222,7 +213,7 @@ describe('ErrorHandler: 429', () => {
     const acc1 = makeAccount({ id: 'a' })
     const acc2 = makeAccount({ id: 'b' })
     const mgr = new AccountManager([acc1, acc2])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc1, acc2]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = new Response('', { status: 429, headers: { 'retry-after': '60' } })
     const start = Date.now()
     const result = await handler.handle(null, res, acc1, { retry: 0 }, noToast)
@@ -238,7 +229,7 @@ describe('ErrorHandler: 500', () => {
   test('retries with backoff without marking account unhealthy', async () => {
     const acc = makeAccount({ failCount: 0 })
     const mgr = new AccountManager([acc])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = makeResponse(500, { message: 'Internal Server Error' })
     const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
     expect(result.shouldRetry).toBe(true)
@@ -251,7 +242,7 @@ describe('ErrorHandler: 500', () => {
     const acc1 = makeAccount({ id: 'a', failCount: 0 })
     const acc2 = makeAccount({ id: 'b', failCount: 0 })
     const mgr = new AccountManager([acc1, acc2])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc1, acc2]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = makeResponse(500, { message: 'Internal Server Error' })
     const result = await handler.handle(
       null,
@@ -269,7 +260,7 @@ describe('ErrorHandler: 500', () => {
   test('single-account: fails request without marking unhealthy after retry budget exhausted', async () => {
     const acc = makeAccount({ id: 'only', failCount: 0 })
     const mgr = new AccountManager([acc])
-    const handler = new ErrorHandler(defaultConfig, mgr, makeRepo([acc]))
+    const handler = new ErrorHandler(defaultConfig, mgr)
     const res = makeResponse(500, { message: 'Internal Server Error' })
     const result = await handler.handle(
       null,

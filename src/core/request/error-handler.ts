@@ -1,4 +1,3 @@
-import type { AccountRepository } from '../../infrastructure/database/account-repository'
 import type { AccountManager } from '../../plugin/accounts'
 import * as logger from '../../plugin/logger'
 import type { ManagedAccount } from '../../plugin/types'
@@ -21,12 +20,11 @@ interface ErrorHandlerConfig {
 export class ErrorHandler {
   constructor(
     private config: ErrorHandlerConfig,
-    private accountManager: AccountManager,
-    private repository: AccountRepository
+    private accountManager: AccountManager
   ) {}
 
   async handle(
-    error: any,
+    _error: unknown,
     response: Response,
     account: ManagedAccount,
     context: RequestContext,
