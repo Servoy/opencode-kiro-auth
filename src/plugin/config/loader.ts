@@ -9,7 +9,7 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import * as logger from '../logger'
-import { getConfigDir, getDefaultLogsDir } from './paths'
+import { getConfigDir } from './paths'
 import {
   AccountSelectionStrategySchema,
   DEFAULT_CONFIG,
@@ -19,7 +19,7 @@ import {
   type KiroConfig
 } from './schema'
 
-export { getConfigDir, getDefaultLogsDir }
+export { getConfigDir }
 
 export function getUserConfigPath(): string {
   return join(getConfigDir(), 'kiro.json')

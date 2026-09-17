@@ -1,72 +1,239 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { findOpencodeInstallDir, pickConfigDir } from '../plugin/config/paths.js'
+import { resolvePlatformCacheDir, resolvePlatformConfigDir } from '../plugin/config/paths.js'
 
-const WIN = '\\'
+describe('config dir: state and log share one directory', () => {
+  test('kiro.json and plugin.log both sit under getConfigDir', async () => {
+    // The bug this locks out: plugin.log resolving somewhere other than the
+    // config, so it lands where nobody looks. State the plugin owns derives
+    // from the same dir.
+    const { getConfigDir } = await import('../plugin/config/paths.js')
+    const dir = getConfigDir()
 
-describe('config dir: finding the opencode install', () => {
-  test('finds the relocated data dir a distribution installs into', () => {
-    const modulePath = [
-      'C:',
-      'Users',
-      'someone',
-      '.servoy',
-      'opencode',
-      'packages',
-      'https_',
-      'github.com',
-      'Servoy',
-      'opencode-kiro-auth',
-      'node_modules',
-      '@servoy',
-      'opencode-kiro-auth',
-      'dist'
-    ].join(WIN)
+    const { getUserConfigPath } = await import('../plugin/config/loader.js')
+    expect(getUserConfigPath()).toBe(join(dir, 'kiro.json'))
 
-    expect(findOpencodeInstallDir(modulePath, WIN)).toBe(
-      ['C:', 'Users', 'someone', '.servoy', 'opencode'].join(WIN)
-    )
+    // The log dir is the config dir, with no separate override to drift from.
+    const paths = await import('../plugin/config/paths.js')
+    expect('getDefaultLogsDir' in paths).toBe(false)
+    expect(process.env.KIRO_LOG_DIR).toBeUndefined()
   })
 
-  test('finds the standard install too', () => {
-    expect(
-      findOpencodeInstallDir(
-        '/home/someone/.config/opencode/node_modules/@servoy/opencode-kiro-auth/dist',
-        '/'
-      )
-    ).toBe('/home/someone/.config/opencode')
-  })
-
-  test('does not mistake a package named opencode-something for the install dir', () => {
-    expect(
-      findOpencodeInstallDir('/work/opencode-kiro-auth/src/plugin/config', '/')
-    ).toBeUndefined()
+  test('getConfigDir is stable once resolved', async () => {
+    const { getConfigDir } = await import('../plugin/config/paths.js')
+    expect(getConfigDir()).toBe(getConfigDir())
   })
 })
 
-describe('config dir: which directory wins', () => {
-  const platformDir = '/home/someone/.config/opencode'
-  const installDir = '/home/someone/.servoy/opencode'
+describe('cache dir: regenerable data lives apart from state', () => {
+  test('getCacheDir is a separate, stable directory from getConfigDir', async () => {
+    const { getConfigDir, getCacheDir } = await import('../plugin/config/paths.js')
+    // Disposable cache must not land next to credentials/state.
+    expect(getCacheDir()).not.toBe(getConfigDir())
+    expect(getCacheDir()).toBe(getCacheDir())
+  })
+})
 
-  test('prefers a config that already exists next to the install', () => {
-    const dir = pickConfigDir(installDir, platformDir, (d) => d === installDir)
-    expect(dir).toBe(installDir)
+describe('resolveDir precedence', () => {
+  test('an explicit override wins over test mode and platform default', async () => {
+    const { resolveDir } = await import('../plugin/config/paths.js')
+    expect(
+      resolveDir({
+        override: '/explicit/here',
+        isTest: true,
+        testDirName: 'x',
+        platformDir: () => '/platform'
+      })
+    ).toBe('/explicit/here')
   })
 
-  test('keeps using an existing platform config when the install has none', () => {
-    const dir = pickConfigDir(installDir, platformDir, (d) => d === platformDir)
-    expect(dir).toBe(platformDir)
+  test('test mode uses an isolated dir under tmp, never the platform default', async () => {
+    const { resolveDir } = await import('../plugin/config/paths.js')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    let platformCalled = false
+    const dir = resolveDir({
+      override: undefined,
+      isTest: true,
+      testDirName: 'kiro-x',
+      platformDir: () => {
+        platformCalled = true
+        return '/platform'
+      }
+    })
+    expect(dir).toBe(join(tmpdir(), 'kiro-x'))
+    // The platform default must not even be consulted — that is what keeps the
+    // suite off the developer's real kiro.db and plugin.log.
+    expect(platformCalled).toBe(false)
   })
 
-  test('provisions next to the install when neither exists', () => {
-    const dir = pickConfigDir(installDir, platformDir, () => false)
-    expect(dir).toBe(installDir)
+  test('with no override outside test mode, the platform default is used', async () => {
+    const { resolveDir } = await import('../plugin/config/paths.js')
+    expect(
+      resolveDir({
+        override: undefined,
+        isTest: false,
+        testDirName: 'x',
+        platformDir: () => '/platform/opencode'
+      })
+    ).toBe('/platform/opencode')
+  })
+})
+
+describe('platform config dir: state location per OS', () => {
+  const HOME_NIX = '/home/alice'
+  const HOME_WIN = 'C:\\Users\\alice'
+
+  test('Windows uses %APPDATA%\\opencode (Roaming)', () => {
+    expect(
+      resolvePlatformConfigDir({
+        platform: 'win32',
+        home: HOME_WIN,
+        env: { APPDATA: 'C:\\Users\\alice\\AppData\\Roaming' }
+      })
+    ).toBe('C:\\Users\\alice\\AppData\\Roaming\\opencode')
   })
 
-  test('falls back to the platform dir when there is no install dir', () => {
-    const dir = pickConfigDir(undefined, platformDir, () => false)
-    expect(dir).toBe(platformDir)
+  test('Windows falls back to ~/AppData/Roaming when APPDATA is unset', () => {
+    expect(resolvePlatformConfigDir({ platform: 'win32', home: HOME_WIN, env: {} })).toBe(
+      'C:\\Users\\alice\\AppData\\Roaming\\opencode'
+    )
+  })
+
+  test('macOS uses ~/.config/opencode (XDG-style, matching OpenCode itself)', () => {
+    expect(resolvePlatformConfigDir({ platform: 'darwin', home: HOME_NIX, env: {} })).toBe(
+      '/home/alice/.config/opencode'
+    )
+  })
+
+  test('Linux honours XDG_CONFIG_HOME', () => {
+    expect(
+      resolvePlatformConfigDir({
+        platform: 'linux',
+        home: HOME_NIX,
+        env: { XDG_CONFIG_HOME: '/home/alice/.xdgconfig' }
+      })
+    ).toBe('/home/alice/.xdgconfig/opencode')
+  })
+
+  test('Linux falls back to ~/.config/opencode', () => {
+    expect(resolvePlatformConfigDir({ platform: 'linux', home: HOME_NIX, env: {} })).toBe(
+      '/home/alice/.config/opencode'
+    )
+  })
+
+  test('XDG_CONFIG_HOME wins on Windows too (Servoy sets it to ~/.servoy)', () => {
+    // Servoy launches opencode with XDG_CONFIG_HOME=~/.servoy on every platform,
+    // so opencode.json lands in ~/.servoy/opencode. kiro.json must follow it
+    // there — not split off into %APPDATA% — so the config wins over APPDATA.
+    expect(
+      resolvePlatformConfigDir({
+        platform: 'win32',
+        home: HOME_WIN,
+        env: {
+          XDG_CONFIG_HOME: 'C:\\Users\\alice\\.servoy',
+          APPDATA: 'C:\\Users\\alice\\AppData\\Roaming'
+        }
+      })
+    ).toBe('C:\\Users\\alice\\.servoy\\opencode')
+  })
+
+  test('XDG_CONFIG_HOME wins on macOS (Servoy isolation)', () => {
+    expect(
+      resolvePlatformConfigDir({
+        platform: 'darwin',
+        home: HOME_NIX,
+        env: { XDG_CONFIG_HOME: '/home/alice/.servoy' }
+      })
+    ).toBe('/home/alice/.servoy/opencode')
+  })
+})
+
+describe('platform cache dir: regenerable data location per OS', () => {
+  const HOME_NIX = '/home/alice'
+  const HOME_WIN = 'C:\\Users\\alice'
+
+  test('Windows uses %LOCALAPPDATA%\\opencode (Local, not roamed)', () => {
+    expect(
+      resolvePlatformCacheDir({
+        platform: 'win32',
+        home: HOME_WIN,
+        env: { LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local' }
+      })
+    ).toBe('C:\\Users\\alice\\AppData\\Local\\opencode')
+  })
+
+  test('Windows falls back to ~/AppData/Local when LOCALAPPDATA is unset', () => {
+    expect(resolvePlatformCacheDir({ platform: 'win32', home: HOME_WIN, env: {} })).toBe(
+      'C:\\Users\\alice\\AppData\\Local\\opencode'
+    )
+  })
+
+  test('macOS uses ~/Library/Caches/opencode (native cache location)', () => {
+    expect(resolvePlatformCacheDir({ platform: 'darwin', home: HOME_NIX, env: {} })).toBe(
+      '/home/alice/Library/Caches/opencode'
+    )
+  })
+
+  test('Linux honours XDG_CACHE_HOME', () => {
+    expect(
+      resolvePlatformCacheDir({
+        platform: 'linux',
+        home: HOME_NIX,
+        env: { XDG_CACHE_HOME: '/home/alice/.xdgcache' }
+      })
+    ).toBe('/home/alice/.xdgcache/opencode')
+  })
+
+  test('Linux falls back to ~/.cache/opencode', () => {
+    expect(resolvePlatformCacheDir({ platform: 'linux', home: HOME_NIX, env: {} })).toBe(
+      '/home/alice/.cache/opencode'
+    )
+  })
+
+  test('XDG_CACHE_HOME wins on every platform (Servoy sets it to ~/.servoy)', () => {
+    // Servoy points all four XDG bases at ~/.servoy, so cache also converges
+    // there — on Windows and macOS, where the native fallback would differ.
+    expect(
+      resolvePlatformCacheDir({
+        platform: 'win32',
+        home: HOME_WIN,
+        env: {
+          XDG_CACHE_HOME: 'C:\\Users\\alice\\.servoy',
+          LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local'
+        }
+      })
+    ).toBe('C:\\Users\\alice\\.servoy\\opencode')
+    expect(
+      resolvePlatformCacheDir({
+        platform: 'darwin',
+        home: HOME_NIX,
+        env: { XDG_CACHE_HOME: '/home/alice/.servoy' }
+      })
+    ).toBe('/home/alice/.servoy/opencode')
+  })
+
+  test('with Servoy XDG isolation, config and cache converge (both under ~/.servoy/opencode)', () => {
+    // All four XDG bases at ~/.servoy means opencode collapses config and cache
+    // into one ~/.servoy/opencode dir; the plugin must land in the same place.
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      const home = platform === 'win32' ? 'C:\\Users\\alice' : '/home/alice'
+      const servoy = platform === 'win32' ? 'C:\\Users\\alice\\.servoy' : '/home/alice/.servoy'
+      const env = { XDG_CONFIG_HOME: servoy, XDG_CACHE_HOME: servoy }
+      expect(resolvePlatformConfigDir({ platform, home, env })).toBe(
+        resolvePlatformCacheDir({ platform, home, env })
+      )
+    }
+  })
+
+  test('cache and config resolve to different dirs on every platform', () => {
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      const home = platform === 'win32' ? 'C:\\Users\\alice' : '/home/alice'
+      const config = resolvePlatformConfigDir({ platform, home, env: {} })
+      const cache = resolvePlatformCacheDir({ platform, home, env: {} })
+      expect(cache).not.toBe(config)
+    }
   })
 })
 

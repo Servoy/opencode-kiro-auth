@@ -1,14 +1,21 @@
 import { Buffer } from 'node:buffer'
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { getDefaultLogsDir } from './config/paths'
+import { getConfigDir } from './config/paths'
 
 const binaryToBase64Replacer = (_key: string, value: unknown): unknown => {
   if (value instanceof Uint8Array) return Buffer.from(value).toString('base64')
   return value
 }
 
-const getLogDir = () => process.env.KIRO_LOG_DIR || getDefaultLogsDir()
+/**
+ * The directory plugin.log is written to: the config dir, always.
+ *
+ * There is no separate log-dir override — a log that can move on its own is a
+ * log nobody can find, which is the bug this removed. Move the whole set (log,
+ * kiro.json, kiro.db) together with KIRO_CONFIG_DIR.
+ */
+export const getLogDir = (): string => getConfigDir()
 
 const writeToFile = (level: string, message: string, ...args: unknown[]) => {
   try {

@@ -21,7 +21,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 
-import { getConfigDir } from './config/loader.js'
+import { getCacheDir } from './config/paths.js'
 import { MAX_KIRO_IMAGES, MAX_KIRO_IMAGE_BYTES, type KiroImage } from './image-handler.js'
 
 // Content fingerprint for dedup — format + byte length + first/last 16 bytes
@@ -36,10 +36,11 @@ function dedupKey(img: KiroImage): string {
   return `${img.format}:${n}:${hex(0, Math.min(16, n))}:${hex(Math.max(0, n - 16), n)}`
 }
 
-// Mirrors the layout of logger.ts and kiro.json so everything sits under one
-// base folder. Internal — only the module-level singleton uses this.
+// Converted images are regenerable, so they live in the OS cache dir rather
+// than next to kiro.json/kiro.db. Internal — only the module-level singleton
+// uses this.
 function defaultCacheDir(): string {
-  return join(getConfigDir(), 'kiro-images')
+  return join(getCacheDir(), 'kiro-images')
 }
 
 function diskFileFor(cacheDir: string, workspace: string, fingerprint: string): string {
@@ -324,7 +325,8 @@ export class ImageCache {
   }
 }
 
-// Shared instance for the plugin runtime — persisted to ~/.config/opencode/kiro-images/
-// (or %APPDATA%/opencode/kiro-images/ on Windows). Tests construct their own
-// ImageCache with a tmpdir or no cacheDir at all.
+// Shared instance for the plugin runtime — persisted to the OS cache dir:
+// ~/Library/Caches/opencode/kiro-images/ (macOS), ~/.cache/opencode/kiro-images/
+// (Linux), %LOCALAPPDATA%/opencode/kiro-images/ (Windows). Tests construct their
+// own ImageCache with a tmpdir or no cacheDir at all.
 export const imageCache = new ImageCache({ cacheDir: defaultCacheDir() })
