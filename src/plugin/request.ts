@@ -455,6 +455,10 @@ function buildCodeWhispererRequest(
     trimSizeAfter = totalSize
   }
 
+  // Trimming can split a tool_use/tool_result pair; drop any orphaned result
+  // before it reaches the service as a 400. See the function for why.
+  pruneOrphanToolResults(history)
+
   if (trimStartLen !== history.length) {
     logger.debug(
       `[TRIM] history ${trimStartLen}→${history.length} entries, ~${Math.round(trimSizeBefore / 1024)}KB exceeded ${Math.round(MAX_PAYLOAD_BYTES / 1024)}KB cap`
@@ -563,6 +567,53 @@ function wireSize(value: any): number {
   }
 
   return JSON.stringify(strip(value)).length + attachmentChars
+}
+
+/**
+ * Drop history tool_results whose tool_use trimming removed, since the service
+ * rejects a tool_result without a matching tool_use with a 400. An entry left
+ * with neither results nor content is removed to preserve history alternation.
+ */
+export function pruneOrphanToolResults(history: any[]): void {
+  // Repeat until stable: removing an emptied turn can strip a now-leading
+  // assistant and orphan the next result, which only a further pass catches.
+  // A pass that removes nothing leaves a deliberately assistant-led history be.
+  let changed = true
+  while (changed) {
+    changed = false
+
+    const toolUseIds = new Set<string>(
+      history.flatMap(
+        (h) => h.assistantResponseMessage?.toolUses?.map((tu: any) => tu.toolUseId) ?? []
+      )
+    )
+
+    for (let i = history.length - 1; i >= 0; i--) {
+      const ctx = history[i]?.userInputMessage?.userInputMessageContext
+      const trs = ctx?.toolResults
+      if (!Array.isArray(trs) || trs.length === 0) continue
+
+      const kept = trs.filter((tr: any) => toolUseIds.has(tr.toolUseId))
+      if (kept.length === trs.length) continue
+
+      changed = true
+      if (kept.length > 0) {
+        ctx.toolResults = kept
+        continue
+      }
+
+      delete ctx.toolResults
+      if (Object.keys(ctx).length === 0) delete history[i].userInputMessage.userInputMessageContext
+
+      const content = history[i].userInputMessage?.content
+      if (typeof content !== 'string' || content.trim().length === 0) {
+        history.splice(i, 1)
+        // The removal may expose a now-leading assistant whose tool_use a later
+        // tool_result still points at; strip it so the next pass reassesses.
+        while (history.length > 0 && history[0]?.assistantResponseMessage) history.shift()
+      }
+    }
+  }
 }
 
 export function transformToSdkRequest(

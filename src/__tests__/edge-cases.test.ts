@@ -546,6 +546,27 @@ describe('buildHistory with null/undefined content', () => {
     ]
     expect(() => buildHistory(msgs, 'model')).not.toThrow()
   })
+
+  test('a tool_result carries the id of the tool_use it answers', () => {
+    // The whole point of a tool_result is its toolUseId; the service rejects
+    // one that does not match a tool_use. A test that only checked the id was
+    // "present" passed even when the builder wrote undefined for it.
+    const msgs = [
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'call-42', name: 'read', input: {} }]
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-42', content: 'done' }] },
+      { role: 'user', content: 'next' }
+    ]
+    const history = buildHistory(msgs, 'model')
+    const results = history.flatMap(
+      (h) => h.userInputMessage?.userInputMessageContext?.toolResults ?? []
+    )
+    expect(results).toHaveLength(1)
+    expect(results[0]!.toolUseId).toBe('call-42')
+  })
 })
 
 describe('collapseAgenticLoops edge cases', () => {
