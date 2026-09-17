@@ -348,7 +348,9 @@ export class RequestHandler {
 
       // Not awaited: this only sharpens a token estimate, and no request
       // should wait on it. Cached, so it runs at most once every five minutes.
-      void refreshModelCatalog(auth)
+      // If discovery hits a stale token it forces a refresh once — the same
+      // recovery the request below does — instead of logging a failure.
+      void refreshModelCatalog(auth, () => this.recoverAuthForCatalog(acc))
 
       const tAuthed = Date.now()
       const sdkPrep = this.prepareSdkRequest(
@@ -713,6 +715,23 @@ export class RequestHandler {
     } else {
       logger.logApiResponse(rData, apiTimestamp)
     }
+  }
+
+  /**
+   * Hand the model catalog a fresh token after it hits a stale one.
+   *
+   * The catalog fetch and the inference request run on the same account, so a
+   * token that just expired fails both. This forces the one refresh the
+   * request loop would have done anyway and returns the account's new auth to
+   * retry with — or undefined when the refresh could not produce a new token,
+   * so the catalog stops rather than repeats the same rejected call.
+   */
+  private async recoverAuthForCatalog(acc: ManagedAccount): Promise<KiroAuthDetails | undefined> {
+    const refreshed = await this.tokenRefresher.forceRefresh(
+      acc,
+      this.accountManager.toAuthDetails(acc)
+    )
+    return refreshed ? this.accountManager.toAuthDetails(acc) : undefined
   }
 
   private async triggerReauth(showToast: ToastFunction): Promise<boolean> {

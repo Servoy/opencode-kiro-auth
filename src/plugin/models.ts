@@ -1,4 +1,5 @@
 import { KIRO_CONSTANTS, MODEL_MAPPING, SUPPORTED_MODELS } from '../constants'
+import { describeError } from './describe-error.js'
 import { kiroHeaders } from './http-headers.js'
 import * as logger from './logger'
 import { kiroDb } from './storage/sqlite'
@@ -89,6 +90,62 @@ function capabilitiesFor(model: string): ModelCapabilities | undefined {
 }
 
 /**
+ * Recover from a stale access token during discovery.
+ *
+ * The catalog runs alongside a request the caller is already making, so the
+ * caller owns the refresh path. When discovery hits a 403 or `Invalid token`,
+ * this asks for a new token and returns the auth to retry with — or undefined
+ * when a refresh is neither available nor useful.
+ */
+export type CatalogAuthRecovery = () => Promise<KiroAuthDetails | undefined>
+
+/** A 403, or the 400 the control plane returns when the bearer token is stale. */
+function isCatalogAuthError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e)
+  return (
+    msg.includes('ListAvailableModels failed: 403') ||
+    (msg.includes('ListAvailableModels failed: 400') && msg.includes('Invalid token'))
+  )
+}
+
+async function fetchCatalog(auth: KiroAuthDetails): Promise<Map<string, ModelCapabilities>> {
+  const url = new URL(`https://management.${auth.region}.kiro.dev/`)
+  url.searchParams.set('origin', KIRO_CONSTANTS.ORIGIN_AI_EDITOR)
+  if (auth.profileArn) url.searchParams.set('profileArn', auth.profileArn)
+
+  const payload: Record<string, string> = { origin: KIRO_CONSTANTS.ORIGIN_AI_EDITOR }
+  if (auth.profileArn) payload.profileArn = auth.profileArn
+
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${auth.access}`,
+      'Content-Type': 'application/x-amz-json-1.0',
+      'X-Amz-Target': 'AmazonCodeWhispererService.ListAvailableModels',
+      ...kiroHeaders(auth.profileArn)
+    },
+    body: JSON.stringify(payload)
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`ListAvailableModels failed: ${res.status} ${detail.slice(0, 300)}`)
+  }
+
+  const data: any = await res.json()
+  const models = Array.isArray(data?.models) ? data.models : []
+  const discovered = new Map<string, ModelCapabilities>()
+
+  for (const entry of models) {
+    const id = entry?.modelId || entry?.modelName || entry?.id
+    if (typeof id !== 'string') continue
+    discovered.set(id, readCapabilities(entry))
+  }
+
+  if (discovered.size === 0) throw new Error('ListAvailableModels returned no models')
+  return discovered
+}
+
+/**
  * Fetch each model's real context window from the account's own catalog.
  *
  * The catalog lives on the control plane (management.<region>.kiro.dev), not
@@ -98,8 +155,16 @@ function capabilitiesFor(model: string): ModelCapabilities | undefined {
  * different account or region refetches immediately, since those limits are
  * theirs and not the previous account's. Failures leave the previous answer in
  * place.
+ *
+ * A discovery fired on a token that expired between account selection and this
+ * call answers 403 (or a 400 `Invalid token`). The inference request that runs
+ * beside it already recovers by forcing a refresh; {@link recoverAuth} lets the
+ * catalog do the same once rather than log a failure the request never saw.
  */
-export async function refreshModelCatalog(auth: KiroAuthDetails): Promise<void> {
+export async function refreshModelCatalog(
+  auth: KiroAuthDetails,
+  recoverAuth?: CatalogAuthRecovery
+): Promise<void> {
   const key = accountKey(auth)
   if (Date.now() - catalogAttemptedAt < catalogTtl && key === catalogKey) return
   if (catalogInFlight) return catalogInFlight
@@ -111,39 +176,19 @@ export async function refreshModelCatalog(auth: KiroAuthDetails): Promise<void> 
 
   catalogInFlight = (async () => {
     try {
-      const url = new URL(`https://management.${auth.region}.kiro.dev/`)
-      url.searchParams.set('origin', KIRO_CONSTANTS.ORIGIN_AI_EDITOR)
-      if (auth.profileArn) url.searchParams.set('profileArn', auth.profileArn)
-
-      const payload: Record<string, string> = { origin: KIRO_CONSTANTS.ORIGIN_AI_EDITOR }
-      if (auth.profileArn) payload.profileArn = auth.profileArn
-
-      const res = await fetch(url.toString(), {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${auth.access}`,
-          'Content-Type': 'application/x-amz-json-1.0',
-          'X-Amz-Target': 'AmazonCodeWhispererService.ListAvailableModels',
-          ...kiroHeaders(auth.profileArn)
-        },
-        body: JSON.stringify(payload)
-      })
-      if (!res.ok) {
-        const detail = await res.text().catch(() => '')
-        throw new Error(`ListAvailableModels failed: ${res.status} ${detail.slice(0, 300)}`)
+      let discovered: Map<string, ModelCapabilities>
+      try {
+        discovered = await fetchCatalog(auth)
+      } catch (e) {
+        // Retry once on a stale-token error, but only if the caller can hand
+        // back a fresher token — a second attempt with the same one repeats
+        // the 403 and doubles the noise it was meant to remove.
+        if (!recoverAuth || !isCatalogAuthError(e)) throw e
+        const refreshed = await recoverAuth()
+        if (!refreshed) throw e
+        discovered = await fetchCatalog(refreshed)
+        auth = refreshed
       }
-
-      const data: any = await res.json()
-      const models = Array.isArray(data?.models) ? data.models : []
-      const discovered = new Map<string, ModelCapabilities>()
-
-      for (const entry of models) {
-        const id = entry?.modelId || entry?.modelName || entry?.id
-        if (typeof id !== 'string') continue
-        discovered.set(id, readCapabilities(entry))
-      }
-
-      if (discovered.size === 0) throw new Error('ListAvailableModels returned no models')
 
       const changes = describeChanges(discovered)
       catalogByKiroModel = discovered
@@ -167,8 +212,24 @@ export async function refreshModelCatalog(auth: KiroAuthDetails): Promise<void> 
       if (catalogByKiroModel && catalogByKiroModel.size > 0) {
         persist(key, catalogByKiroModel, catalogAttemptedAt, CATALOG_RETRY_MS)
       }
+      // The key decides whether a project finds what another already fetched,
+      // so a failure has to say which key it was asking under: a 403 from an
+      // account whose profileArn is not yet known looks identical otherwise.
       logger.warn('Model catalog: discovery failed, keeping the built-in limits', {
-        error: e instanceof Error ? e.message : String(e)
+        error: describeError(e),
+        key,
+        region: auth.region,
+        hasProfileArn: !!auth.profileArn,
+        stored: (() => {
+          try {
+            const row = kiroDb.getModelCatalog(key)
+            if (!row) return 'none'
+            const age = Math.round((Date.now() - row.attemptedAt) / 1000)
+            return `${Object.keys(row.models).length - 1} models, ${age}s old, ttl ${Math.round(row.ttlMs / 1000)}s`
+          } catch {
+            return 'unreadable'
+          }
+        })()
       })
     } finally {
       catalogInFlight = null

@@ -406,3 +406,96 @@ describe('a catalog that could not be fetched', () => {
     expect(getCatalogCapabilities('claude-haiku-4-5')?.supportsRequestFields).toBe(false)
   })
 })
+
+describe('a catalog fetched on a stale token', () => {
+  const AUTH = {
+    access: 'stale',
+    refresh: 'r',
+    expires: 0,
+    authMethod: 'idc',
+    region: 'eu-central-1'
+  } as any
+  const HAIKU_MODEL = { modelId: 'claude-haiku-4.5', tokenLimits: { maxInputTokens: 200000 } }
+
+  async function run(
+    firstResponse: () => Response | Promise<Response>,
+    recover?: () => Promise<any>
+  ) {
+    const { refreshModelCatalog, resetMemoryOnly, getCatalogCapabilities } =
+      await import('../plugin/models.js')
+    resetMemoryOnly()
+
+    let calls = 0
+    let recoverCalls = 0
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => {
+      calls++
+      if (calls === 1) return await firstResponse()
+      return new Response(JSON.stringify({ models: [HAIKU_MODEL] }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    try {
+      await refreshModelCatalog(
+        AUTH,
+        recover
+          ? async () => {
+              recoverCalls++
+              return await recover()
+            }
+          : undefined
+      )
+    } finally {
+      globalThis.fetch = original
+    }
+    return { calls, recoverCalls, getCatalogCapabilities }
+  }
+
+  test('403 forces a refresh once, then retries with the new token', async () => {
+    const { calls, recoverCalls, getCatalogCapabilities } = await run(
+      () => new Response('', { status: 403 }),
+      async () => ({ ...AUTH, access: 'fresh' })
+    )
+    expect(calls).toBe(2)
+    expect(recoverCalls).toBe(1)
+    expect(getCatalogCapabilities('claude-haiku-4-5')?.maxInputTokens).toBe(200000)
+  })
+
+  test('400 Invalid token is treated as a stale token and retried', async () => {
+    const { calls, recoverCalls } = await run(
+      () =>
+        new Response(
+          JSON.stringify({
+            __type: 'com.amazon.kiro.controlplane#AccessDeniedException',
+            message: 'Invalid token'
+          }),
+          { status: 400 }
+        ),
+      async () => ({ ...AUTH, access: 'fresh' })
+    )
+    expect(calls).toBe(2)
+    expect(recoverCalls).toBe(1)
+  })
+
+  test('does not retry when there is no recovery path', async () => {
+    const { calls } = await run(() => new Response('', { status: 403 }))
+    expect(calls).toBe(1)
+  })
+
+  test('does not retry when the refresh yields no new token', async () => {
+    const { calls, recoverCalls } = await run(
+      () => new Response('', { status: 403 }),
+      async () => undefined
+    )
+    expect(calls).toBe(1)
+    expect(recoverCalls).toBe(1)
+  })
+
+  test('leaves non-auth failures alone', async () => {
+    const { calls, recoverCalls } = await run(
+      () => new Response('', { status: 500 }),
+      async () => ({ ...AUTH, access: 'fresh' })
+    )
+    expect(calls).toBe(1)
+    expect(recoverCalls).toBe(0)
+  })
+})

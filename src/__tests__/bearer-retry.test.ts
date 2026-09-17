@@ -22,6 +22,17 @@ mock.module('../plugin/logger.js', () => ({
   warn: () => {}
 }))
 
+let catalogRecover: (() => Promise<any>) | undefined
+let catalogCalls = 0
+const realModels = await import('../plugin/models.js')
+mock.module('../plugin/models.js', () => ({
+  ...realModels,
+  refreshModelCatalog: async (_auth: any, recover?: () => Promise<any>) => {
+    catalogCalls++
+    catalogRecover = recover
+  }
+}))
+
 const sendSpy = spyOn(CodeWhispererStreamingClient.prototype, 'send').mockImplementation(
   async () => {
     sendCalls++
@@ -54,6 +65,8 @@ function createHarness() {
   sendCalls = 0
   apiResponseLogCalls = 0
   sdkErrorReason = undefined
+  catalogRecover = undefined
+  catalogCalls = 0
 
   const account: any = {
     id: 'account-1',
@@ -254,5 +267,42 @@ describe('RequestHandler SDK error recovery', () => {
 
     expect(sendCalls).toBe(0)
     expect(reauthCalls).toBe(1)
+  })
+})
+
+describe('RequestHandler catalog recovery wiring', () => {
+  test('hands the catalog a recovery that forces a refresh and returns new auth', async () => {
+    sdkErrorMessage = 'The bearer token included in the request is invalid'
+    sdkErrorName = 'ForbiddenException'
+    sdkHttpStatus = 403
+    const { handler, account, getForceRefreshCalls } = createHarness()
+
+    await expect(request(handler)).rejects.toThrow()
+
+    // The handler kicks off discovery on each attempt and gives it a recovery
+    // callback (the bearer-403 retry means the loop runs more than once).
+    expect(catalogCalls).toBeGreaterThanOrEqual(1)
+    expect(typeof catalogRecover).toBe('function')
+
+    // A stale-token discovery calls it: it forces a refresh and hands back the
+    // account's fresh auth so the catalog can retry.
+    const refreshesBefore = getForceRefreshCalls()
+    const recovered = await catalogRecover!()
+    expect(getForceRefreshCalls()).toBe(refreshesBefore + 1)
+    expect(recovered?.access).toBe(account.accessToken)
+    expect(recovered?.access).toContain('fresh-access-token')
+  })
+
+  test('recovery returns undefined when the forced refresh yields no new token', async () => {
+    sdkErrorMessage = 'The bearer token included in the request is invalid'
+    sdkErrorName = 'ForbiddenException'
+    sdkHttpStatus = 403
+    const { handler } = createHarness()
+    handler.tokenRefresher.forceRefresh = async () => false
+
+    await expect(request(handler)).rejects.toThrow()
+
+    expect(typeof catalogRecover).toBe('function')
+    expect(await catalogRecover!()).toBeUndefined()
   })
 })
