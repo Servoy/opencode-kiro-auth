@@ -141,25 +141,24 @@ describe('what every request must satisfy, whatever the conversation', () => {
     }
   })
 
-  test('a tool result never travels without the call that produced it', () => {
-    // Every tool_result — in history AND in the current message — must have a
-    // matching tool_use the service can still see. The live 400 was exactly
-    // this: trimming split a pair, leaving `messages.0.content.5` with a
-    // tool_use_id whose tool_use had been dropped. Small caps force the deep
-    // trim where the split happens.
+  test('every tool_use and tool_result keeps its counterpart after trimming', () => {
+    // The service enforces the pairing both ways: a tool_result needs its
+    // tool_use, and a tool_use needs a tool_result in the very next turn.
+    // Trimming split pairs and produced both 400s in the field. Small caps
+    // force the deep trim where the split happens.
     for (const seed of SEEDS) {
       for (const cap of [...CAPS, ...TRIM_CAPS]) {
         const state = build(conversation(seed), seed, cap).conversationState as any
         expect(orphanToolResults(state)).toEqual([])
+        expect(orphanToolUses(state)).toEqual([])
       }
     }
   })
 
-  test('a tool_use in an attachment-carrying pair keeps its result reachable', () => {
+  test('an attachment-carrying pair keeps both halves reachable after a hard trim', () => {
     // The reported shape: an attachment-bearing turn is skipped by the pair
-    // trimmer (attachments are spent last), but its neighbour — an assistant
-    // turn holding the matching tool_use — is not, so the pair splits. Build a
-    // conversation that puts a tool_use next to an image turn and trim hard.
+    // trimmer (attachments are spent last) while its neighbour is not, so the
+    // pair splits — orphaning a result on one side and a use on the other.
     const messages: any[] = []
     for (let i = 0; i < 30; i++) {
       messages.push({ role: 'user', content: [text(`turn ${i} ` + 'x'.repeat(3000))] })
@@ -179,6 +178,7 @@ describe('what every request must satisfy, whatever the conversation', () => {
 
     const state = build(messages, 999, 40_000).conversationState as any
     expect(orphanToolResults(state)).toEqual([])
+    expect(orphanToolUses(state)).toEqual([])
   })
 })
 
@@ -209,77 +209,113 @@ function orphanToolResults(state: any): string[] {
   return orphans
 }
 
+// Every tool_use in history that the very next turn does not answer with a
+// matching tool_result. The service requires the result immediately after, so
+// this list must also always be empty.
+function orphanToolUses(state: any): string[] {
+  const validId = (id: unknown): id is string => typeof id === 'string' && id.length > 0
+  const history = state.history ?? []
+  // The current message answers the last history tool_use — it is not in the
+  // history array, so fold its result ids in as the answer to the final entry.
+  const currentIds = (
+    state.currentMessage?.userInputMessage?.userInputMessageContext?.toolResults ?? []
+  ).map((tr: any) => tr.toolUseId)
+  const orphans: string[] = []
+  history.forEach((h: any, i: number) => {
+    const answers = new Set(
+      (history[i + 1]?.userInputMessage?.userInputMessageContext?.toolResults ?? []).map(
+        (tr: any) => tr.toolUseId
+      )
+    )
+    if (i === history.length - 1) for (const id of currentIds) answers.add(id)
+    for (const tu of h.assistantResponseMessage?.toolUses ?? []) {
+      if (!validId(tu.toolUseId) || !answers.has(tu.toolUseId)) orphans.push(String(tu.toolUseId))
+    }
+  })
+  return orphans
+}
+
 describe('pruneOrphanToolResults, directly', () => {
-  const userWithResults = (content: string, ...ids: string[]): any => ({
+  // The builder's shape: an assistant tool_use is answered by the *next* turn's
+  // tool_result. Fixtures follow that order, because the service enforces it.
+  const asstUses = (content: string, ...ids: string[]): any => ({
+    assistantResponseMessage: { content, toolUses: ids.map((toolUseId) => ({ toolUseId })) }
+  })
+  const userResults = (content: string, ...ids: string[]): any => ({
     userInputMessage: {
       content,
       userInputMessageContext: { toolResults: ids.map((toolUseId) => ({ toolUseId })) }
     }
   })
-  const assistantWithUses = (...ids: string[]): any => ({
-    assistantResponseMessage: { toolUses: ids.map((toolUseId) => ({ toolUseId })) }
-  })
+  const userText = (content: string): any => ({ userInputMessage: { content } })
 
-  test('keeps the matched results and drops only the orphaned one from a mixed entry', () => {
-    // The kept.length > 0 branch: an entry carrying one live and one orphaned
-    // result keeps the live one and its content, losing only the orphan.
-    const history = [assistantWithUses('a'), userWithResults('answer', 'a', 'gone')]
+  test('keeps the matched result and drops only the orphan from a mixed answer turn', () => {
+    // A user turn answering one live and one vanished tool_use keeps the live
+    // result and its text, losing only the orphan.
+    const history = [asstUses('', 'a'), userResults('answer', 'a', 'gone')]
     pruneOrphanToolResults(history)
 
     expect(history).toHaveLength(2)
-    const trs = history[1].userInputMessage.userInputMessageContext.toolResults
-    expect(trs.map((t: any) => t.toolUseId)).toEqual(['a'])
+    expect(
+      history[1].userInputMessage.userInputMessageContext.toolResults.map((t: any) => t.toolUseId)
+    ).toEqual(['a'])
     expect(history[1].userInputMessage.content).toBe('answer')
   })
 
-  test('keeps an emptied entry that still carries text, only dropping its context', () => {
-    // No live results, but real content: the turn stays (its text is history),
-    // and only the now-empty context is removed.
-    const history = [userWithResults('still says something', 'gone')]
+  test('drops a tool_result whose tool_use trimming removed', () => {
+    // The reported first bug: a result left with no tool_use before it. The
+    // answer turn keeps its text, only shedding the orphaned result.
+    const history = [userResults('leftover answer', 'gone'), userText('next')]
     pruneOrphanToolResults(history)
 
-    expect(history).toHaveLength(1)
+    expect(history).toHaveLength(2)
     expect(history[0].userInputMessage.userInputMessageContext).toBeUndefined()
-    expect(history[0].userInputMessage.content).toBe('still says something')
+    expect(history[0].userInputMessage.content).toBe('leftover answer')
+  })
+
+  test('drops a tool_use whose tool_result trimming removed', () => {
+    // The mirror bug: an assistant tool_use with no answering next turn. The
+    // assistant keeps its text, only shedding the unanswerable tool_use.
+    const history = [asstUses('thinking out loud', 'gone'), userText('unrelated next')]
+    pruneOrphanToolResults(history)
+
+    expect(history).toHaveLength(2)
+    expect(history[0].assistantResponseMessage.toolUses).toBeUndefined()
+    expect(history[0].assistantResponseMessage.content).toBe('thinking out loud')
   })
 
   test('removes an entry left with neither results nor content', () => {
-    const history = [userWithResults('   ', 'gone')]
+    const history = [userResults('   ', 'gone'), userText('next')]
+    pruneOrphanToolResults(history)
+    expect(history).toHaveLength(1)
+    expect(history[0].userInputMessage.content).toBe('next')
+  })
+
+  test('removes a lone tool_use turn that nothing answers', () => {
+    // A tool_use with no following turn at all cannot be answered, so it must
+    // go — leaving it is exactly the 400 the mirror bug produced.
+    const history = [asstUses('', 'gone')]
     pruneOrphanToolResults(history)
     expect(history).toHaveLength(0)
   })
 
-  test('cascades: dropping an orphan turn strips a newly-leading assistant and reprunes', () => {
-    // The first turn's result is a true orphan (no tool_use provides "gone")
-    // and its content is empty → removed → the assistant holding "live" now
-    // leads → stripped (assistant can't lead) → the tool_result pointing at
-    // "live" is now orphaned too, which only a repeat pass catches. A single
-    // pass would leave that second orphan behind and the service would 400.
+  test('cascades: dropping an orphan result exposes an unanswerable tool_use', () => {
+    // 'gone' has no tool_use → its result turn is emptied and removed → the
+    // assistant that held 'orphaned' now has no answering next turn → its
+    // tool_use is stripped too. Only the repeat pass reaches the second one.
     const history = [
-      userWithResults('', 'gone'),
-      assistantWithUses('live'),
-      userWithResults('', 'live')
+      userResults('', 'gone'),
+      asstUses('', 'orphaned'),
+      userText('later, unrelated')
     ]
     pruneOrphanToolResults(history)
-    expect(history).toHaveLength(0)
+    expect(history).toEqual([userText('later, unrelated')])
   })
 
-  test('leaves a valid history untouched', () => {
-    const history = [
-      userWithResults('q', 'a'),
-      assistantWithUses('a'),
-      { userInputMessage: { content: 'thanks' } }
-    ]
+  test('leaves a valid tool_use/tool_result pair untouched', () => {
+    const history = [asstUses('', 'a'), userResults('result', 'a'), userText('thanks')]
     const before = JSON.parse(JSON.stringify(history))
     pruneOrphanToolResults(history)
     expect(history).toEqual(before)
-  })
-
-  test('leaves a deliberately assistant-led lone tool_call turn alone', () => {
-    // The builder emits a lone assistant tool_call turn on purpose; with no
-    // orphaned tool_result to trigger a removal, prune must not touch it.
-    const history = [assistantWithUses('a')]
-    pruneOrphanToolResults(history)
-    expect(history).toEqual([assistantWithUses('a')])
   })
 })

@@ -454,9 +454,14 @@ function buildCodeWhispererRequest(
     trimSizeAfter = totalSize
   }
 
-  // Trimming can split a tool_use/tool_result pair; drop any orphaned result
-  // before it reaches the service as a 400. See the function for why.
-  pruneOrphanToolResults(history)
+  // Trimming can split a tool_use/tool_result pair; drop either orphaned half
+  // before it reaches the service as a 400. The current message's tool_results
+  // answer the last history tool_use, so they count as answers here. See the
+  // function for why.
+  pruneOrphanToolResults(
+    history,
+    finalCurTrs.map((tr: any) => tr.toolUseId)
+  )
 
   if (trimStartLen !== history.length) {
     logger.debug(
@@ -569,14 +574,20 @@ function wireSize(value: any): number {
 }
 
 /**
- * Drop history tool_results whose tool_use trimming removed, since the service
- * rejects a tool_result without a matching tool_use with a 400. An entry left
- * with neither results nor content is removed to preserve history alternation.
+ * Repair tool_use/tool_result pairs that trimming split, in both directions.
+ *
+ * The service enforces a strict contract: every tool_use must be immediately
+ * followed by a user turn carrying its tool_result, and every tool_result must
+ * answer a tool_use. Trimming drops history in pairs, but an attachment turn is
+ * skipped, so a pair can split either way — leaving a tool_result whose
+ * tool_use is gone, or a tool_use whose tool_result is gone. Both are a 400.
+ *
+ * Each pass drops orphaned tool_results, then strips any tool_use not answered
+ * by the very next turn; a removal can orphan its neighbour, so it repeats
+ * until stable. An assistant left with no tool_uses and no content, or a user
+ * turn emptied of results and content, is removed to keep history alternating.
  */
-export function pruneOrphanToolResults(history: any[]): void {
-  // Repeat until stable: removing an emptied turn can strip a now-leading
-  // assistant and orphan the next result, which only a further pass catches.
-  // A pass that removes nothing leaves a deliberately assistant-led history be.
+export function pruneOrphanToolResults(history: any[], currentToolResultIds: string[] = []): void {
   let changed = true
   while (changed) {
     changed = false
@@ -587,6 +598,7 @@ export function pruneOrphanToolResults(history: any[]): void {
       )
     )
 
+    // Drop tool_results whose tool_use is gone.
     for (let i = history.length - 1; i >= 0; i--) {
       const ctx = history[i]?.userInputMessage?.userInputMessageContext
       const trs = ctx?.toolResults
@@ -600,19 +612,50 @@ export function pruneOrphanToolResults(history: any[]): void {
         ctx.toolResults = kept
         continue
       }
-
       delete ctx.toolResults
       if (Object.keys(ctx).length === 0) delete history[i].userInputMessage.userInputMessageContext
+      if (isEmptyUserTurn(history[i])) history.splice(i, 1)
+    }
 
-      const content = history[i].userInputMessage?.content
-      if (typeof content !== 'string' || content.trim().length === 0) {
-        history.splice(i, 1)
-        // The removal may expose a now-leading assistant whose tool_use a later
-        // tool_result still points at; strip it so the next pass reassesses.
-        while (history.length > 0 && history[0]?.assistantResponseMessage) history.shift()
+    // Drop tool_uses not answered by a tool_result. The answer is either the
+    // next history turn or, for the last entry, the current message being built
+    // (its tool_result ids are passed in) — that message is not in this array.
+    for (let i = history.length - 1; i >= 0; i--) {
+      const tus = history[i]?.assistantResponseMessage?.toolUses
+      if (!Array.isArray(tus) || tus.length === 0) continue
+
+      const nextTurnResults =
+        history[i + 1]?.userInputMessage?.userInputMessageContext?.toolResults ?? []
+      const answers = new Set<string>(nextTurnResults.map((tr: any) => tr.toolUseId))
+      if (i === history.length - 1) for (const id of currentToolResultIds) answers.add(id)
+
+      const kept = tus.filter((tu: any) => answers.has(tu.toolUseId))
+      if (kept.length === tus.length) continue
+
+      changed = true
+      const arm = history[i].assistantResponseMessage
+      if (kept.length > 0) {
+        arm.toolUses = kept
+        continue
       }
+      delete arm.toolUses
+      if (isEmptyAssistantTurn(history[i])) history.splice(i, 1)
     }
   }
+}
+
+/** A user turn with no tool_results and no meaningful content carries nothing. */
+function isEmptyUserTurn(entry: any): boolean {
+  if (entry?.userInputMessage?.userInputMessageContext?.toolResults?.length) return false
+  const content = entry?.userInputMessage?.content
+  return typeof content !== 'string' || content.trim().length === 0
+}
+
+/** An assistant turn with no tool_uses and no meaningful content carries nothing. */
+function isEmptyAssistantTurn(entry: any): boolean {
+  if (entry?.assistantResponseMessage?.toolUses?.length) return false
+  const content = entry?.assistantResponseMessage?.content
+  return typeof content !== 'string' || content.trim().length === 0
 }
 
 export function transformToSdkRequest(

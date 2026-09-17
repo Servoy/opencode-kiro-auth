@@ -293,7 +293,11 @@ describe('CodeWhisperer tool compatibility', () => {
     expect(prepared.toolNameMap[wireName]).toBe(LONG_TOOL_NAME)
   })
 
-  test('aliases history-only tool names when current tool declarations are absent', () => {
+  test('aliases an over-long tool name even when no current tools are declared', () => {
+    // A trailing assistant tool_use with no answering tool_result is an invalid
+    // shape the service rejects, so it is pruned from history. Name aliasing
+    // must still happen — observed here on the placeholder tool spec and the
+    // name map, which is what the runtime actually sends and replays against.
     const prepared: any = transformToSdkRequest(
       {
         messages: [
@@ -313,16 +317,12 @@ describe('CodeWhisperer tool compatibility', () => {
       auth
     )
 
-    const history = prepared.conversationState.history
-    const wireName = history.find((entry: any) => entry.assistantResponseMessage?.toolUses)
-      .assistantResponseMessage.toolUses[0].name
-    const placeholderName =
+    const wireName =
       prepared.conversationState.currentMessage.userInputMessage.userInputMessageContext.tools[0]
         .toolSpecification.name
 
     expect(wireName).not.toBe(LONG_TOOL_NAME)
     expect(wireName).toMatch(/^[A-Za-z][A-Za-z0-9_]{0,63}$/)
-    expect(placeholderName).toBe(wireName)
     expect(prepared.toolNameMap[wireName]).toBe(LONG_TOOL_NAME)
   })
 
