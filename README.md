@@ -256,6 +256,16 @@ on rather than describing them.
 - SQLite Database: `%APPDATA%\opencode\kiro.db`
 - Plugin Config: `%APPDATA%\opencode\kiro.json`
 
+### Relocating the storage directory
+
+The plugin follows OpenCode's own directory resolution. You can override it with
+environment variables:
+
+- `KIRO_CONFIG_DIR` — move all state (`kiro.json`, `kiro.db`, `plugin.log`) to an explicit directory.
+- `KIRO_CACHE_DIR` — move the regenerable image cache to an explicit directory.
+- `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` — honoured on every platform (Windows included), matching OpenCode.
+- `KIRO_IGNORE_XDG=true` — ignore `XDG_CONFIG_HOME`/`XDG_CACHE_HOME` and use the OS default location instead. Useful when a host (e.g. Servoy) relocates XDG for its own config but you want the plugin to stay on the standard path. An explicit `KIRO_CONFIG_DIR`/`KIRO_CACHE_DIR` still wins over this.
+
 ## Acknowledgements
 
 Special thanks to [AIClient-2-API](https://github.com/justlovemaki/AIClient-2-API) for

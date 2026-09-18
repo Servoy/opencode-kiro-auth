@@ -148,6 +148,45 @@ describe('platform config dir: state location per OS', () => {
       })
     ).toBe('/home/alice/.servoy/opencode')
   })
+
+  test('KIRO_IGNORE_XDG=true ignores XDG_CONFIG_HOME and uses the platform default', () => {
+    // Opt-out for hosts (Servoy) that relocate XDG but want the plugin to stay
+    // on the OS default anyway. macOS: XDG is ignored, so ~/.config/opencode.
+    expect(
+      resolvePlatformConfigDir({
+        platform: 'darwin',
+        home: HOME_NIX,
+        env: { XDG_CONFIG_HOME: '/home/alice/.servoy', KIRO_IGNORE_XDG: 'true' }
+      })
+    ).toBe('/home/alice/.config/opencode')
+  })
+
+  test('KIRO_IGNORE_XDG=true still lets Windows use %APPDATA%, not the ignored XDG', () => {
+    expect(
+      resolvePlatformConfigDir({
+        platform: 'win32',
+        home: HOME_WIN,
+        env: {
+          XDG_CONFIG_HOME: 'C:\\Users\\alice\\.servoy',
+          APPDATA: 'C:\\Users\\alice\\AppData\\Roaming',
+          KIRO_IGNORE_XDG: 'true'
+        }
+      })
+    ).toBe('C:\\Users\\alice\\AppData\\Roaming\\opencode')
+  })
+
+  test('KIRO_IGNORE_XDG only takes effect when set to exactly "true"', () => {
+    // A stray "false"/"0"/"" must not silently disable XDG.
+    for (const value of ['false', '0', '', '1', 'yes']) {
+      expect(
+        resolvePlatformConfigDir({
+          platform: 'darwin',
+          home: HOME_NIX,
+          env: { XDG_CONFIG_HOME: '/home/alice/.servoy', KIRO_IGNORE_XDG: value }
+        })
+      ).toBe('/home/alice/.servoy/opencode')
+    }
+  })
 })
 
 describe('platform cache dir: regenerable data location per OS', () => {
@@ -190,6 +229,17 @@ describe('platform cache dir: regenerable data location per OS', () => {
     expect(resolvePlatformCacheDir({ platform: 'linux', home: HOME_NIX, env: {} })).toBe(
       '/home/alice/.cache/opencode'
     )
+  })
+
+  test('KIRO_IGNORE_XDG=true ignores XDG_CACHE_HOME and uses the platform default', () => {
+    // macOS ignores XDG cache and uses the native ~/Library/Caches location.
+    expect(
+      resolvePlatformCacheDir({
+        platform: 'darwin',
+        home: HOME_NIX,
+        env: { XDG_CACHE_HOME: '/home/alice/.servoy', KIRO_IGNORE_XDG: 'true' }
+      })
+    ).toBe('/home/alice/Library/Caches/opencode')
   })
 
   test('XDG_CACHE_HOME wins on every platform (Servoy sets it to ~/.servoy)', () => {

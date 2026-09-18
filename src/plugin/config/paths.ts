@@ -17,6 +17,16 @@ function currentEnv(): PlatformEnv {
   return { platform: process.platform, home: homedir(), env: process.env }
 }
 
+/**
+ * Whether to skip the XDG bases and fall through to the platform default.
+ *
+ * Only the exact string `"true"` enables it, so a stray `"false"`/`"0"`/empty
+ * value can never silently strand a host's state somewhere unexpected.
+ */
+function ignoreXdg(env: Record<string, string | undefined>): boolean {
+  return env.KIRO_IGNORE_XDG === 'true'
+}
+
 // Join with the target platform's separator, not node:path's host-dependent
 // one, so one runner can verify every OS layout. At runtime platform is the
 // host, so the result equals path.join.
@@ -36,9 +46,14 @@ function joinFor(platform: NodeJS.Platform, ...parts: string[]): string {
  * XDG wins on every platform, Windows included, because that is how OpenCode's
  * own resolver behaves — honouring it only on POSIX would strand kiro.json in
  * `%APPDATA%` when Servoy relocates everything to `~/.servoy` via XDG.
+ *
+ * Set `KIRO_IGNORE_XDG=true` to opt out: a host that relocates XDG for its own
+ * config (Servoy) but wants the plugin to stay on the OS default can force that
+ * without unsetting XDG globally. The explicit `KIRO_CONFIG_DIR` override, if
+ * set, still wins over both — it is applied before this resolver runs.
  */
 export function resolvePlatformConfigDir({ platform, home, env }: PlatformEnv): string {
-  if (env.XDG_CONFIG_HOME) return joinFor(platform, env.XDG_CONFIG_HOME, APP)
+  if (!ignoreXdg(env) && env.XDG_CONFIG_HOME) return joinFor(platform, env.XDG_CONFIG_HOME, APP)
   if (platform === 'win32') {
     return joinFor(platform, env.APPDATA || joinFor(platform, home, 'AppData', 'Roaming'), APP)
   }
@@ -54,10 +69,11 @@ export function resolvePlatformConfigDir({ platform, home, env }: PlatformEnv): 
  * - macOS: `~/Library/Caches/opencode`
  * - Linux: `~/.cache/opencode`
  *
- * XDG wins everywhere for the same reason as the config dir.
+ * XDG wins everywhere for the same reason as the config dir, and
+ * `KIRO_IGNORE_XDG=true` opts out the same way.
  */
 export function resolvePlatformCacheDir({ platform, home, env }: PlatformEnv): string {
-  if (env.XDG_CACHE_HOME) return joinFor(platform, env.XDG_CACHE_HOME, APP)
+  if (!ignoreXdg(env) && env.XDG_CACHE_HOME) return joinFor(platform, env.XDG_CACHE_HOME, APP)
   if (platform === 'win32') {
     return joinFor(platform, env.LOCALAPPDATA || joinFor(platform, home, 'AppData', 'Local'), APP)
   }
