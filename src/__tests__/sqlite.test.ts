@@ -281,3 +281,110 @@ describe('KiroDatabase: session affinity', () => {
     expect(db.getSessionAccount('ses_new')).toBe('acc-3')
   })
 })
+
+// ── session usage (panel cost estimate) ───────────────────────────────────────
+
+describe('KiroDatabase: plugin_instances', () => {
+  test('heartbeatInstance records this pid with version and source', () => {
+    db.heartbeatInstance('2.2.0', '/path/to/dist/plugin/usage-snapshot.js')
+    const rows = db.getPluginInstances()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.pid).toBe(process.pid)
+    expect(rows[0]?.version).toBe('2.2.0')
+    expect(rows[0]?.source).toBe('/path/to/dist/plugin/usage-snapshot.js')
+  })
+
+  test('heartbeatInstance upserts rather than duplicating the pid', () => {
+    db.heartbeatInstance('2.2.0', '/a')
+    db.heartbeatInstance('2.3.0', '/b')
+    const rows = db.getPluginInstances()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.version).toBe('2.3.0')
+    expect(rows[0]?.source).toBe('/b')
+  })
+
+  test('heartbeatInstance reaps rows whose process is dead', () => {
+    // A pid that cannot exist (process.kill throws), inserted directly, is
+    // swept on the next live heartbeat.
+    const deadPid = 2147483000
+    ;(db as any).db
+      .prepare('INSERT INTO plugin_instances (pid, version, source, last_seen) VALUES (?, ?, ?, ?)')
+      .run(deadPid, '2.1.3', '/old', Date.now())
+    db.heartbeatInstance('2.2.0', '/new')
+    const pids = db.getPluginInstances().map((r) => r.pid)
+    expect(pids).toContain(process.pid)
+    expect(pids).not.toContain(deadPid)
+  })
+})
+
+describe('KiroDatabase: session_usage', () => {
+  test('recordSessionRequest counts requests per (session, account)', () => {
+    expect(db.recordSessionRequest('ses-1', 'acc-1')).toBe(1)
+    expect(db.recordSessionRequest('ses-1', 'acc-1')).toBe(2)
+    expect(db.recordSessionRequest('ses-2', 'acc-1')).toBe(1)
+    expect(db.getSessionUsage('ses-1')?.requests).toBe(2)
+    expect(db.getSessionUsage('ses-2')?.requests).toBe(1)
+  })
+
+  test('a session served by two accounts keeps counts separate but sums the total', () => {
+    db.recordSessionRequest('ses-r', 'acc-1')
+    db.recordSessionRequest('ses-r', 'acc-1')
+    db.recordSessionRequest('ses-r', 'acc-2')
+    const usage = db.getSessionUsage('ses-r')
+    expect(usage?.requests).toBe(3)
+    expect(usage?.accounts).toHaveLength(2)
+    const byId = new Map(usage!.accounts.map((a) => [a.accountId, a.requests]))
+    expect(byId.get('acc-1')).toBe(2)
+    expect(byId.get('acc-2')).toBe(1)
+  })
+
+  test('apportionSessionCredits splits an account delta by request share within that account', () => {
+    db.recordSessionRequest('ses-a', 'acc-1') // acc-1: 1 request
+    db.recordSessionRequest('ses-b', 'acc-1')
+    db.recordSessionRequest('ses-b', 'acc-1')
+    db.recordSessionRequest('ses-b', 'acc-1') // acc-1: 3 requests
+    // 4 total acc-1 requests, 40 credits → a gets 10, b gets 30.
+    db.apportionSessionCredits('acc-1', 40, 0)
+    expect(db.getSessionUsage('ses-a')?.estCredits).toBeCloseTo(10, 5)
+    expect(db.getSessionUsage('ses-b')?.estCredits).toBeCloseTo(30, 5)
+  })
+
+  test('apportionSessionCredits only touches the given account, not others', () => {
+    db.recordSessionRequest('ses-m', 'acc-1')
+    db.recordSessionRequest('ses-m', 'acc-2')
+    // acc-1's delta lands only on acc-1's share of ses-m.
+    db.apportionSessionCredits('acc-1', 10, 0)
+    const usage = db.getSessionUsage('ses-m')
+    const byId = new Map(usage!.accounts.map((a) => [a.accountId, a.estCredits]))
+    expect(byId.get('acc-1')).toBeCloseTo(10, 5)
+    expect(byId.get('acc-2')).toBe(0)
+    expect(usage?.estCredits).toBeCloseTo(10, 5)
+  })
+
+  test('apportionSessionCredits ignores rows used before the window', () => {
+    db.recordSessionRequest('old', 'acc-1') // last_used ~ now
+    const future = Date.now() + 60_000
+    // Nothing was used at/after `future`, so no credits are apportioned.
+    db.apportionSessionCredits('acc-1', 100, future)
+    expect(db.getSessionUsage('old')?.estCredits).toBe(0)
+  })
+
+  test('apportionSessionCredits is a no-op for a zero or negative delta', () => {
+    db.recordSessionRequest('ses-x', 'acc-1')
+    db.apportionSessionCredits('acc-1', 0, 0)
+    db.apportionSessionCredits('acc-1', -5, 0)
+    expect(db.getSessionUsage('ses-x')?.estCredits).toBe(0)
+  })
+
+  test('getRecentSessionUsage returns newest first with metadata, one row per session', () => {
+    db.recordSessionRequest('ses-old', 'acc-1', { title: 'Old', directory: '/a' })
+    db.recordSessionRequest('ses-new', 'acc-1', { title: 'New', directory: '/b' })
+    db.recordSessionRequest('ses-new', 'acc-2', { title: 'New', directory: '/b' })
+    const recent = db.getRecentSessionUsage(10)
+    expect(recent.filter((r) => r.sessionId === 'ses-new')).toHaveLength(1)
+    expect(recent[0]?.sessionId).toBe('ses-new')
+    expect(recent[0]?.title).toBe('New')
+    expect(recent[0]?.directory).toBe('/b')
+    expect(recent[0]?.accounts).toHaveLength(2)
+  })
+})

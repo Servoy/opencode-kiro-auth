@@ -13,6 +13,74 @@ export function runMigrations(db: SqliteDatabase): void {
   migrateCollapseDuplicateAccounts(db)
   migrateModelCatalogTable(db)
   migrateSessionAccountsTable(db)
+  migrateSessionUsageTable(db)
+  migratePluginInstancesTable(db)
+}
+
+/**
+ * Which plugin version each running instance is on, keyed by pid.
+ *
+ * OpenCode loads a separate plugin instance per project, and they can come from
+ * different installs (npm global, cache, a local checkout), so the pool can be
+ * version-split. Each instance heartbeats its own row; the panel warns when the
+ * live rows disagree. Shared across projects like the other cross-instance
+ * tables, and the DB's own locking makes the per-pid upsert race-free — no
+ * read-merge-write on the JSON snapshot.
+ */
+function migratePluginInstancesTable(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS plugin_instances (
+      pid       INTEGER PRIMARY KEY,
+      version   TEXT    NOT NULL,
+      source    TEXT,
+      last_seen INTEGER NOT NULL
+    )
+  `)
+}
+
+/**
+ * Per-session, per-account Kiro request counts — the basis for the panel's
+ * session-cost estimate. Kiro bills per request (invocation), not per token, so
+ * a request count is the honest unit; the panel apportions each account's
+ * credit delta across the sessions that spent it, by their share of that
+ * account's requests in the same window.
+ *
+ * The row is keyed on (session_id, account_id): one session can be served by
+ * several accounts (rotation on rate-limit, or an explicit account switch), and
+ * only the account that served a request may carry its credits. Aggregating
+ * back to a per-session total is the panel's job. Shared across projects like
+ * the other cross-instance tables: a session can be served from any open
+ * OpenCode project instance, all against this one db.
+ */
+function migrateSessionUsageTable(db: SqliteDatabase): void {
+  // An earlier unreleased shape keyed on session_id alone lacked account_id;
+  // it never shipped and holds no data worth keeping, so drop and recreate to
+  // the per-account shape rather than carry an ALTER path for pre-release rows.
+  const hasAccountId = (
+    db.prepare("PRAGMA table_info('session_usage')").all() as Array<{ name: string }>
+  ).some((c) => c.name === 'account_id')
+  const tableExists =
+    (
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_usage'")
+        .all() as unknown[]
+    ).length > 0
+  if (tableExists && !hasAccountId) db.exec('DROP TABLE session_usage')
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_usage (
+      session_id  TEXT    NOT NULL,
+      account_id  TEXT    NOT NULL,
+      title       TEXT,
+      directory   TEXT,
+      requests    INTEGER NOT NULL DEFAULT 0,
+      est_credits REAL    NOT NULL DEFAULT 0,
+      first_used  INTEGER NOT NULL,
+      last_used   INTEGER NOT NULL,
+      PRIMARY KEY (session_id, account_id)
+    )
+  `)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_session_usage_last_used ON session_usage(last_used)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_session_usage_account ON session_usage(account_id)')
 }
 
 /**

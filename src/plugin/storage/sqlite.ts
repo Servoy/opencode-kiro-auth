@@ -8,6 +8,64 @@ import { runMigrations } from './migrations'
 
 const DB_PATH = join(getConfigDir(), 'kiro.db')
 
+/** One account's share of a session: what it served and what it is estimated to have cost. */
+export interface SessionAccountUsage {
+  accountId: string
+  requests: number
+  estCredits: number
+  firstUsed: number
+  lastUsed: number
+}
+
+/**
+ * A session's usage summed across every account that served it, with the
+ * per-account breakdown kept so the panel can show who spent what.
+ */
+export interface SessionUsageRow {
+  sessionId: string
+  title?: string
+  directory?: string
+  requests: number
+  estCredits: number
+  firstUsed: number
+  lastUsed: number
+  accounts: SessionAccountUsage[]
+}
+
+/** Roll per-(session, account) rows up into one session total plus its breakdown. */
+function aggregateSessionRows(
+  sessionId: string,
+  title: string | undefined,
+  directory: string | undefined,
+  rows: Array<{
+    account_id: string
+    requests: number
+    est_credits: number
+    first_used: number
+    last_used: number
+  }>
+): SessionUsageRow {
+  const accounts = rows
+    .map((r) => ({
+      accountId: r.account_id,
+      requests: r.requests,
+      estCredits: r.est_credits,
+      firstUsed: r.first_used,
+      lastUsed: r.last_used
+    }))
+    .sort((a, b) => b.lastUsed - a.lastUsed)
+  return {
+    sessionId,
+    title,
+    directory,
+    requests: accounts.reduce((n, a) => n + a.requests, 0),
+    estCredits: accounts.reduce((n, a) => n + a.estCredits, 0),
+    firstUsed: Math.min(...accounts.map((a) => a.firstUsed)),
+    lastUsed: Math.max(...accounts.map((a) => a.lastUsed)),
+    accounts
+  }
+}
+
 export class KiroDatabase {
   private db: SqliteDatabase
   private path: string
@@ -397,6 +455,219 @@ export class KiroDatabase {
   /** Test-only: forget the stored catalog so the next lookup refetches. */
   deleteModelCatalog(): void {
     this.db.prepare('DELETE FROM model_catalog').run()
+  }
+
+  /**
+   * Record one Kiro request for a (session, account) pair and return that
+   * pair's running request count.
+   *
+   * The count is the raw unit Kiro bills on (one invocation), incremented on
+   * every served request. `accountId` is the account that actually served it,
+   * so credits can later be apportioned per account — a session that rotates
+   * across accounts keeps each account's share separate. Credit apportioning
+   * happens in `apportionSessionCredits`. Rows expire past ttlDays so the table
+   * tracks recent work, not all history.
+   */
+  recordSessionRequest(
+    sessionId: string,
+    accountId: string,
+    meta: { title?: string; directory?: string } = {},
+    ttlDays = 7
+  ): number {
+    const now = Date.now()
+    const cutoff = now - ttlDays * 24 * 60 * 60 * 1000
+    this.db.exec('BEGIN TRANSACTION')
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO session_usage (session_id, account_id, title, directory, requests, est_credits, first_used, last_used)
+           VALUES (?, ?, ?, ?, 1, 0, ?, ?)
+           ON CONFLICT(session_id, account_id) DO UPDATE SET
+             requests = requests + 1,
+             last_used = excluded.last_used,
+             title = COALESCE(excluded.title, session_usage.title),
+             directory = COALESCE(excluded.directory, session_usage.directory)`
+        )
+        .run(sessionId, accountId, meta.title ?? null, meta.directory ?? null, now, now)
+      this.db.prepare('DELETE FROM session_usage WHERE last_used < ?').run(cutoff)
+      const row = this.db
+        .prepare('SELECT requests FROM session_usage WHERE session_id = ? AND account_id = ?')
+        .get(sessionId, accountId) as { requests: number } | undefined
+      this.db.exec('COMMIT')
+      return row?.requests ?? 1
+    } catch (e) {
+      this.db.exec('ROLLBACK')
+      throw e
+    }
+  }
+
+  /**
+   * Spread one account's credit delta across the (session, account) rows that
+   * ran on *that account* since the last apportioning, weighted by each row's
+   * request share.
+   *
+   * `deltaCredits` is (new account total − previous total) from a usage sync,
+   * so it belongs only to work served by `accountId`; rows for other accounts
+   * are untouched. Only rows used at/after `sinceMs` share it, so credits land
+   * on the work that produced them. This is an estimate: a cheap and an
+   * expensive request both count as one, and a shared account can mix in a
+   * colleague's usage. The panel labels it as such.
+   */
+  apportionSessionCredits(accountId: string, deltaCredits: number, sinceMs: number): void {
+    if (!(deltaCredits > 0)) return
+    const rows = this.db
+      .prepare(
+        'SELECT session_id, requests FROM session_usage WHERE account_id = ? AND last_used >= ? AND requests > 0'
+      )
+      .all(accountId, sinceMs) as Array<{ session_id: string; requests: number }>
+    const totalRequests = rows.reduce((n, r) => n + r.requests, 0)
+    if (totalRequests <= 0) return
+    this.db.exec('BEGIN TRANSACTION')
+    try {
+      const stmt = this.db.prepare(
+        'UPDATE session_usage SET est_credits = est_credits + ? WHERE session_id = ? AND account_id = ?'
+      )
+      for (const r of rows) {
+        stmt.run((deltaCredits * r.requests) / totalRequests, r.session_id, accountId)
+      }
+      this.db.exec('COMMIT')
+    } catch (e) {
+      this.db.exec('ROLLBACK')
+      throw e
+    }
+  }
+
+  /**
+   * One session's usage summed across every account that served it, plus the
+   * per-account breakdown behind the totals.
+   */
+  getSessionUsage(sessionId: string): SessionUsageRow | undefined {
+    const rows = this.db
+      .prepare(
+        `SELECT account_id, requests, est_credits, first_used, last_used
+         FROM session_usage WHERE session_id = ?`
+      )
+      .all(sessionId) as Array<{
+      account_id: string
+      requests: number
+      est_credits: number
+      first_used: number
+      last_used: number
+    }>
+    if (rows.length === 0) return undefined
+    return aggregateSessionRows(sessionId, undefined, undefined, rows)
+  }
+
+  /**
+   * Recent sessions with tracked usage, newest first, each summed across the
+   * accounts that served it and carrying the per-account breakdown.
+   *
+   * `limit` bounds the number of *sessions* returned, not raw rows, so a
+   * session split over several accounts still counts once.
+   */
+  getRecentSessionUsage(limit = 20): SessionUsageRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT session_id, account_id, title, directory, requests, est_credits, first_used, last_used
+         FROM session_usage ORDER BY last_used DESC`
+      )
+      .all() as Array<{
+      session_id: string
+      account_id: string
+      title: string | null
+      directory: string | null
+      requests: number
+      est_credits: number
+      first_used: number
+      last_used: number
+    }>
+    const bySession = new Map<
+      string,
+      { title: string | null; directory: string | null; rows: typeof rows }
+    >()
+    for (const r of rows) {
+      let entry = bySession.get(r.session_id)
+      if (!entry) {
+        entry = { title: r.title, directory: r.directory, rows: [] }
+        bySession.set(r.session_id, entry)
+      }
+      entry.rows.push(r)
+    }
+    return Array.from(bySession.entries())
+      .map(([sessionId, e]) =>
+        aggregateSessionRows(sessionId, e.title ?? undefined, e.directory ?? undefined, e.rows)
+      )
+      .sort((a, b) => b.lastUsed - a.lastUsed)
+      .slice(0, limit)
+  }
+
+  /**
+   * Heartbeat this instance's version + install path, and reap dead/stale rows.
+   *
+   * Keyed by pid so instances never clobber each other's row; the DB's own
+   * locking makes the upsert race-free. A row whose pid is no longer alive, or
+   * older than ttlMs, is dropped so the panel sees only live instances. Best
+   * effort: a failure here must not affect a request or a usage sync.
+   */
+  heartbeatInstance(version: string, source: string | undefined, ttlMs = 120_000): void {
+    const now = Date.now()
+    this.db.exec('BEGIN TRANSACTION')
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO plugin_instances (pid, version, source, last_seen)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(pid) DO UPDATE SET
+             version = excluded.version,
+             source = excluded.source,
+             last_seen = excluded.last_seen`
+        )
+        .run(process.pid, version, source ?? null, now)
+      // Reap rows older than the TTL, and any whose process is gone.
+      const cutoff = now - ttlMs
+      const stale = this.db.prepare('SELECT pid, last_seen FROM plugin_instances').all() as Array<{
+        pid: number
+        last_seen: number
+      }>
+      for (const row of stale) {
+        if (row.pid === process.pid) continue
+        const dead = (() => {
+          try {
+            process.kill(row.pid, 0)
+            return false
+          } catch {
+            return true
+          }
+        })()
+        if (dead || row.last_seen < cutoff) {
+          this.db.prepare('DELETE FROM plugin_instances WHERE pid = ?').run(row.pid)
+        }
+      }
+      this.db.exec('COMMIT')
+    } catch (e) {
+      this.db.exec('ROLLBACK')
+      throw e
+    }
+  }
+
+  /** Live plugin instances (pid, version, install path), newest heartbeat first. */
+  getPluginInstances(): Array<{
+    pid: number
+    version: string
+    source?: string
+    lastSeen: number
+  }> {
+    const rows = this.db
+      .prepare(
+        'SELECT pid, version, source, last_seen FROM plugin_instances ORDER BY last_seen DESC'
+      )
+      .all() as Array<{ pid: number; version: string; source: string | null; last_seen: number }>
+    return rows.map((r) => ({
+      pid: r.pid,
+      version: r.version,
+      source: r.source ?? undefined,
+      lastSeen: r.last_seen
+    }))
   }
 
   deleteConversationId(workspace: string, fingerprint: string): void {

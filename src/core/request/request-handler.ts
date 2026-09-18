@@ -414,6 +414,7 @@ export class RequestHandler {
         }
 
         this.handleSuccessfulRequest(acc)
+        this.recordSessionRequest(sessionId, acc.id)
         this.usageTracker.syncUsage(acc, auth)
 
         const result = await this.responseHandler.handleSdkSuccess(
@@ -595,6 +596,26 @@ export class RequestHandler {
       maxTokens,
       requestedEffort
     )
+  }
+
+  /**
+   * Count one served request against its session for the panel's cost estimate.
+   *
+   * Best-effort: a store hiccup here must never fail a request that already
+   * succeeded, so failures are swallowed to the log. No sessionId (a request
+   * with no affinity header) is simply not attributed. `accountId` is the
+   * account that served this request, so its credits are later apportioned to
+   * the right account even when a session rotates across several.
+   */
+  private recordSessionRequest(sessionId: string | undefined, accountId: string): void {
+    if (!sessionId) return
+    try {
+      kiroDb.recordSessionRequest(sessionId, accountId, { directory: this.workspace || undefined })
+    } catch (e) {
+      logger.debug(
+        `[USAGE] session request not recorded: ${e instanceof Error ? e.message : String(e)}`
+      )
+    }
   }
 
   private handleSuccessfulRequest(acc: ManagedAccount): void {
