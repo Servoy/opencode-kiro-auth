@@ -1,7 +1,37 @@
 import { kiroHeaders } from './http-headers.js'
 import { KiroAuthDetails, ManagedAccount } from './types'
 
-export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<any> {
+/**
+ * The full shape getUsageLimits returns, kept alongside the derived
+ * used/limit/email so a consumer (the OpenChamber panel) can show plan name,
+ * overage config, reset date and the per-resource breakdown without re-calling
+ * AWS. Every field is optional: older/free profiles omit most of it.
+ */
+export interface UsageResult {
+  usedCount: number
+  limitCount: number
+  email?: string
+  /** Overage price per credit, e.g. 0.04 ($/credit). */
+  overageRate?: number
+  /** Hard ceiling on overage spend, in credits. */
+  overageCap?: number
+  /** ENABLED / DISABLED — whether overage billing is active. */
+  overageStatus?: string
+  /** Human plan name, e.g. "KIRO POWER". */
+  subscriptionTitle?: string
+  /** Machine plan type, e.g. "Q_DEVELOPER_STANDALONE_POWER". */
+  subscriptionType?: string
+  /** Unix seconds when the quota resets. */
+  nextDateReset?: number
+  /** Whole days until the reset, as reported by AWS. */
+  daysUntilReset?: number
+  /** The display unit for the quota, usually "Credit"/"Credits". */
+  unit?: string
+  /** Credits already spent into overage this period. */
+  currentOverages?: number
+}
+
+export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<UsageResult> {
   // Try different parameter combinations
   const attempts: Array<{ resourceType?: string; origin?: string }> = [
     { resourceType: 'AGENTIC_REQUEST', origin: 'AI_EDITOR' },
@@ -62,6 +92,8 @@ export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<any> {
       const data: any = await res.json()
       let usedCount = 0,
         limitCount = 0
+      // The primary credit resource, used to surface plan/overage/unit fields.
+      let primary: any
       if (Array.isArray(data.usageBreakdownList)) {
         for (const s of data.usageBreakdownList) {
           // Kiro reports a rounded integer (currentUsage) plus the exact value
@@ -74,9 +106,26 @@ export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<any> {
           }
           usedCount += s.currentUsageWithPrecision ?? s.currentUsage ?? 0
           limitCount += s.usageLimitWithPrecision ?? s.usageLimit ?? 0
+          if (!primary && (s.resourceType === 'CREDIT' || s.displayName === 'Credit')) primary = s
         }
+        if (!primary) primary = data.usageBreakdownList[0]
       }
-      return { usedCount, limitCount, email: data.userInfo?.email }
+      const sub = data.subscriptionInfo
+      const overage = data.overageConfiguration
+      return {
+        usedCount,
+        limitCount,
+        email: data.userInfo?.email,
+        subscriptionTitle: sub?.subscriptionTitle,
+        subscriptionType: sub?.type,
+        overageStatus: overage?.overageStatus,
+        overageRate: primary?.overageRate,
+        overageCap: primary?.overageCapWithPrecision ?? primary?.overageCap,
+        currentOverages: primary?.currentOveragesWithPrecision ?? primary?.currentOverages,
+        unit: primary?.displayName,
+        nextDateReset: primary?.nextDateReset ?? data.nextDateReset,
+        daysUntilReset: data.daysUntilReset
+      }
     } catch (e) {
       // Network errors bubble up — don't try the next param combo.
       throw e instanceof Error ? e : new Error(String(e))

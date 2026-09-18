@@ -2,6 +2,7 @@ import type { AuthHook } from '@opencode-ai/plugin'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
 import { RegionSchema } from '../../plugin/config/schema.js'
 import * as logger from '../../plugin/logger.js'
+import { writeUsageSnapshot } from '../../plugin/usage-snapshot.js'
 import { summarizeUsage } from '../../plugin/usage.js'
 import { UsageTracker } from '../account/usage-tracker.js'
 import { IdcAuthMethod } from './idc-auth-method.js'
@@ -88,6 +89,11 @@ export class AuthHandler {
         })
       }
       this.logUsageSummary(showToast)
+      // Seed the panel snapshot from stored values even when the refresh above
+      // failed, so the panel has something to show before the first request.
+      if (this.accountManager) {
+        writeUsageSnapshot(this.accountManager.getAccounts(), new Map())
+      }
     })()
   }
 

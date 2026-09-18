@@ -1,5 +1,6 @@
 import { tool } from '@opencode-ai/plugin'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { KIRO_CONSTANTS } from './constants.js'
 import { AuthHandler } from './core/auth/auth-handler.js'
 import { RequestHandler } from './core/request/request-handler.js'
@@ -14,6 +15,7 @@ import * as logger from './plugin/logger.js'
 import { buildModelRegistry } from './plugin/model-registry.js'
 import { clearSdkClientCache } from './plugin/sdk-client.js'
 import { kiroDb } from './plugin/storage/sqlite.js'
+import { setPluginVersion } from './plugin/usage-snapshot.js'
 import { summarizeUsage } from './plugin/usage.js'
 import { formatWebSearchResults, kiroWebSearch } from './plugin/web-search.js'
 
@@ -73,6 +75,18 @@ const PLUGIN_VERSION: string = (() => {
   }
 })()
 
+// Hand the resolved version and this module's install path to the snapshot
+// writer, so the panel can flag an outdated install and pin down which copy of
+// the plugin (npm global, cache, a local checkout) a given instance runs from.
+const PLUGIN_SOURCE: string = (() => {
+  try {
+    return fileURLToPath(import.meta.url)
+  } catch {
+    return import.meta.url
+  }
+})()
+setPluginVersion(PLUGIN_VERSION, PLUGIN_SOURCE)
+
 // Register Kiro's server-side web search as a custom tool, when enabled and the
 // active account is Pro (has a profileArn). Returns an empty object otherwise so
 // nothing is advertised to the model on free accounts.
@@ -126,7 +140,9 @@ function buildTools(config: any, accountManager: AccountManager): Record<string,
 export const createKiroPlugin =
   (id: string) =>
   async ({ client, directory }: any) => {
-    logger.log(`Kiro plugin init: version=${PLUGIN_VERSION} configDir=${getConfigDir()}`)
+    logger.log(
+      `Kiro plugin init: version=${PLUGIN_VERSION} source=${PLUGIN_SOURCE} configDir=${getConfigDir()}`
+    )
     const config = loadConfig(directory)
     logger.setDebugEnabled(config.trace === true)
 
