@@ -190,4 +190,42 @@ describe('collapsing accounts that piled up', () => {
 
     expect(reopen().getAccounts()).toHaveLength(2)
   })
+
+  // Diana's real db: the same real address + IDC profileArn under two id
+  // schemes (an old row where the clientId was hashed into the id, and the
+  // current email:idc:arn id). Both healthy-looking rows lingered and the
+  // panel showed two different percentages for one account.
+  test('same real email + IDC profileArn collapses across id schemes', async () => {
+    await db.upsertAccount(
+      account({
+        id: 'old-scheme-with-clientid-in-hash',
+        email: 'dtimut@servoy.com',
+        clientId: 'client-old',
+        refreshToken: 'r-old',
+        profileArn: PROFILE,
+        expiresAt: 1_000,
+        isHealthy: false,
+        usedCount: 1944.87,
+        limitCount: 5000
+      })
+    )
+    await db.upsertAccount(
+      account({
+        id: 'canonical-email-idc-arn',
+        email: 'dtimut@servoy.com',
+        clientId: 'client-new',
+        refreshToken: 'r-new',
+        profileArn: PROFILE,
+        expiresAt: 9_999,
+        isHealthy: true,
+        usedCount: 3842.64,
+        limitCount: 5000
+      })
+    )
+
+    const remaining = reopen().getAccounts()
+
+    expect(remaining).toHaveLength(1)
+    expect(remaining[0]!.id).toBe('canonical-email-idc-arn')
+  })
 })

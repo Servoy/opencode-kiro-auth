@@ -180,8 +180,17 @@ export async function syncFromKiroCli() {
           existingById.is_healthy === 1 &&
           existingById.expires_at >= cliExpiresAt &&
           existingById.expires_at > Date.now()
-        )
+        ) {
+          // The canonical row is already healthy and fresh, so there is nothing
+          // to re-import — but earlier id schemes (e.g. clientId once hashed
+          // into the id) can leave a second row for the same identity behind.
+          // Sweep those before skipping, or two healthy rows for one account
+          // linger and the panel shows two different percentages.
+          if (authMethod === 'idc' && profileArn) {
+            await kiroDb.deleteStaleIdcDuplicates(id, resolvedEmail, profileArn)
+          }
           continue
+        }
 
         if (usageOk) {
           const placeholderEmail = makePlaceholderEmail(
