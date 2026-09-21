@@ -146,8 +146,9 @@ function atomicReplace(tmp: string, target: string, fs: AtomicReplaceFs = realFs
 /**
  * Build one account's panel snapshot from its live usage fields.
  *
- * Kept pure (no I/O) so a test can assert the mapping — plan, overage and the
- * seconds→ms reset conversion — without touching disk.
+ * Does no I/O so a test can assert the mapping — plan, overage, the seconds→ms
+ * reset conversion — without touching disk. Caches a fresh `nextDateReset` back
+ * onto `account.resetAt` so a later sync that omits it can still show the date.
  */
 export function buildAccountSnapshot(
   account: ManagedAccount,
@@ -157,8 +158,13 @@ export function buildAccountSnapshot(
   const used = Number((usage?.usedCount ?? account.usedCount ?? 0).toFixed(2))
   const limit = Number((usage?.limitCount ?? account.limitCount ?? 0).toFixed(2))
   const pct = limit > 0 ? Math.round((used / limit) * 100) : 0
-  // AWS reports nextDateReset in Unix *seconds*; the panel works in ms.
-  const resetSeconds = usage?.nextDateReset
+  // nextDateReset is Unix seconds; the panel works in ms. Some param
+  // combinations omit it, so reuse the account's last value to avoid flicker.
+  const resetMs =
+    typeof usage?.nextDateReset === 'number'
+      ? Math.round(usage.nextDateReset * 1000)
+      : account.resetAt
+  if (resetMs) account.resetAt = resetMs
   return {
     id: account.id,
     email: usage?.email ?? account.email,
@@ -173,7 +179,7 @@ export function buildAccountSnapshot(
     overageCap: usage?.overageCap,
     currentOverages: usage?.currentOverages,
     unit: usage?.unit,
-    resetAt: typeof resetSeconds === 'number' ? Math.round(resetSeconds * 1000) : undefined,
+    resetAt: resetMs,
     daysUntilReset: usage?.daysUntilReset,
     isHealthy: account.isHealthy,
     updatedAt: account.usageUpdatedAt ?? now

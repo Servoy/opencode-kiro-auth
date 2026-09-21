@@ -15,7 +15,7 @@ import * as logger from './plugin/logger.js'
 import { buildModelRegistry } from './plugin/model-registry.js'
 import { clearSdkClientCache } from './plugin/sdk-client.js'
 import { kiroDb } from './plugin/storage/sqlite.js'
-import { setPluginVersion } from './plugin/usage-snapshot.js'
+import { setPluginVersion, writeUsageSnapshot } from './plugin/usage-snapshot.js'
 import { summarizeUsage } from './plugin/usage.js'
 import { formatWebSearchResults, kiroWebSearch } from './plugin/web-search.js'
 
@@ -200,6 +200,16 @@ export const createKiroPlugin =
             installedModels = models
             installedSuffix = quota
           }
+        }
+
+        // Seed the panel from stored data now; the usage sync only runs on the
+        // first request, and without this the panel stays blank until then.
+        try {
+          writeUsageSnapshot(accountManager.getAccounts(), new Map())
+        } catch (e) {
+          logger.debug(
+            `[SNAPSHOT] startup seed skipped: ${e instanceof Error ? e.message : String(e)}`
+          )
         }
       },
       auth: {

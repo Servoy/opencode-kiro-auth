@@ -73,6 +73,28 @@ describe('buildAccountSnapshot', () => {
     const snap = buildAccountSnapshot(makeAccount({ usedCount: 0, limitCount: 0 }), undefined, 0)
     expect(snap.pct).toBe(0)
   })
+
+  test('a fresh nextDateReset is remembered on the account for later syncs', () => {
+    const account = makeAccount()
+    const withReset: UsageResult = { usedCount: 1, limitCount: 10, nextDateReset: 1790812800 }
+    const snap = buildAccountSnapshot(account, withReset, 1_000)
+    expect(snap.resetAt).toBe(1790812800 * 1000)
+    expect(account.resetAt).toBe(1790812800 * 1000)
+  })
+
+  test('resetAt falls back to the last known value when a sync omits nextDateReset', () => {
+    // Some getUsageLimits param combinations drop nextDateReset; the panel's
+    // reset date must not flicker away between syncs.
+    const account = makeAccount({ resetAt: 1790812800 * 1000 })
+    const withoutReset: UsageResult = { usedCount: 2, limitCount: 10 }
+    const snap = buildAccountSnapshot(account, withoutReset, 1_000)
+    expect(snap.resetAt).toBe(1790812800 * 1000)
+  })
+
+  test('resetAt is undefined when neither the sync nor the account has one', () => {
+    const snap = buildAccountSnapshot(makeAccount(), { usedCount: 1, limitCount: 10 }, 1_000)
+    expect(snap.resetAt).toBeUndefined()
+  })
 })
 
 describe('atomicReplace (Windows-safe snapshot swap)', () => {

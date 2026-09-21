@@ -51,6 +51,11 @@ export interface ManagedAccount {
   /** When usage was last read from the service. In-memory only. */
   usageUpdatedAt?: number
   lastUsed?: number
+  /**
+   * Last known quota reset, Unix ms. In-memory only; retained so the panel's
+   * reset date survives a sync whose params omit nextDateReset.
+   */
+  resetAt?: number
 }
 
 export interface CodeWhispererMessage {
