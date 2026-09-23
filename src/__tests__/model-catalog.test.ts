@@ -13,7 +13,7 @@ mock.module('../plugin/logger.js', () => ({
 
 const catalogModule = await import('../plugin/models.js')
 const { getCatalogContextLimit, refreshModelCatalog, resetModelCatalog } = catalogModule
-const { getModelContextLimit } = await import('../plugin/model-registry.js')
+const { getModelContextLimit, buildModelRegistry } = await import('../plugin/model-registry.js')
 
 const auth: any = { region: 'eu-central-1', access: 'token' }
 const originalFetch = globalThis.fetch
@@ -71,6 +71,59 @@ describe('discovering context windows', () => {
   test('nothing is discovered before the first refresh', () => {
     expect(getCatalogContextLimit('claude-sonnet-5')).toBeUndefined()
     expect(getModelContextLimit('claude-sonnet-5')).toBe(1000000)
+  })
+})
+
+describe('document input the catalog omits', () => {
+  // The catalog drops `pdf` from supportedInputTypes; the built-in `pdf` must
+  // survive or OpenCode discards the attachment before the plugin sees it.
+  const CATALOG_TEXT_IMAGE = {
+    models: [
+      {
+        modelId: 'claude-sonnet-4',
+        tokenLimits: { maxInputTokens: 200000 },
+        supportedInputTypes: ['text', 'image']
+      },
+      {
+        modelId: 'auto',
+        tokenLimits: { maxInputTokens: 1000000 },
+        supportedInputTypes: ['text', 'image']
+      }
+    ]
+  }
+
+  test('a multimodal model keeps pdf after the catalog reports only text and image', async () => {
+    stubCatalog(CATALOG_TEXT_IMAGE)
+    await refreshModelCatalog(auth)
+
+    const registry = buildModelRegistry() as Record<string, any>
+    expect(registry['claude-sonnet-4'].modalities.input).toContain('pdf')
+    expect(registry['auto'].modalities.input).toContain('pdf')
+  })
+
+  test('the catalog still governs text and image', async () => {
+    stubCatalog(CATALOG_TEXT_IMAGE)
+    await refreshModelCatalog(auth)
+
+    const registry = buildModelRegistry() as Record<string, any>
+    expect(registry['claude-sonnet-4'].modalities.input).toContain('text')
+    expect(registry['claude-sonnet-4'].modalities.input).toContain('image')
+  })
+
+  test('a text-only model gains no pdf from the catalog', async () => {
+    stubCatalog({
+      models: [
+        {
+          modelId: 'minimax-m2.5',
+          tokenLimits: { maxInputTokens: 196000 },
+          supportedInputTypes: ['text']
+        }
+      ]
+    })
+    await refreshModelCatalog(auth)
+
+    const registry = buildModelRegistry() as Record<string, any>
+    expect(registry['minimax-m2.5'].modalities.input).not.toContain('pdf')
   })
 })
 

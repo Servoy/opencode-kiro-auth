@@ -203,11 +203,20 @@ function canDisableThinking(kiroModel: string): boolean {
   return getCatalogCapabilities(kiroModel)?.supportsThinking ?? true
 }
 
-/** Input modalities the catalog reports, falling back to the built-in table. */
-function modalitiesFor(kiroModel: string, fallback: unknown): unknown {
+/**
+ * Input modalities the catalog reports, falling back to the built-in table.
+ *
+ * The catalog omits `pdf` from supportedInputTypes even though the plugin
+ * uploads documents through the service's DocumentBlock. Keep the built-in
+ * `pdf` so OpenCode does not drop the attachment before it reaches the plugin.
+ */
+function modalitiesFor(kiroModel: string, fallback: Modalities): Modalities {
   const inputTypes = getCatalogCapabilities(kiroModel)?.inputTypes
   if (!inputTypes || inputTypes.length === 0) return fallback
-  return { input: inputTypes, output: ['text'] }
+
+  const input = [...inputTypes] as Modalities['input']
+  if (fallback.input.includes('pdf') && !input.includes('pdf')) input.push('pdf')
+  return { input, output: ['text'] }
 }
 
 /**
