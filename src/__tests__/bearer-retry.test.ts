@@ -12,6 +12,7 @@ let sdkErrorReason: string | undefined
 mock.module('../plugin/logger.js', () => ({
   debug: () => {},
   error: () => {},
+  setDebugEnabled: () => {},
   getTimestamp: () => '2026-07-22T00:00:00.000Z',
   log: () => {},
   logApiError: () => {},

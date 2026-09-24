@@ -11,6 +11,7 @@ mock.module('../plugin/logger.js', () => ({
   error: () => {},
   log: () => {},
   warn: (...args: unknown[]) => warnings.push(args.map(String).join(' ')),
+  setDebugEnabled: () => {},
   getTimestamp: () => '2026-09-24T00:00:00.000Z',
   logApiError: () => {},
   logApiRequest: () => {},

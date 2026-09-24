@@ -5,6 +5,7 @@ mock.module('../plugin/logger.js', () => ({
   error: () => {},
   log: () => {},
   warn: () => {},
+  setDebugEnabled: () => {},
   getTimestamp: () => '2026-07-22T00:00:00.000Z',
   logApiError: () => {},
   logApiRequest: () => {},
