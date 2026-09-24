@@ -77,6 +77,93 @@ describe('KiroDatabase: accounts', () => {
     expect(rows[0].is_healthy).toBe(0)
   })
 
+  test('updateAccountTokens writes only the token fields of the target row', async () => {
+    const a = makeAccount({ id: 'a', email: 'a@example.com', accessToken: 'old-a' })
+    const b = makeAccount({ id: 'b', email: 'b@example.com', accessToken: 'old-b' })
+    await db.batchUpsertAccounts([a, b])
+
+    await db.updateAccountTokens({
+      id: 'a',
+      accessToken: 'new-a',
+      refreshToken: 'r-a2',
+      expiresAt: 5555,
+      lastUsed: 4444
+    })
+
+    const rows = db.getAccounts()
+    const rowA = rows.find((r: any) => r.id === 'a')
+    const rowB = rows.find((r: any) => r.id === 'b')
+    // Target row updated...
+    expect(rowA.access_token).toBe('new-a')
+    expect(rowA.refresh_token).toBe('r-a2')
+    expect(rowA.expires_at).toBe(5555)
+    expect(rowA.last_used).toBe(4444)
+    // ...email untouched (not a token field), and the OTHER row completely
+    // untouched — proving no full-table rewrite happened.
+    expect(rowA.email).toBe('a@example.com')
+    expect(rowB.access_token).toBe('old-b')
+    expect(rowB.email).toBe('b@example.com')
+  })
+
+  test('updateAccountTokens on a missing id is a no-op, not an insert', async () => {
+    await db.updateAccountTokens({
+      id: 'ghost',
+      accessToken: 't',
+      refreshToken: 'r',
+      expiresAt: 1,
+      lastUsed: 1
+    })
+    expect(db.getAccounts()).toHaveLength(0)
+  })
+
+  test('a token refresh clears a prior unhealthy state on the row', async () => {
+    // updateFromAuth marks the account healthy again after a good refresh, so
+    // the single-row token write must carry that recovery to disk too.
+    const acc = makeAccount({ isHealthy: false, unhealthyReason: 'HTTP_401', failCount: 5 })
+    await db.upsertAccount(acc)
+
+    await db.updateAccountTokens({
+      id: 'acc-1',
+      accessToken: 'fresh',
+      refreshToken: 'r2',
+      expiresAt: 9999,
+      lastUsed: 8888,
+      isHealthy: true,
+      failCount: 0,
+      unhealthyReason: null,
+      recoveryTime: null
+    })
+
+    const row = db.getAccounts()[0]
+    expect(row.access_token).toBe('fresh')
+    expect(row.is_healthy).toBe(1)
+    expect(row.fail_count).toBe(0)
+    expect(row.unhealthy_reason).toBeNull()
+  })
+
+  test('updateAccountUsage writes only usage columns of the target row', async () => {
+    const a = makeAccount({ id: 'a', email: 'a@example.com', usedCount: 1, limitCount: 100 })
+    const b = makeAccount({ id: 'b', email: 'b@example.com', usedCount: 2, limitCount: 200 })
+    await db.batchUpsertAccounts([a, b])
+
+    await db.updateAccountUsage({ id: 'a', usedCount: 42, limitCount: 500, lastSync: 7777 })
+
+    const rows = db.getAccounts()
+    const rowA = rows.find((r: any) => r.id === 'a')
+    const rowB = rows.find((r: any) => r.id === 'b')
+    expect(rowA.used_count).toBe(42)
+    expect(rowA.limit_count).toBe(500)
+    expect(rowA.last_sync).toBe(7777)
+    // Other row untouched — no full-table rewrite.
+    expect(rowB.used_count).toBe(2)
+    expect(rowB.limit_count).toBe(200)
+  })
+
+  test('updateAccountUsage on a missing id is a no-op, not an insert', async () => {
+    await db.updateAccountUsage({ id: 'ghost', usedCount: 1, limitCount: 1, lastSync: 1 })
+    expect(db.getAccounts()).toHaveLength(0)
+  })
+
   test('batchUpsertAccounts stores multiple accounts', async () => {
     const a = makeAccount({ id: 'a', email: 'a@example.com' })
     const b = makeAccount({ id: 'b', email: 'b@example.com' })
@@ -219,7 +306,14 @@ describe('KiroDatabase: usage sync lock', () => {
     expect(db.acquireUsageSyncLock()).toBe(true)
   })
 
-  test('stale usage lock (dead pid) is evicted on acquire', () => {
+  test('recent usage lock from a dead pid is NOT evicted — it is the rate-limit gate', () => {
+    // The bug this locks out: the plugin restarts on every workspace switch, so
+    // the pid that fetched usage a moment ago is already dead. The reauth lock
+    // evicts dead pids so a crashed sign-in can't wedge everyone; the usage lock
+    // must NOT, because its whole job is to keep Kiro's wall-clock rate limit
+    // from being hit twice in one TTL window. A dead pid inside the window means
+    // "someone just fetched" — the successor must read the stored value and skip,
+    // not re-fetch and eat a 429.
     const { Database } = require('bun:sqlite')
     const rawDb = new Database(dbPath)
     rawDb
@@ -230,7 +324,21 @@ describe('KiroDatabase: usage sync lock', () => {
     rawDb.close()
     db.close()
     db = new KiroDatabase(dbPath)
-    expect(db.acquireUsageSyncLock()).toBe(true)
+    expect(db.acquireUsageSyncLock()).toBe(false)
+  })
+
+  test('a dead-pid reauth lock is still evicted — a crashed sign-in must not wedge everyone', () => {
+    const { Database } = require('bun:sqlite')
+    const rawDb = new Database(dbPath)
+    rawDb
+      .prepare(
+        'INSERT OR REPLACE INTO reauth_lock (id, pid, acquired_at, purpose) VALUES (?, ?, ?, ?)'
+      )
+      .run(1, 9999999, Date.now() - 1000, 'reauth')
+    rawDb.close()
+    db.close()
+    db = new KiroDatabase(dbPath)
+    expect(db.acquireReauthLock()).toBe(true)
   })
 
   test('expired usage lock is evicted on acquire', () => {

@@ -302,11 +302,14 @@ export class KiroDatabase {
   /**
    * Cross-instance advisory locks, keyed on (id, purpose). One row per
    * purpose — reauth and usage_sync coexist on the same id without
-   * blocking each other. Uses the same TTL + dead-pid eviction pattern:
-   * a lock is held when (now - acquired_at < ttl) AND (process.kill(pid, 0)
-   * succeeds); otherwise the row is reaped.
+   * blocking each other.
+   *
+   * Reaped when expired, and — only when `evictDeadPid` is set — when the
+   * holder's process is gone. Reauth evicts dead pids so a crashed sign-in
+   * cannot wedge everyone; usage_sync does not, because it gates a wall-clock
+   * rate limit and a dead pid inside the TTL still means "just fetched, skip".
    */
-  private acquireLock(purpose: string, ttlMs: number): boolean {
+  private acquireLock(purpose: string, ttlMs: number, evictDeadPid: boolean): boolean {
     const now = Date.now()
     try {
       this.db.exec('BEGIN IMMEDIATE')
@@ -320,14 +323,16 @@ export class KiroDatabase {
 
       if (existing) {
         const expired = now - existing.acquired_at >= ttlMs
-        const dead = (() => {
-          try {
-            process.kill(existing.pid, 0)
-            return false
-          } catch {
-            return true
-          }
-        })()
+        const dead =
+          evictDeadPid &&
+          (() => {
+            try {
+              process.kill(existing.pid, 0)
+              return false
+            } catch {
+              return true
+            }
+          })()
         if (expired || dead) {
           this.db.prepare('DELETE FROM reauth_lock WHERE id = 1 AND purpose = ?').run(purpose)
         } else {
@@ -367,7 +372,7 @@ export class KiroDatabase {
   }
 
   acquireReauthLock(): boolean {
-    return this.acquireLock('reauth', KiroDatabase.REAUTH_LOCK_TTL_MS)
+    return this.acquireLock('reauth', KiroDatabase.REAUTH_LOCK_TTL_MS, true)
   }
 
   isReauthLockHeld(): boolean {
@@ -391,7 +396,7 @@ export class KiroDatabase {
    * already-stored usage value and skip silently.
    */
   acquireUsageSyncLock(): boolean {
-    return this.acquireLock('usage_sync', KiroDatabase.USAGE_SYNC_LOCK_TTL_MS)
+    return this.acquireLock('usage_sync', KiroDatabase.USAGE_SYNC_LOCK_TTL_MS, false)
   }
 
   isUsageSyncLockHeld(): boolean {
