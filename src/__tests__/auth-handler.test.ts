@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { beforeEach, describe, expect, mock, test } from 'bun:test'
 
 // Capture logger calls so the lock-held test can assert no warning was logged.
 const warnings: string[] = []
@@ -90,6 +90,12 @@ const CREDIT_RESPONSE = JSON.stringify({
 })
 
 describe('AuthHandler.refreshUsageFromApi', () => {
+  // A held lock leaks into the next test in the shared Bun process; start clean.
+  beforeEach(async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    kiroDb.releaseUsageSyncLock()
+  })
+
   test('fetches live usage and updates the account with dashboard credits', async () => {
     const acc = makeAccount({ usedCount: 4292, limitCount: 10000 }) // stale prior-period value
     const handler = new AuthHandler(
@@ -147,6 +153,28 @@ describe('AuthHandler.refreshUsageFromApi', () => {
       expect(calls).toBe(1)
     } finally {
       globalThis.fetch = original
+    }
+  })
+
+  test('does not release the usage-sync lock after fetching (holds it for the TTL)', async () => {
+    // Must stay held so siblings within the TTL skip; releasing it 429s in turn.
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    const acc = makeAccount({ usedCount: 70.45, limitCount: 10000 })
+    const handler = new AuthHandler(
+      { usage_tracking_enabled: true, token_expiry_buffer_ms: 300000, auto_sync_kiro_cli: false },
+      fakeRepo
+    )
+    handler.setAccountManager(makeManager(acc))
+
+    const original = globalThis.fetch
+    globalThis.fetch = mock(async () => new Response(CREDIT_RESPONSE, { status: 200 })) as any
+    try {
+      await handler.refreshUsageFromApi()
+      // Lock still held: a sibling instance would find it locked and skip.
+      expect(kiroDb.isUsageSyncLockHeld()).toBe(true)
+    } finally {
+      globalThis.fetch = original
+      kiroDb.releaseUsageSyncLock()
     }
   })
 

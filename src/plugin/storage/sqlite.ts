@@ -405,20 +405,15 @@ export class KiroDatabase {
   }
 
   /**
-   * No-op under WAL mode. kiroDb is a process-global singleton shared by
-   * every OpenChamber project on the same machine; closing the connection
-   * here tore down a shared resource any sibling query was still using,
-   * which then crashed with "Cannot use a closed database". SQLite manages
-   * the file's resources itself under WAL — the actual cleanup happens at
-   * process exit. Releasing the lock first avoids dangling-file-lock errors
-   * from a process that holds the reauth or usage_sync lock at shutdown.
+   * Does not close the connection: kiroDb is shared machine-wide, so under WAL
+   * the OS reclaims it at process exit. Releases only the reauth mutex; the
+   * usage_sync gate stays held so a reload does not re-storm Kiro.
    */
   close(): void {
     try {
       this.releaseReauthLock()
-      this.releaseUsageSyncLock()
     } catch {
-      // best effort — even lock cleanup should not throw during dispose
+      // best effort — cleanup must not throw during dispose
     }
   }
 

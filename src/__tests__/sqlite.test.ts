@@ -254,6 +254,27 @@ describe('KiroDatabase: usage sync lock', () => {
     expect(db.isReauthLockHeld()).toBe(true)
     expect(db.isUsageSyncLockHeld()).toBe(false)
   })
+
+  // usage_sync must survive dispose/reinit, else a reload re-storms Kiro.
+  test('close() releases the reauth lock but keeps the usage lock held', () => {
+    db.acquireReauthLock()
+    db.acquireUsageSyncLock()
+    db.close()
+    expect(db.isReauthLockHeld()).toBe(false)
+    expect(db.isUsageSyncLockHeld()).toBe(true)
+  })
+
+  test('the usage lock survives close and blocks a fresh instance on the same db', () => {
+    db.acquireUsageSyncLock()
+    db.close()
+    const reopened = new KiroDatabase(dbPath)
+    try {
+      // Same live pid within the TTL: a fresh instance must see it held.
+      expect(reopened.acquireUsageSyncLock()).toBe(false)
+    } finally {
+      reopened.close()
+    }
+  })
 })
 
 // ── conversations ─────────────────────────────────────────────────────────────
