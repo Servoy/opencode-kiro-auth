@@ -6,17 +6,7 @@ import * as logger from './logger.js'
 import { refreshAccessToken } from './token.js'
 import type { KiroAuthDetails } from './types'
 
-/**
- * v2 Tool.Info shape for `kiro_web_search`. Returns null when no Pro account
- * is available so the host's tool.transform skips the registration entirely
- * (free accounts shouldn't see a tool they cannot call).
- *
- * The shape mirrors the v1 `tool()` helper's description and argument schema
- * so the model gets the same guidance whether the host is v1 (register-as-v1-tool)
- * or v2 (register-via-tool.transform). The execute() always returns a string
- * (markdown for results, error string on failure) — both v1 and v2 Tool.Info
- * shapes accept a string return.
- */
+/** v2 Tool.Info for `kiro_web_search`; execute resolves to a Tool.Result, not a bare string. */
 export interface V2WebSearchTool {
   name: string
   description: string
@@ -25,7 +15,7 @@ export interface V2WebSearchTool {
     properties: { query: { type: 'string'; description: string } }
     required: ['query']
   }
-  execute(input: { query: string }, context: { signal: AbortSignal }): Promise<string>
+  execute(input: { query: string }, context: { signal: AbortSignal }): Promise<{ content: string }>
 }
 
 export const WEB_SEARCH_DESCRIPTION = `Search the web using Kiro's built-in search engine. Returns titles, URLs, snippets, domains, and publish dates for a query. Billed as Kiro credits.
@@ -64,16 +54,12 @@ export function buildWebSearchToolV2(accountManager: AccountManager): V2WebSearc
       },
       required: ['query']
     },
-    async execute(input, context) {
+    async execute(input) {
       try {
         const results = await kiroWebSearch(accountManager, input.query)
-        return formatWebSearchResults(results)
+        return { content: formatWebSearchResults(results) }
       } catch (e) {
-        return `Web search failed: ${e instanceof Error ? e.message : String(e)}`
-      } finally {
-        if (context.signal.aborted) {
-          // Host cancelled; nothing else to do, the fetch was already aborted.
-        }
+        return { content: `Web search failed: ${e instanceof Error ? e.message : String(e)}` }
       }
     }
   }

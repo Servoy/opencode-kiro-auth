@@ -1,4 +1,5 @@
 import type { Plugin } from '@opencode/plugin'
+import { buildWebSearchToolV2 } from '../plugin/web-search.js'
 import { buildIntegrationMethods } from './integration.js'
 import { buildV2Provider } from './models-bridge.js'
 import type { V2SessionHttpResponse } from './types.js'
@@ -61,9 +62,11 @@ type ProviderEditorArg = Parameters<Parameters<OfficialContext['provider']['tran
 type IntegrationEditorArg = Parameters<
   Parameters<OfficialContext['integration']['transform']>[0]
 >[0]
+type ToolEditorArg = Parameters<Parameters<OfficialContext['tool']['transform']>[0]>[0]
 
 type ProviderAddArg = Parameters<ProviderEditorArg['add']>[0]
 type MethodUpdateArg = Parameters<IntegrationEditorArg['method']['update']>[0]
+type ToolAddArg = Parameters<ToolEditorArg['add']>[0]
 
 const _providerResult = buildV2Provider('kiro', 'https://example/v1', '')
 const _providerAddArg: ProviderAddArg = {
@@ -75,3 +78,9 @@ void _providerAddArg
 const _methodRegs = buildIntegrationMethods('kiro', [])
 const _methodUpdateArg: MethodUpdateArg | undefined = _methodRegs[0] as never
 void _methodUpdateArg
+
+// Fails typecheck against @opencode/plugin if the web-search tool stops matching
+// the official editor.add arg (e.g. execute returning a string, not Tool.Result).
+const _webSearchTool = buildWebSearchToolV2({} as never)
+const _toolAddArg: ToolAddArg = _webSearchTool as NonNullable<typeof _webSearchTool>
+void _toolAddArg

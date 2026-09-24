@@ -85,16 +85,12 @@ export function createV2Setup(id: string) {
       })
     )
 
-    // Register kiro_web_search for v2 hosts. v1 hosts use the v1 tool() helper
-    // inside buildTools(); v2 hosts register via ctx.tool.transform with the
-    // v2 Tool.Info shape. Same description and behavior either way — only the
-    // registration mechanism differs. Returns null when no Pro account is
-    // available, which the host then skips silently.
+    // null when no Pro account can call it, so the host skips registration.
     const webSearchTool = buildWebSearchToolV2(accountManager)
     if (webSearchTool) {
       registrations.push(
         await ctx.tool.transform((editor) => {
-          editor.add(webSearchTool as never)
+          editor.add(webSearchTool)
         })
       )
     }

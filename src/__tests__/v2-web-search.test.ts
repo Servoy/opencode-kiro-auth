@@ -34,17 +34,16 @@ describe('v2 web search tool', () => {
     expect(tool).toBeNull()
   })
 
-  test('execute handles errors gracefully (returns error string, never throws)', async () => {
+  test('execute resolves to a Tool.Result ({ content }), never throws', async () => {
     const accountManager = {
       getCurrentOrNext: () => ({ profileArn: 'arn:aws:codewhisperer:eu-central-1:123:profile/X' })
     } as never
     const tool = buildWebSearchToolV2(accountManager)
     expect(tool).not.toBeNull()
-    // We don't have a way to mock kiroWebSearch easily; call with an obviously
-    // empty query and verify the shape: a result string, no throw.
     const out = await tool!.execute({ query: '' } as never, {
       signal: new AbortController().signal
     })
-    expect(typeof out).toBe('string')
+    expect(typeof out).toBe('object')
+    expect(typeof out.content).toBe('string')
   })
 })
