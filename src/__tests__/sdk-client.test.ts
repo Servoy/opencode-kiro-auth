@@ -1,4 +1,7 @@
-import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client'
+import {
+  CodeWhispererStreamingClient,
+  GenerateAssistantResponseCommand
+} from '@aws/codewhisperer-streaming-client'
 import { describe, expect, test } from 'bun:test'
 import { clearSdkClientCache, createSdkClient, resolveKiroEndpoint } from '../plugin/sdk-client'
 import type { KiroAuthDetails } from '../plugin/types'
@@ -111,6 +114,64 @@ describe('SDK client', () => {
 
     expect(xhigh).not.toBe(max)
     expect(maxAgain).toBe(max)
+
+    clearSdkClientCache()
+  })
+
+  test('two sessions on one account do not share a client', () => {
+    // The abort race: sessions A and B share account/region/model, so before
+    // sessionId keyed the cache they shared one client. When B refreshed the
+    // token, createSdkClient tore that shared client down with destroy() while
+    // A was still streaming on it, killing A's socket ("Error: aborted"). A
+    // client per session means B can never evict the client A is reading from.
+    clearSdkClientCache()
+
+    const a = createSdkClient(auth(), 'us-east-1', undefined, 300_000, 'ses_A')
+    const b = createSdkClient(auth(), 'us-east-1', undefined, 300_000, 'ses_B')
+
+    expect(b).not.toBe(a)
+
+    clearSdkClientCache()
+  })
+
+  test('a session keeps its client across turns rather than churning one per request', () => {
+    clearSdkClientCache()
+
+    const first = createSdkClient(auth(), 'us-east-1', undefined, 300_000, 'ses_A')
+    const second = createSdkClient(auth(), 'us-east-1', undefined, 300_000, 'ses_A')
+
+    expect(second).toBe(first)
+
+    clearSdkClientCache()
+  })
+
+  test('per-session keying is LRU-bounded so it cannot grow without limit', () => {
+    // Keying per session means one entry per session ever seen; without a bound
+    // a long-lived host leaks a client (and its sockets) for every session. The
+    // proof that the bound bites: the oldest session's client is destroy()ed
+    // once the cache goes over capacity. destroy() closes its sockets, so a
+    // stream on it would end — which is exactly why only an *idle* (oldest,
+    // least-recently-created) entry may be evicted.
+    clearSdkClientCache()
+
+    const destroyed = new Set<CodeWhispererStreamingClient>()
+    const oldest = createSdkClient(auth(), 'us-east-1', undefined, 300_000, 'ses_oldest')
+    const originalDestroy = oldest.destroy.bind(oldest)
+    oldest.destroy = () => {
+      destroyed.add(oldest)
+      originalDestroy()
+    }
+
+    // Fill past the cap (32) with fresh sessions; the oldest must be evicted.
+    for (let i = 0; i < 40; i++) {
+      createSdkClient(auth(), 'us-east-1', undefined, 300_000, `ses_${i}`)
+    }
+
+    expect(destroyed.has(oldest)).toBe(true)
+
+    // A still-cached recent session returns its existing instance untouched.
+    const recent = createSdkClient(auth(), 'us-east-1', undefined, 300_000, 'ses_39')
+    expect(createSdkClient(auth(), 'us-east-1', undefined, 300_000, 'ses_39')).toBe(recent)
 
     clearSdkClientCache()
   })

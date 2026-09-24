@@ -46,20 +46,40 @@ interface ClientCacheEntry {
   fieldsKey: string
 }
 
+// Per-session keying grows with every session, so the cache is LRU-bounded.
+// Map preserves insertion order, so the first key is the oldest — and a session
+// serialises its own requests, so the oldest entry is idle and safe to destroy.
+const MAX_CACHED_CLIENTS = 32
+
 const clientCache = new Map<string, ClientCacheEntry>()
+
+function evictOldestClients(): void {
+  while (clientCache.size > MAX_CACHED_CLIENTS) {
+    const oldest = clientCache.keys().next().value
+    if (oldest === undefined) return
+    const entry = clientCache.get(oldest)
+    clientCache.delete(oldest)
+    try {
+      entry?.client.destroy()
+    } catch {}
+  }
+}
 
 export function createSdkClient(
   auth: KiroAuthDetails,
   region: string,
   fields?: AdditionalModelRequestFields,
-  requestTimeoutMs = 300_000
+  requestTimeoutMs = 300_000,
+  sessionId?: string
 ): CodeWhispererStreamingClient {
   const endpoint = resolveKiroEndpoint(auth)
   const fieldsKey = fields ? JSON.stringify(fields) : 'none'
-  // Cache key includes endpoint so a token refresh that also changes endpoint
-  // (unlikely but possible) gets a fresh client, and the request fields so
-  // each combination gets its own (middleware is bound at creation time).
-  const cacheKey = `${region}:${auth.email || 'default'}:${endpoint}:${fieldsKey}:${requestTimeoutMs}`
+  // endpoint + fields are in the key because the middleware binds them at
+  // creation. sessionId is in the key so two sessions on one account never
+  // share a client: a shared client's token refresh destroy()ed the socket the
+  // other session was still streaming on — the "ECONNRESET: aborted" bug.
+  const session = sessionId || 'nosession'
+  const cacheKey = `${region}:${auth.email || 'default'}:${endpoint}:${fieldsKey}:${requestTimeoutMs}:${session}`
   const cached = clientCache.get(cacheKey)
 
   if (cached && cached.token === auth.access && cached.fieldsKey === fieldsKey) {
@@ -133,7 +153,11 @@ export function createSdkClient(
     )
   }
 
+  // Re-set on an existing key must move it to the newest slot, or the LRU
+  // sweep below could evict the entry we just refreshed.
+  clientCache.delete(cacheKey)
   clientCache.set(cacheKey, { client, token, endpoint, fieldsKey })
+  evictOldestClients()
   registerProcessCleanup()
   return client
 }

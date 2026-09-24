@@ -124,10 +124,18 @@ function logIncomingRequest(body: any, init: any): void {
   )
 }
 
-function extractSessionId(headers: unknown): string | undefined {
+/**
+ * The session id OpenCode tags a request with, or undefined when none is set.
+ *
+ * OpenCode has shipped three names for this over time (`x-session-affinity`,
+ * `x-session-id`, `x-opencode-session`), so all three are tried. Missing it is
+ * not cosmetic: the conversation key then falls back to hashing the first user
+ * message, and two sessions in one directory can collide on the same key.
+ */
+export function extractSessionId(headers: unknown): string | undefined {
   if (!headers) return undefined
   const h = headers as Record<string, string>
-  return h['x-session-id'] ?? h['x-session-affinity']
+  return h['x-session-id'] ?? h['x-session-affinity'] ?? h['x-opencode-session']
 }
 
 export class RequestHandler {
@@ -388,7 +396,8 @@ export class RequestHandler {
           auth,
           sdkPrep.region,
           sdkPrep.modelRequestFields,
-          this.config.request_timeout_ms
+          this.config.request_timeout_ms,
+          sessionId
         )
         const command = new GenerateAssistantResponseCommand({
           conversationState: sdkPrep.conversationState as any,
