@@ -6,6 +6,79 @@ import * as logger from './logger.js'
 import { refreshAccessToken } from './token.js'
 import type { KiroAuthDetails } from './types'
 
+/**
+ * v2 Tool.Info shape for `kiro_web_search`. Returns null when no Pro account
+ * is available so the host's tool.transform skips the registration entirely
+ * (free accounts shouldn't see a tool they cannot call).
+ *
+ * The shape mirrors the v1 `tool()` helper's description and argument schema
+ * so the model gets the same guidance whether the host is v1 (register-as-v1-tool)
+ * or v2 (register-via-tool.transform). The execute() always returns a string
+ * (markdown for results, error string on failure) — both v1 and v2 Tool.Info
+ * shapes accept a string return.
+ */
+export interface V2WebSearchTool {
+  name: string
+  description: string
+  input: {
+    type: 'object'
+    properties: { query: { type: 'string'; description: string } }
+    required: ['query']
+  }
+  execute(input: { query: string }, context: { signal: AbortSignal }): Promise<string>
+}
+
+export const WEB_SEARCH_DESCRIPTION = `Search the web using Kiro's built-in search engine. Returns titles, URLs, snippets, domains, and publish dates for a query. Billed as Kiro credits.
+
+## When to Use
+- The user asks for current or up-to-date information (pricing, versions, release notes, recent events, library APIs).
+- Verifying facts that may have changed recently, or details likely newer than the model's training data.
+- Looking up specifics of a library, framework, or tool that can't be reliably inferred from the codebase or context.
+
+## When NOT to Use
+- Basic concepts, historical facts, or well-established programming syntax the model already knows.
+- Anything answerable from the current repository, files, or conversation. Search the codebase first.
+
+## Query Tips
+- Keep queries focused; the query MUST be 200 characters or fewer (longer queries are rejected).
+- Rephrase the user's request into effective keywords. Run multiple focused searches for complex questions rather than one broad search.
+
+## Using Results & Attribution
+- Prioritize the most recently published, authoritative sources (prefer official docs over blogs; use the domain to judge authority).
+- ALWAYS cite sources with inline links in the format [description](url).
+- Paraphrase and summarize; do not reproduce more than ~30 consecutive words verbatim from any single source. Preserve factual accuracy while condensing.`
+
+export function buildWebSearchToolV2(accountManager: AccountManager): V2WebSearchTool | null {
+  const account = accountManager.getCurrentOrNext()
+  if (!account?.profileArn) return null
+  return {
+    name: 'kiro_web_search',
+    description: WEB_SEARCH_DESCRIPTION,
+    input: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'The search query. Must be 200 characters or fewer.'
+        }
+      },
+      required: ['query']
+    },
+    async execute(input, context) {
+      try {
+        const results = await kiroWebSearch(accountManager, input.query)
+        return formatWebSearchResults(results)
+      } catch (e) {
+        return `Web search failed: ${e instanceof Error ? e.message : String(e)}`
+      } finally {
+        if (context.signal.aborted) {
+          // Host cancelled; nothing else to do, the fetch was already aborted.
+        }
+      }
+    }
+  }
+}
+
 // Kiro exposes a server-side web search via the CodeWhisperer InvokeMCP target.
 // It speaks JSON-RPC (tools/call) and requires a profileArn, so it is only
 // available to Pro accounts. The query is capped at 200 characters by the API.

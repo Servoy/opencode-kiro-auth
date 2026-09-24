@@ -268,6 +268,9 @@ export const createKiroPlugin =
           imageCache.clear()
         } catch {}
         try {
+          // kiroDb.close() is a no-op under WAL — closing the shared
+          // connection raced with sibling queries. The advisory locks held
+          // at shutdown are still released so the next start isn't blocked.
           kiroDb.close()
         } catch {}
         logger.debug('[DISPOSE] Kiro plugin shutdown complete')

@@ -11,6 +11,7 @@ import { refreshModelCatalog, subscribeCatalogUpdated } from '../plugin/models.j
 import { clearSdkClientCache } from '../plugin/sdk-client.js'
 import { kiroDb } from '../plugin/storage/sqlite.js'
 import { noopToast, type ToastFn } from '../plugin/toast.js'
+import { buildWebSearchToolV2 } from '../plugin/web-search.js'
 import { buildIntegrationMethods } from './integration.js'
 import { buildV2Provider } from './models-bridge.js'
 import { createRequestBridge } from './request-bridge.js'
@@ -84,6 +85,20 @@ export function createV2Setup(id: string) {
       })
     )
 
+    // Register kiro_web_search for v2 hosts. v1 hosts use the v1 tool() helper
+    // inside buildTools(); v2 hosts register via ctx.tool.transform with the
+    // v2 Tool.Info shape. Same description and behavior either way — only the
+    // registration mechanism differs. Returns null when no Pro account is
+    // available, which the host then skips silently.
+    const webSearchTool = buildWebSearchToolV2(accountManager)
+    if (webSearchTool) {
+      registrations.push(
+        await ctx.tool.transform((editor) => {
+          editor.add(webSearchTool as never)
+        })
+      )
+    }
+
     const bridge = createRequestBridge(requestHandler, toast)
 
     registrations.push(await ctx.session.hook('http.request', () => {}))
@@ -146,6 +161,9 @@ export function createV2Setup(id: string) {
         /* best effort */
       }
       try {
+        // kiroDb.close() is a no-op under WAL — closing the shared
+        // connection raced with sibling queries. The advisory locks held
+        // at shutdown are still released so the next start isn't blocked.
         kiroDb.close()
       } catch {
         /* best effort */
