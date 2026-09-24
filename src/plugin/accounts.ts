@@ -257,7 +257,23 @@ export class AccountManager {
     delete acc.recoveryTime
 
     try {
-      await kiroDb.upsertAccount(acc)
+      // Single-row update, not the full-table merge upsert: a refresh only
+      // touches this one account, and the merge's file-lock round-trip is what
+      // turned synchronized refreshes into multi-second stalls at scale.
+      await kiroDb.updateAccountTokens({
+        id: acc.id,
+        accessToken: acc.accessToken,
+        refreshToken: acc.refreshToken,
+        expiresAt: acc.expiresAt,
+        lastUsed: acc.lastUsed,
+        email: acc.email,
+        profileArn: acc.profileArn,
+        clientId: acc.clientId,
+        isHealthy: acc.isHealthy,
+        failCount: acc.failCount,
+        unhealthyReason: acc.unhealthyReason ?? null,
+        recoveryTime: acc.recoveryTime ?? null
+      })
     } catch (e) {
       Object.assign(acc, snapshot)
       logger.warn('updateFromAuth: DB write failed, in-memory state reverted', {

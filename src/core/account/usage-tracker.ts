@@ -53,7 +53,16 @@ export class UsageTracker {
     // in that window, then refresh the panel snapshot with the full response.
     this.attributeAndSnapshot(account, u, previousUsed)
 
-    await this.repository.batchSave(this.accountManager.getAccounts())
+    // Single-row usage write, not a full-table batchSave merge: a sync only
+    // changes this account's counters, and at 15 projects the per-minute merge
+    // was needless file-lock traffic. invalidateCache keeps findAll fresh.
+    await kiroDb.updateAccountUsage({
+      id: account.id,
+      usedCount: account.usedCount ?? 0,
+      limitCount: account.limitCount ?? 0,
+      lastSync: Date.now()
+    })
+    this.repository.invalidateCache()
   }
 
   /**

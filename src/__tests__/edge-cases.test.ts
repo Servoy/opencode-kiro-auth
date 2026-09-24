@@ -23,6 +23,7 @@ mock.module('../plugin/storage/sqlite.js', () => ({
     },
     getAccounts: () => [],
     upsertAccount: () => Promise.resolve(),
+    updateAccountTokens: () => Promise.resolve(),
     deleteAccount: () => Promise.resolve(),
     batchUpsertAccounts: () => Promise.resolve()
   }

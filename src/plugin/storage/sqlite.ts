@@ -163,6 +163,72 @@ export class KiroDatabase {
     })
   }
 
+  /**
+   * Persist just the fields a token refresh touches, for one existing row.
+   *
+   * A targeted UPDATE, not the full-table read-merge-rewrite {@link upsertAccount}
+   * does under the lock — that lock time is what stalled synchronized refreshes
+   * at scale. Missing id is a no-op; the merge path stays for multi-account.
+   */
+  async updateAccountTokens(fields: {
+    id: string
+    accessToken: string
+    refreshToken: string
+    expiresAt: number
+    lastUsed: number
+    email?: string
+    profileArn?: string
+    clientId?: string
+    isHealthy?: boolean
+    failCount?: number
+    unhealthyReason?: string | null
+    recoveryTime?: number | null
+  }): Promise<void> {
+    await withDatabaseLock(this.path, async () => {
+      const sets = ['access_token = ?', 'refresh_token = ?', 'expires_at = ?', 'last_used = ?']
+      const params: any[] = [
+        fields.accessToken,
+        fields.refreshToken,
+        fields.expiresAt,
+        fields.lastUsed
+      ]
+      const add = (col: string, val: any): void => {
+        sets.push(`${col} = ?`)
+        params.push(val)
+      }
+      if (fields.email !== undefined) add('email', fields.email)
+      if (fields.profileArn !== undefined) add('profile_arn', fields.profileArn)
+      if (fields.clientId !== undefined) add('client_id', fields.clientId)
+      if (fields.isHealthy !== undefined) add('is_healthy', fields.isHealthy ? 1 : 0)
+      if (fields.failCount !== undefined) add('fail_count', fields.failCount)
+      if (fields.unhealthyReason !== undefined) add('unhealthy_reason', fields.unhealthyReason)
+      if (fields.recoveryTime !== undefined) add('recovery_time', fields.recoveryTime)
+      params.push(fields.id)
+
+      this.db.prepare(`UPDATE accounts SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+    })
+  }
+
+  /**
+   * Persist just the usage counters for one existing row.
+   *
+   * A targeted UPDATE, not the full-table `batchSave` merge that fired per
+   * process per cooldown — needless lock traffic to change three columns of
+   * one row. Missing id is a no-op; the merge path stays for multi-account.
+   */
+  async updateAccountUsage(fields: {
+    id: string
+    usedCount: number
+    limitCount: number
+    lastSync: number
+  }): Promise<void> {
+    await withDatabaseLock(this.path, async () => {
+      this.db
+        .prepare('UPDATE accounts SET used_count = ?, limit_count = ?, last_sync = ? WHERE id = ?')
+        .run(fields.usedCount, fields.limitCount, fields.lastSync, fields.id)
+    })
+  }
+
   async batchUpsertAccounts(accounts: ManagedAccount[]): Promise<void> {
     await withDatabaseLock(this.path, async () => {
       const existing = this.getAccounts().map(this.rowToAccount)

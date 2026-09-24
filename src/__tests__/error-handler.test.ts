@@ -9,6 +9,7 @@ mock.module('../plugin/storage/sqlite.js', () => ({
   kiroDb: {
     getAccounts: () => [],
     upsertAccount: () => Promise.resolve(),
+    updateAccountTokens: () => Promise.resolve(),
     deleteAccount: () => Promise.resolve(),
     batchUpsertAccounts: () => Promise.resolve(),
     // mock.module() registers globally for the whole bun test run, not just
