@@ -13,11 +13,11 @@ import { getConfigDir } from './plugin/config/paths.js'
 import { imageCache } from './plugin/image-cache.js'
 import * as logger from './plugin/logger.js'
 import { buildModelRegistry } from './plugin/model-registry.js'
+import { applyQuotaSuffix, usageSuffix } from './plugin/quota-suffix.js'
 import { clearSdkClientCache } from './plugin/sdk-client.js'
 import { kiroDb } from './plugin/storage/sqlite.js'
 import { type ToastFn } from './plugin/toast.js'
 import { setPluginVersion, writeUsageSnapshot } from './plugin/usage-snapshot.js'
-import { summarizeUsage } from './plugin/usage.js'
 import { formatWebSearchResults, kiroWebSearch } from './plugin/web-search.js'
 
 const KIRO_PROVIDER_ID = 'kiro'
@@ -41,26 +41,10 @@ let installedModels: Record<string, unknown> | null = null
 let installedSuffix = ''
 
 function refreshQuotaInModelNames(accountManager: AccountManager): void {
-  if (!installedModels) return
-  const suffix = usageSuffix(accountManager)
-  if (!suffix || suffix === installedSuffix) return
-
-  for (const model of Object.values(installedModels)) {
-    const entry = model as { name?: string }
-    if (typeof entry.name !== 'string') continue
-    entry.name = installedSuffix
-      ? entry.name.replace(installedSuffix, suffix)
-      : `${entry.name} ${suffix}`
-  }
+  const { changed, suffix } = applyQuotaSuffix(installedModels, accountManager, installedSuffix)
+  if (!changed) return
   logger.debug(`[MODELS] quota suffix updated ${installedSuffix || '(none)'} -> ${suffix}`)
   installedSuffix = suffix
-}
-
-function usageSuffix(accountManager: AccountManager): string {
-  const account = accountManager.getAccounts().find((a) => (a.limitCount ?? 0) > 0)
-  if (!account) return ''
-  const { pct } = summarizeUsage(account.usedCount ?? 0, account.limitCount ?? 0)
-  return `· ${pct}%`
 }
 
 // Read once at module load: confirms which published version is actually
