@@ -17,11 +17,6 @@ mock.module('../plugin/logger.js', () => ({
   logApiRequest: () => {},
   logApiResponse: () => {}
 }))
-const loggerMock: { warnings: string[]; warn: () => void } = {
-  warnings,
-  warn: () => {}
-}
-
 mock.module('../kiro/auth.js', () => ({
   decodeRefreshToken: (t: string) => ({ refreshToken: t }),
   encodeRefreshToken: (p: any) => p.refreshToken,
@@ -180,7 +175,6 @@ describe('AuthHandler.refreshUsageFromApi', () => {
   })
 
   test('skips fetch silently when another instance holds the usage-sync lock', async () => {
-    // Simulate another instance winning the lock for this account's TTL.
     const { kiroDb } = await import('../plugin/storage/sqlite.js')
     expect(kiroDb.acquireUsageSyncLock()).toBe(true)
     try {
@@ -197,19 +191,14 @@ describe('AuthHandler.refreshUsageFromApi', () => {
         calls++
         return new Response(CREDIT_RESPONSE, { status: 200 })
       }) as any
-      // Capture warnings so we can assert no usage-fetch warning was logged
-      const warnings: string[] = []
-      const originalWarn = loggerMock.warn
-      loggerMock.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '))
+      warnings.length = 0
       try {
         await handler.refreshUsageFromApi()
         expect(calls).toBe(0)
-        // Crucially: no "Startup usage fetch failed" warning — the lock-held
-        // case must not log, because that's the whole point of the lock.
+        // A skipped sync is expected, not a failure worth warning about.
         expect(warnings.some((w) => w.includes('Startup usage fetch failed'))).toBe(false)
       } finally {
         globalThis.fetch = original
-        loggerMock.warn = originalWarn
         kiroDb.releaseUsageSyncLock()
       }
     } finally {
