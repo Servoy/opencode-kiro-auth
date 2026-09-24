@@ -15,7 +15,17 @@ interface TokenRefresherConfig {
   account_selection_strategy: 'sticky' | 'round-robin' | 'lowest-usage'
 }
 
+type RefreshOutcome = { account: ManagedAccount; shouldContinue: boolean }
+
 export class TokenRefresher {
+  /**
+   * One in-flight refresh per account id, shared across every session in this
+   * process. One account has one token with one expiry, so without this all
+   * sessions that see it lapse stampede the OIDC endpoint (and the db write
+   * each refresh does) at once. Static to span every per-session RequestHandler.
+   */
+  private static inFlightByAccount = new Map<string, Promise<RefreshOutcome>>()
+
   constructor(
     private config: TokenRefresherConfig,
     private accountManager: AccountManager,
@@ -27,11 +37,29 @@ export class TokenRefresher {
     account: ManagedAccount,
     auth: KiroAuthDetails,
     showToast: ToastFunction
-  ): Promise<{ account: ManagedAccount; shouldContinue: boolean }> {
+  ): Promise<RefreshOutcome> {
     if (!accessTokenExpired(auth, this.config.token_expiry_buffer_ms)) {
       return { account, shouldContinue: false }
     }
 
+    // Join an in-flight refresh for this account instead of starting a second.
+    // The map entry is cleared when the refresh settles (below), so the next
+    // genuine expiry starts a fresh one rather than resolving from a stale hit.
+    const existing = TokenRefresher.inFlightByAccount.get(account.id)
+    if (existing) return existing
+
+    const refresh = this.doRefresh(account, auth, showToast).finally(() => {
+      TokenRefresher.inFlightByAccount.delete(account.id)
+    })
+    TokenRefresher.inFlightByAccount.set(account.id, refresh)
+    return refresh
+  }
+
+  private async doRefresh(
+    account: ManagedAccount,
+    auth: KiroAuthDetails,
+    showToast: ToastFunction
+  ): Promise<RefreshOutcome> {
     // Retry transient failures (network blips, brief AWS SSO unavailability)
     // before escalating to handleRefreshError. Permanent auth failures skip
     // the retry — they're never going to succeed via refresh.
@@ -40,8 +68,11 @@ export class TokenRefresher {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const newAuth = await refreshAccessToken(auth)
+        // updateFromAuth already persists the row; a second repository.save()
+        // was a duplicate full-table write under the same lock. Keep only the
+        // cache-invalidation so findAll no longer serves the pre-refresh token.
         await this.accountManager.updateFromAuth(account, newAuth)
-        await this.repository.save(account)
+        this.repository.invalidateCache()
         return { account, shouldContinue: false }
       } catch (e: any) {
         lastError = e
