@@ -38,7 +38,7 @@ interface ModelSpec {
  * absent: they configure reasoning through `reasoning.effort` / `reasoning.mode`
  * rather than `output_config.effort`, so they need their own request path.
  */
-const MODEL_SPECS: Record<string, ModelSpec> = {
+export const MODEL_SPECS: Record<string, ModelSpec> = {
   auto: { name: 'Auto', rate: '1.0x', limit: CONTEXT_1M, modalities: MULTIMODAL },
 
   // Claude Sonnet
@@ -245,7 +245,12 @@ export function buildModelRegistry(nameSuffix = ''): Record<string, unknown> {
 
     const base: Record<string, unknown> = {
       name: `${spec.name} (${spec.rate})${suffix}`,
-      limit: spec.limit,
+      // Context window is the catalog's when known, the built-in spec's until
+      // then — the same source getModelContextLimit uses, so the window
+      // advertised to OpenCode and the one the token counter divides by can
+      // never disagree (a mismatch is what showed >100% context on a turn).
+      // Output stays the spec's: the catalog reports input limits only.
+      limit: { context: getModelContextLimit(modelID), output: spec.limit.output },
       modalities: modalitiesFor(kiroModel, spec.modalities),
       // CodeWhisperer has no temperature field, so a configured value is
       // silently discarded. Saying so stops OpenCode offering a dead control.

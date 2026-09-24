@@ -176,6 +176,86 @@ describe('KiroDatabase: reauth lock', () => {
   })
 })
 
+// ── usage sync lock ──────────────────────────────────────────────────────────
+
+describe('KiroDatabase: usage sync lock', () => {
+  test('acquireUsageSyncLock returns true when no lock held', () => {
+    expect(db.acquireUsageSyncLock()).toBe(true)
+  })
+
+  test('acquireUsageSyncLock returns false when lock already held by this process', () => {
+    db.acquireUsageSyncLock()
+    expect(db.acquireUsageSyncLock()).toBe(false)
+  })
+
+  test('a usage lock does not block the reauth lock (separate purposes)', () => {
+    db.acquireReauthLock()
+    expect(db.acquireUsageSyncLock()).toBe(true)
+  })
+
+  test('a reauth lock does not block a usage lock', () => {
+    db.acquireUsageSyncLock()
+    expect(db.acquireReauthLock()).toBe(true)
+  })
+
+  test('isUsageSyncLockHeld returns false when no lock', () => {
+    expect(db.isUsageSyncLockHeld()).toBe(false)
+  })
+
+  test('isUsageSyncLockHeld returns true after acquire', () => {
+    db.acquireUsageSyncLock()
+    expect(db.isUsageSyncLockHeld()).toBe(true)
+  })
+
+  test('releaseUsageSyncLock clears the lock', () => {
+    db.acquireUsageSyncLock()
+    db.releaseUsageSyncLock()
+    expect(db.isUsageSyncLockHeld()).toBe(false)
+  })
+
+  test('after release the lock can be re-acquired', () => {
+    db.acquireUsageSyncLock()
+    db.releaseUsageSyncLock()
+    expect(db.acquireUsageSyncLock()).toBe(true)
+  })
+
+  test('stale usage lock (dead pid) is evicted on acquire', () => {
+    const { Database } = require('bun:sqlite')
+    const rawDb = new Database(dbPath)
+    rawDb
+      .prepare(
+        'INSERT OR REPLACE INTO reauth_lock (id, pid, acquired_at, purpose) VALUES (?, ?, ?, ?)'
+      )
+      .run(1, 9999999, Date.now() - 1000, 'usage_sync')
+    rawDb.close()
+    db.close()
+    db = new KiroDatabase(dbPath)
+    expect(db.acquireUsageSyncLock()).toBe(true)
+  })
+
+  test('expired usage lock is evicted on acquire', () => {
+    const { Database } = require('bun:sqlite')
+    const rawDb = new Database(dbPath)
+    rawDb
+      .prepare(
+        'INSERT OR REPLACE INTO reauth_lock (id, pid, acquired_at, purpose) VALUES (?, ?, ?, ?)'
+      )
+      .run(1, process.pid, Date.now() - 400_000, 'usage_sync')
+    rawDb.close()
+    db.close()
+    db = new KiroDatabase(dbPath)
+    expect(db.acquireUsageSyncLock()).toBe(true)
+  })
+
+  test('releasing a usage lock does not release a reauth lock', () => {
+    db.acquireReauthLock()
+    db.acquireUsageSyncLock()
+    db.releaseUsageSyncLock()
+    expect(db.isReauthLockHeld()).toBe(true)
+    expect(db.isUsageSyncLockHeld()).toBe(false)
+  })
+})
+
 // ── conversations ─────────────────────────────────────────────────────────────
 
 describe('KiroDatabase: conversations', () => {

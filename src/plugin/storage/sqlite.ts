@@ -297,22 +297,29 @@ export class KiroDatabase {
   }
 
   private static readonly REAUTH_LOCK_TTL_MS = 120_000
+  private static readonly USAGE_SYNC_LOCK_TTL_MS = 300_000
 
-  acquireReauthLock(): boolean {
+  /**
+   * Cross-instance advisory locks, keyed on (id, purpose). One row per
+   * purpose — reauth and usage_sync coexist on the same id without
+   * blocking each other. Uses the same TTL + dead-pid eviction pattern:
+   * a lock is held when (now - acquired_at < ttl) AND (process.kill(pid, 0)
+   * succeeds); otherwise the row is reaped.
+   */
+  private acquireLock(purpose: string, ttlMs: number): boolean {
     const now = Date.now()
     try {
       this.db.exec('BEGIN IMMEDIATE')
     } catch {
-      // Another write transaction is active — treat as lock held
       return false
     }
     try {
       const existing = this.db
-        .prepare('SELECT pid, acquired_at FROM reauth_lock WHERE id = 1')
-        .get() as { pid: number; acquired_at: number } | undefined
+        .prepare('SELECT pid, acquired_at FROM reauth_lock WHERE id = 1 AND purpose = ?')
+        .get(purpose) as { pid: number; acquired_at: number } | undefined
 
       if (existing) {
-        const expired = now - existing.acquired_at >= KiroDatabase.REAUTH_LOCK_TTL_MS
+        const expired = now - existing.acquired_at >= ttlMs
         const dead = (() => {
           try {
             process.kill(existing.pid, 0)
@@ -322,18 +329,18 @@ export class KiroDatabase {
           }
         })()
         if (expired || dead) {
-          this.db.prepare('DELETE FROM reauth_lock WHERE id = 1').run()
+          this.db.prepare('DELETE FROM reauth_lock WHERE id = 1 AND purpose = ?').run(purpose)
         } else {
           this.db.exec('ROLLBACK')
           return false
         }
       }
 
-      // INSERT OR REPLACE handles a race where two instances both saw the
-      // same dead/expired lock and both reach this branch.
       this.db
-        .prepare('INSERT OR REPLACE INTO reauth_lock (id, pid, acquired_at) VALUES (1, ?, ?)')
-        .run(process.pid, now)
+        .prepare(
+          'INSERT OR REPLACE INTO reauth_lock (id, purpose, pid, acquired_at) VALUES (1, ?, ?, ?)'
+        )
+        .run(purpose, process.pid, now)
       this.db.exec('COMMIT')
       return true
     } catch {
@@ -346,9 +353,10 @@ export class KiroDatabase {
     }
   }
 
-  isReauthLockHeld(): boolean {
-    const row = this.db.prepare('SELECT pid FROM reauth_lock WHERE id = 1').get() as
-      { pid: number } | undefined
+  private isLockHeld(purpose: string): boolean {
+    const row = this.db
+      .prepare('SELECT pid FROM reauth_lock WHERE id = 1 AND purpose = ?')
+      .get(purpose) as { pid: number } | undefined
     if (!row) return false
     try {
       process.kill(row.pid, 0)
@@ -358,8 +366,42 @@ export class KiroDatabase {
     }
   }
 
+  acquireReauthLock(): boolean {
+    return this.acquireLock('reauth', KiroDatabase.REAUTH_LOCK_TTL_MS)
+  }
+
+  isReauthLockHeld(): boolean {
+    return this.isLockHeld('reauth')
+  }
+
   releaseReauthLock(): void {
-    this.db.prepare('DELETE FROM reauth_lock WHERE id = 1 AND pid = ?').run(process.pid)
+    this.db
+      .prepare('DELETE FROM reauth_lock WHERE id = 1 AND purpose = ? AND pid = ?')
+      .run('reauth', process.pid)
+  }
+
+  /**
+   * Cross-instance advisory lock for the startup usage-sync fetch.
+   *
+   * Each OpenChamber project loads its own plugin instance; without this
+   * lock, 15+ instances on one machine would each fire a usage fetch on
+   * startup, Kiro would rate-limit the majority, and the log would fill
+   * with "Startup usage fetch failed" warnings. The lock plus a TTL window
+   * collapses that to one fetch per account per TTL — non-holders read the
+   * already-stored usage value and skip silently.
+   */
+  acquireUsageSyncLock(): boolean {
+    return this.acquireLock('usage_sync', KiroDatabase.USAGE_SYNC_LOCK_TTL_MS)
+  }
+
+  isUsageSyncLockHeld(): boolean {
+    return this.isLockHeld('usage_sync')
+  }
+
+  releaseUsageSyncLock(): void {
+    this.db
+      .prepare('DELETE FROM reauth_lock WHERE id = 1 AND purpose = ? AND pid = ?')
+      .run('usage_sync', process.pid)
   }
 
   close() {
@@ -375,7 +417,8 @@ export class KiroDatabase {
         'SELECT conv_id, agent_continuation_id FROM conversations WHERE workspace = ? AND fingerprint = ?'
       )
       .get(workspace, fingerprint) as
-      { conv_id: string; agent_continuation_id: string | null } | undefined
+      | { conv_id: string; agent_continuation_id: string | null }
+      | undefined
     return row
       ? { convId: row.conv_id, agentContinuationId: row.agent_continuation_id || '' }
       : undefined

@@ -103,6 +103,7 @@ export class AuthHandler {
     this.startupUsageFetched = true
 
     const { syncFromKiroCli } = await import('../../plugin/sync/kiro-cli.js')
+    const { kiroDb } = await import('../../plugin/storage/sqlite.js')
     const tokenRefresher = new TokenRefresher(
       this.config,
       this.accountManager,
@@ -112,8 +113,14 @@ export class AuthHandler {
     const usageTracker = new UsageTracker(this.config, this.accountManager, this.repository)
     const toast: ToastFunction = showToast ?? (() => {})
 
+    // Cross-instance lock: 15 OpenChamber projects on one machine each load
+    // their own plugin instance. Without this gate every startup would fire a
+    // usage fetch; Kiro would 429 most, the log would fill with warnings. The
+    // lock collapses that to one fetch per account per TTL; non-holders skip
+    // silently because the stored usedCount/limitCount is what the user sees.
     for (const acc of this.accountManager.getAccounts()) {
       if (!acc.isHealthy) continue
+      if (!kiroDb.acquireUsageSyncLock()) continue
       try {
         const { account: usable } = await tokenRefresher.refreshIfNeeded(
           acc,
@@ -127,6 +134,8 @@ export class AuthHandler {
           email: acc.email,
           error: e instanceof Error ? e.message : String(e)
         })
+      } finally {
+        kiroDb.releaseUsageSyncLock()
       }
     }
   }

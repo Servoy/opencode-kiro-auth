@@ -15,11 +15,10 @@ import * as logger from './plugin/logger.js'
 import { buildModelRegistry } from './plugin/model-registry.js'
 import { clearSdkClientCache } from './plugin/sdk-client.js'
 import { kiroDb } from './plugin/storage/sqlite.js'
+import { type ToastFn } from './plugin/toast.js'
 import { setPluginVersion, writeUsageSnapshot } from './plugin/usage-snapshot.js'
 import { summarizeUsage } from './plugin/usage.js'
 import { formatWebSearchResults, kiroWebSearch } from './plugin/web-search.js'
-
-type ToastFunction = (message: string, variant: string) => void
 
 const KIRO_PROVIDER_ID = 'kiro'
 
@@ -146,7 +145,7 @@ export const createKiroPlugin =
     const config = loadConfig(directory)
     logger.setDebugEnabled(config.trace === true)
 
-    const showToast: ToastFunction = (message: string, variant: string) => {
+    const showToast: ToastFn = (message, variant) => {
       // Flat params, not a `body` wrapper — the SDK maps message/variant at the top level.
       // Hosts without a TUI drop toasts silently, leaving the log as the only
       // trace of the failure.
@@ -216,7 +215,7 @@ export const createKiroPlugin =
         provider: id,
         loader: async (getAuth: any) => {
           await getAuth()
-          await authHandler.initialize(showToast as any)
+          await authHandler.initialize(showToast)
 
           return {
             apiKey: '',

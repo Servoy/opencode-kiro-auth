@@ -194,14 +194,51 @@ function migrateConversationsTable(db: SqliteDatabase): void {
   db.exec('CREATE INDEX idx_conversations_last_used ON conversations(last_used)')
 }
 
+/**
+ * Cross-instance advisory lock table, one row per (id, purpose).
+ *
+ * Originally a single-row table for the reauth handshake (id = 1, purpose
+ * implicit). Repurposed to a generic lock by adding purpose — the reauth
+ * lock (purpose = 'reauth') and the startup usage-sync lock (purpose =
+ * 'usage_sync') coexist on the same id without blocking each other, so
+ * one instance can be syncing usage while another is finishing a reauth.
+ *
+ * Upgrade from v2.3.0: rows had no purpose column and used (id) as PK; the
+ * upgrade copies them as 'reauth' (the only purpose that existed before)
+ * and rebuilds the table with the composite PK.
+ */
 function migrateReauthLockTable(db: SqliteDatabase): void {
+  // Make sure the table exists with the current shape; CREATE first so
+  // PRAGMA below has something to inspect on a fresh install.
   db.exec(`
     CREATE TABLE IF NOT EXISTS reauth_lock (
-      id      INTEGER PRIMARY KEY CHECK (id = 1),
-      pid     INTEGER NOT NULL,
-      acquired_at INTEGER NOT NULL
+      id          INTEGER NOT NULL,
+      purpose     TEXT    NOT NULL DEFAULT 'reauth',
+      pid         INTEGER NOT NULL,
+      acquired_at INTEGER NOT NULL,
+      PRIMARY KEY (id, purpose)
     )
   `)
+  // Upgrade from v2.3.0: rows had no purpose column and used (id) as PK.
+  // Reap them into the new shape — the only purpose that existed then is
+  // reauth, so the (id, 'reauth') row carries forward verbatim.
+  const columns = db.prepare('PRAGMA table_info(reauth_lock)').all() as Array<{ name: string }>
+  const hasPurpose = columns.some((c) => c.name === 'purpose')
+  if (!hasPurpose) {
+    db.exec(`
+      ALTER TABLE reauth_lock RENAME TO reauth_lock_legacy;
+      CREATE TABLE reauth_lock (
+        id          INTEGER NOT NULL,
+        purpose     TEXT    NOT NULL,
+        pid         INTEGER NOT NULL,
+        acquired_at INTEGER NOT NULL,
+        PRIMARY KEY (id, purpose)
+      );
+      INSERT INTO reauth_lock (id, purpose, pid, acquired_at)
+        SELECT id, 'reauth', pid, acquired_at FROM reauth_lock_legacy;
+      DROP TABLE reauth_lock_legacy;
+    `)
+  }
 }
 
 function migrateConversationsAgentContinuationId(db: SqliteDatabase): void {

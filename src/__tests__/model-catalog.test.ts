@@ -13,7 +13,8 @@ mock.module('../plugin/logger.js', () => ({
 
 const catalogModule = await import('../plugin/models.js')
 const { getCatalogContextLimit, refreshModelCatalog, resetModelCatalog } = catalogModule
-const { getModelContextLimit, buildModelRegistry } = await import('../plugin/model-registry.js')
+const { getModelContextLimit, buildModelRegistry, MODEL_SPECS } =
+  await import('../plugin/model-registry.js')
 
 const auth: any = { region: 'eu-central-1', access: 'token' }
 const originalFetch = globalThis.fetch
@@ -346,6 +347,53 @@ describe('models that reject additionalModelRequestFields', () => {
     expect(await loadAndBuild([WITH_SCHEMA], 'some-future-model', 32000)).toEqual({
       max_tokens: 32000
     })
+  })
+})
+
+describe('the advertised context window follows the catalog', () => {
+  test('a catalog window overrides the built-in spec in the registry', async () => {
+    stubCatalog({
+      models: [{ modelId: 'claude-sonnet-4.5', tokenLimits: { maxInputTokens: 1000000 } }]
+    })
+    await refreshModelCatalog(auth)
+    const registry = buildModelRegistry() as Record<string, { limit: { context: number } }>
+    expect(MODEL_SPECS['claude-sonnet-4-5']!.limit.context).toBe(200000)
+    expect(registry['claude-sonnet-4-5']!.limit.context).toBe(1000000)
+  })
+  test('a model the catalog omits keeps its built-in window', async () => {
+    stubCatalog({
+      models: [{ modelId: 'claude-sonnet-4.5', tokenLimits: { maxInputTokens: 1000000 } }]
+    })
+    await refreshModelCatalog(auth)
+    const registry = buildModelRegistry() as Record<string, { limit: { context: number } }>
+    expect(registry['deepseek-3.2']!.limit.context).toBe(MODEL_SPECS['deepseek-3.2']!.limit.context)
+  })
+  test('with no catalog read the registry falls back to the built-in window', () => {
+    const registry = buildModelRegistry() as Record<string, { limit: { context: number } }>
+    expect(registry['claude-sonnet-4-5']!.limit.context).toBe(
+      MODEL_SPECS['claude-sonnet-4-5']!.limit.context
+    )
+  })
+  test('the registry window equals getModelContextLimit for every model', async () => {
+    stubCatalog(CATALOG)
+    await refreshModelCatalog(auth)
+    const registry = buildModelRegistry() as Record<string, { limit: { context: number } }>
+    for (const [id, entry] of Object.entries(registry)) {
+      expect(entry.limit.context).toBe(getModelContextLimit(id))
+    }
+  })
+  test('the catalog window does not disturb the output limit', async () => {
+    stubCatalog({
+      models: [{ modelId: 'claude-sonnet-4.5', tokenLimits: { maxInputTokens: 1000000 } }]
+    })
+    await refreshModelCatalog(auth)
+    const registry = buildModelRegistry() as Record<
+      string,
+      { limit: { context: number; output: number } }
+    >
+    expect(registry['claude-sonnet-4-5']!.limit.output).toBe(
+      MODEL_SPECS['claude-sonnet-4-5']!.limit.output
+    )
   })
 })
 

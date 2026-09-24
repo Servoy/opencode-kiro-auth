@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer'
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getConfigDir } from './config/paths'
+import { redactSecrets } from './redact'
 
 const binaryToBase64Replacer = (_key: string, value: unknown): unknown => {
   if (value instanceof Uint8Array) return Buffer.from(value).toString('base64')
@@ -38,7 +39,7 @@ const writeToFile = (level: string, message: string, ...args: unknown[]) => {
         return String(a)
       })
       .join(' ')}\n`
-    appendFileSync(path, content)
+    appendFileSync(path, redactSecrets(content))
   } catch (e) {}
 }
 
@@ -55,7 +56,7 @@ const writeApiLog = (
     const filename = `${prefix}${timestamp}_${type}.json`
     const path = join(dir, filename)
     const content = JSON.stringify(data, binaryToBase64Replacer, 2)
-    writeFileSync(path, content)
+    writeFileSync(path, redactSecrets(content))
   } catch (e) {}
 }
 

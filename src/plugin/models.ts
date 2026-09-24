@@ -56,6 +56,43 @@ let catalogTtl = CATALOG_TTL_MS
 let catalogKey = ''
 let catalogInFlight: Promise<void> | null = null
 
+/**
+ * Listeners notified whenever the in-memory catalog becomes populated (live
+ * fetch or stored restore) so a host-bound adapter can re-render advertised
+ * model windows. See `subscribeCatalogUpdated`.
+ */
+type CatalogListener = (entries: ReadonlyMap<string, ModelCapabilities>) => void
+const catalogListeners: CatalogListener[] = []
+
+/**
+ * Subscribe to "catalog populated" events. The listener fires with the new
+ * entries when {@link refreshModelCatalog} swaps the in-memory map (live
+ * discovery, stored restore, or `resetMemoryOnly`/`resetModelCatalog`).
+ * Returns an unsubscribe function for cleanup.
+ */
+export function subscribeCatalogUpdated(listener: CatalogListener): () => void {
+  catalogListeners.push(listener)
+  return () => {
+    const i = catalogListeners.indexOf(listener)
+    if (i >= 0) catalogListeners.splice(i, 1)
+  }
+}
+
+/** Test-only: how many catalog-updated listeners are currently registered. */
+export function catalogListenerCount(): number {
+  return catalogListeners.length
+}
+
+function notifyCatalogUpdated(entries: ReadonlyMap<string, ModelCapabilities>): void {
+  for (const listener of catalogListeners) {
+    try {
+      listener(entries)
+    } catch {
+      // A misbehaving listener must not break the catalog pipeline.
+    }
+  }
+}
+
 /** Limits are per account and per region, so a catalog belongs to one of each. */
 function accountKey(auth: KiroAuthDetails): string {
   return `${auth.region}:${auth.profileArn ?? ''}`
@@ -195,6 +232,7 @@ export async function refreshModelCatalog(
       catalogAttemptedAt = Date.now()
       catalogTtl = CATALOG_TTL_MS
       catalogKey = key
+      notifyCatalogUpdated(catalogByKiroModel)
       persist(key, discovered, catalogAttemptedAt, CATALOG_TTL_MS)
       if (changes.length > 0) {
         logger.log('Model catalog: context windows discovered', { changes })
@@ -269,6 +307,7 @@ function readStoredCatalog(key: string): boolean {
   catalogAttemptedAt = row.attemptedAt
   catalogTtl = row.ttlMs
   catalogKey = key
+  notifyCatalogUpdated(catalogByKiroModel)
   return true
 }
 

@@ -1,9 +1,26 @@
 import { describe, expect, mock, test } from 'bun:test'
 
+// Capture logger calls so the lock-held test can assert no warning was logged.
+const warnings: string[] = []
 mock.module('../plugin/sync/kiro-cli.js', () => ({
   syncFromKiroCli: () => Promise.resolve(),
   writeToKiroCli: () => Promise.resolve()
 }))
+mock.module('../plugin/logger.js', () => ({
+  debug: () => {},
+  error: () => {},
+  log: () => {},
+  warn: (...args: unknown[]) => warnings.push(args.map(String).join(' ')),
+  getTimestamp: () => '2026-09-24T00:00:00.000Z',
+  logApiError: () => {},
+  logApiRequest: () => {},
+  logApiResponse: () => {}
+}))
+const loggerMock: { warnings: string[]; warn: () => void } = {
+  warnings,
+  warn: () => {}
+}
+
 mock.module('../kiro/auth.js', () => ({
   decodeRefreshToken: (t: string) => ({ refreshToken: t }),
   encodeRefreshToken: (p: any) => p.refreshToken,
@@ -130,6 +147,46 @@ describe('AuthHandler.refreshUsageFromApi', () => {
       expect(calls).toBe(1)
     } finally {
       globalThis.fetch = original
+    }
+  })
+
+  test('skips fetch silently when another instance holds the usage-sync lock', async () => {
+    // Simulate another instance winning the lock for this account's TTL.
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    expect(kiroDb.acquireUsageSyncLock()).toBe(true)
+    try {
+      const acc = makeAccount({ usedCount: 70.45, limitCount: 10000 })
+      const handler = new AuthHandler(
+        { usage_tracking_enabled: true, token_expiry_buffer_ms: 300000, auto_sync_kiro_cli: false },
+        fakeRepo
+      )
+      handler.setAccountManager(makeManager(acc))
+
+      let calls = 0
+      const original = globalThis.fetch
+      globalThis.fetch = mock(async () => {
+        calls++
+        return new Response(CREDIT_RESPONSE, { status: 200 })
+      }) as any
+      // Capture warnings so we can assert no usage-fetch warning was logged
+      const warnings: string[] = []
+      const originalWarn = loggerMock.warn
+      loggerMock.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '))
+      try {
+        await handler.refreshUsageFromApi()
+        expect(calls).toBe(0)
+        // Crucially: no "Startup usage fetch failed" warning — the lock-held
+        // case must not log, because that's the whole point of the lock.
+        expect(warnings.some((w) => w.includes('Startup usage fetch failed'))).toBe(false)
+      } finally {
+        globalThis.fetch = original
+        loggerMock.warn = originalWarn
+        kiroDb.releaseUsageSyncLock()
+      }
+    } finally {
+      // Defensive: even if a test fails before releasing, clear the lock so
+      // sibling tests start with a clean slate.
+      kiroDb.releaseUsageSyncLock()
     }
   })
 })
