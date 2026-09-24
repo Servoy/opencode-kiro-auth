@@ -9,6 +9,7 @@ mock.module('../plugin/logger.js', () => ({
   error: () => {},
   log: () => {},
   warn: () => {},
+  setDebugEnabled: () => {},
   getTimestamp: () => '2026-07-22T00:00:00.000Z',
   logApiError: () => {},
   logApiRequest: () => {},
@@ -60,7 +61,8 @@ async function syncedAccount(registrationRegion?: string, sessionRegion?: string
     const { syncFromKiroCli } = await import('../plugin/sync/kiro-cli.js')
     const { kiroDb } = await import('../plugin/storage/sqlite.js')
     await syncFromKiroCli()
-    return kiroDb.getAccounts()[0]
+    // kiroDb is shared across the suite, so match our row by ARN, not by index.
+    return kiroDb.getAccounts().find((a) => a.profile_arn === US_PROFILE)
   } finally {
     delete process.env.KIROCLI_DB_PATH
     delete process.env.KIRO_CONFIG_DIR
@@ -70,10 +72,9 @@ async function syncedAccount(registrationRegion?: string, sessionRegion?: string
 
 describe('which region can refresh the token', () => {
   test('the region that issued the device registration wins over the profile ARN', async () => {
-    // An Identity Center session and a Q profile can live in different
-    // regions. Refreshing against the profile's region 400s: only the region
-    // that issued the registration honours the refresh token.
-    const account = await syncedAccount('ap-southeast-1', 'ap-southeast-1')
+    // Distinct regions on purpose: only then does a pass prove the registration
+    // region wins over the session region, not that they happened to agree.
+    const account = await syncedAccount('ap-southeast-1', 'eu-west-1')
 
     expect(account?.oidc_region).toBe('ap-southeast-1')
     expect(account?.region).toBe('us-east-1')
