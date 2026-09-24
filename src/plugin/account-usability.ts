@@ -2,7 +2,8 @@ import { isPermanentError } from './health'
 import type { ManagedAccount } from './types'
 
 export type AccountUsability =
-  { usable: true } | { usable: false; reason: string; permanent: boolean }
+  | { usable: true }
+  | { usable: false; reason: string; permanent: boolean }
 
 // Single source of truth for whether an account can serve a request. All
 // selection, health, and reauth decisions go through this so "usable" never
