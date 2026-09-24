@@ -90,6 +90,35 @@ export interface V2ToolDomain {
   transform(callback: (editor: V2ToolEditor) => void): Promise<V2Registration>
 }
 
+export interface V2WebSearchResult {
+  url: string
+  title?: string
+  content?: string
+  time: { published?: number }
+}
+
+export interface V2WebSearchDefinition {
+  readonly id: string
+  readonly name: string
+  execute(
+    input: { query: string },
+    context: { signal: AbortSignal }
+  ): Promise<readonly V2WebSearchResult[]>
+}
+
+export interface V2WebSearchEditor {
+  add(definition: V2WebSearchDefinition): void
+  readonly default: {
+    get(): string | false | undefined
+    set(selection: string | false): void
+  }
+}
+
+export interface V2WebSearchDomain {
+  transform(callback: (editor: V2WebSearchEditor) => void): Promise<V2Registration>
+  reload(): Promise<void>
+}
+
 export interface V2IntegrationOAuthMethod {
   id: string
   type: 'oauth'
@@ -186,6 +215,7 @@ export interface V2Context {
   integration: V2IntegrationDomain
   session: V2SessionDomain
   event: V2EventDomain
+  websearch: V2WebSearchDomain
 }
 
 export type V2Cleanup = () => void | Promise<void>

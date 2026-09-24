@@ -11,7 +11,7 @@ import { refreshModelCatalog, subscribeCatalogUpdated } from '../plugin/models.j
 import { clearSdkClientCache } from '../plugin/sdk-client.js'
 import { kiroDb } from '../plugin/storage/sqlite.js'
 import { noopToast, type ToastFn } from '../plugin/toast.js'
-import { buildWebSearchToolV2 } from '../plugin/web-search.js'
+import { buildWebSearchProviderV2 } from '../plugin/web-search.js'
 import { buildIntegrationMethods } from './integration.js'
 import { buildV2Provider } from './models-bridge.js'
 import { createRequestBridge } from './request-bridge.js'
@@ -85,12 +85,16 @@ export function createV2Setup(id: string) {
       })
     )
 
-    // null when no Pro account can call it, so the host skips registration.
-    const webSearchTool = buildWebSearchToolV2(accountManager)
-    if (webSearchTool) {
+    // Register Kiro as OpenCode's own web-search provider so it plugs into the
+    // host's search surface and can be the default, rather than sitting beside
+    // it as a separate tool (that is the v1 path, where no provider domain
+    // exists). null when no Pro account can call it, so the host keeps whatever
+    // provider it had.
+    const webSearchProvider = buildWebSearchProviderV2(accountManager)
+    if (webSearchProvider) {
       registrations.push(
-        await ctx.tool.transform((editor) => {
-          editor.add(webSearchTool)
+        await ctx.websearch.transform((editor) => {
+          editor.add(webSearchProvider)
         })
       )
     }
@@ -111,12 +115,15 @@ export function createV2Setup(id: string) {
       })
     )
 
+    // Live quota-in-model-name (v1 parity) is a follow-up: on v2 it must go
+    // through ctx.model.transform, which the host replays on reload, not by
+    // mutating registered objects in place. The subscription is held so cleanup
+    // can abort it once that path lands.
     const controller = new AbortController()
     void (async () => {
       try {
         for await (const _event of ctx.event.subscribe({ signal: controller.signal })) {
-          // Event-driven parity (usage refresh, live quota suffix) is a
-          // follow-up; the v1 branch keeps that behaviour today.
+          // Intentionally idle until the model.transform-based suffix lands.
         }
       } catch {
         // Subscription aborts on cleanup; nothing to recover.

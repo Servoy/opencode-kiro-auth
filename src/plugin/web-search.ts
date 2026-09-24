@@ -6,18 +6,6 @@ import * as logger from './logger.js'
 import { refreshAccessToken } from './token.js'
 import type { KiroAuthDetails } from './types'
 
-/** v2 Tool.Info for `kiro_web_search`; execute resolves to a Tool.Result, not a bare string. */
-export interface V2WebSearchTool {
-  name: string
-  description: string
-  input: {
-    type: 'object'
-    properties: { query: { type: 'string'; description: string } }
-    required: ['query']
-  }
-  execute(input: { query: string }, context: { signal: AbortSignal }): Promise<{ content: string }>
-}
-
 export const WEB_SEARCH_DESCRIPTION = `Search the web using Kiro's built-in search engine. Returns titles, URLs, snippets, domains, and publish dates for a query. Billed as Kiro credits.
 
 ## When to Use
@@ -38,29 +26,40 @@ export const WEB_SEARCH_DESCRIPTION = `Search the web using Kiro's built-in sear
 - ALWAYS cite sources with inline links in the format [description](url).
 - Paraphrase and summarize; do not reproduce more than ~30 consecutive words verbatim from any single source. Preserve factual accuracy while condensing.`
 
-export function buildWebSearchToolV2(accountManager: AccountManager): V2WebSearchTool | null {
+/** v2 WebSearchDefinition: registers Kiro as OpenCode's own web-search provider. */
+export interface V2WebSearchProvider {
+  id: string
+  name: string
+  execute(
+    input: { query: string },
+    context: { signal: AbortSignal }
+  ): Promise<Array<{ url: string; title?: string; content?: string; time: { published?: number } }>>
+}
+
+/**
+ * Register Kiro as a first-class OpenCode web-search provider, not just a tool.
+ *
+ * A provider plugs into the host's own web-search surface and can be the
+ * default, unlike the v1-only `kiro_web_search` tool. Null when no Pro account
+ * can call it. Results map to the host shape: `snippet`→`content`,
+ * `publishedDate`→`time.published`.
+ */
+export function buildWebSearchProviderV2(
+  accountManager: AccountManager
+): V2WebSearchProvider | null {
   const account = accountManager.getCurrentOrNext()
   if (!account?.profileArn) return null
   return {
-    name: 'kiro_web_search',
-    description: WEB_SEARCH_DESCRIPTION,
-    input: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'The search query. Must be 200 characters or fewer.'
-        }
-      },
-      required: ['query']
-    },
-    async execute(input) {
-      try {
-        const results = await kiroWebSearch(accountManager, input.query)
-        return { content: formatWebSearchResults(results) }
-      } catch (e) {
-        return { content: `Web search failed: ${e instanceof Error ? e.message : String(e)}` }
-      }
+    id: 'kiro',
+    name: 'Kiro',
+    async execute(input, context) {
+      const results = await kiroWebSearch(accountManager, input.query, context.signal)
+      return results.map((r) => ({
+        url: r.url,
+        title: r.title,
+        content: r.snippet,
+        time: typeof r.publishedDate === 'number' ? { published: r.publishedDate } : {}
+      }))
     }
   }
 }
@@ -91,7 +90,8 @@ interface McpResponse {
  */
 export async function kiroWebSearch(
   accountManager: AccountManager,
-  query: string
+  query: string,
+  signal?: AbortSignal
 ): Promise<WebSearchResult[]> {
   const account = accountManager.getCurrentOrNext()
   if (!account) throw new Error('No healthy Kiro account available')
@@ -126,7 +126,7 @@ export async function kiroWebSearch(
       method: 'tools/call',
       params: { name: 'web_search', arguments: { query: trimmed } }
     }),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    signal: signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
   })
 
   if (!res.ok) {
