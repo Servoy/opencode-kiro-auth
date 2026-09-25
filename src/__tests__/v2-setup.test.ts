@@ -27,6 +27,12 @@ function fakeCtx() {
     },
     model: { transform: async () => reg, reload: async () => {} },
     tool: { transform: async () => reg },
+    websearch: {
+      transform: async (cb: (e: unknown) => void) => {
+        cb({ add: () => {}, update: () => {} })
+        return reg
+      }
+    },
     integration: {
       transform: async (cb: (e: unknown) => void) => {
         record.integrationTransforms++

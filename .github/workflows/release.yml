@@ -16,7 +16,7 @@ jobs:
       - run: bun install
 
       # A tag is the last place to find out the suite is red.
-      - run: bun test
+      - run: bun test --isolate
 
       - run: bun run typecheck
 

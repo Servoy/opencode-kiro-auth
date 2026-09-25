@@ -18,7 +18,7 @@ jobs:
 
       - run: bun install
 
-      - run: bun test
+      - run: bun test --isolate
 
       - run: bun run typecheck
 
