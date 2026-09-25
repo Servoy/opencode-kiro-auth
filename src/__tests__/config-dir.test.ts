@@ -43,12 +43,13 @@ describe('resolveDir precedence', () => {
         override: '/explicit/here',
         isTest: true,
         testDirName: 'x',
+        testPid: 4242,
         platformDir: () => '/platform'
       })
     ).toBe('/explicit/here')
   })
 
-  test('test mode uses an isolated dir under tmp, never the platform default', async () => {
+  test('test mode uses a per-pid isolated dir under tmp, never the platform default', async () => {
     const { resolveDir } = await import('../plugin/config/paths.js')
     const { tmpdir } = await import('node:os')
     const { join } = await import('node:path')
@@ -57,12 +58,15 @@ describe('resolveDir precedence', () => {
       override: undefined,
       isTest: true,
       testDirName: 'kiro-x',
+      testPid: 4242,
       platformDir: () => {
         platformCalled = true
         return '/platform'
       }
     })
-    expect(dir).toBe(join(tmpdir(), 'kiro-x'))
+    // The pid suffix gives each `bun test` run a fresh kiro.db, so a lock row
+    // left in tmp by a prior run cannot wedge the next.
+    expect(dir).toBe(join(tmpdir(), 'kiro-x-4242'))
     // The platform default must not even be consulted — that is what keeps the
     // suite off the developer's real kiro.db and plugin.log.
     expect(platformCalled).toBe(false)
@@ -75,6 +79,7 @@ describe('resolveDir precedence', () => {
         override: undefined,
         isTest: false,
         testDirName: 'x',
+        testPid: 4242,
         platformDir: () => '/platform/opencode'
       })
     ).toBe('/platform/opencode')

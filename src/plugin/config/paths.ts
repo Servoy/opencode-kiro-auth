@@ -99,16 +99,19 @@ function platformCacheDir(): string {
  *
  * The test branch matters: the suite eagerly opens kiro.db and appends to
  * plugin.log, so without an isolated dir it would write to the developer's
- * real ones.
+ * real ones. The dir is suffixed with `testPid` so each `bun test` process
+ * gets a fresh kiro.db — the db is machine-shared and survives in tmp between
+ * runs, so a shared path let a lock row from a prior run wedge the next.
  */
 export function resolveDir(opts: {
   override: string | undefined
   isTest: boolean
   testDirName: string
+  testPid: number
   platformDir: () => string
 }): string {
   if (opts.override) return opts.override
-  if (opts.isTest) return join(tmpdir(), opts.testDirName)
+  if (opts.isTest) return join(tmpdir(), `${opts.testDirName}-${opts.testPid}`)
   return opts.platformDir()
 }
 
@@ -134,6 +137,7 @@ export function getConfigDir(): string {
       override: process.env.KIRO_CONFIG_DIR,
       isTest: process.env.NODE_ENV === 'test',
       testDirName: 'kiro-plugin-test-config',
+      testPid: process.pid,
       platformDir: platformConfigDir
     })
   }
@@ -152,6 +156,7 @@ export function getCacheDir(): string {
       override: process.env.KIRO_CACHE_DIR,
       isTest: process.env.NODE_ENV === 'test',
       testDirName: 'kiro-plugin-test-cache',
+      testPid: process.pid,
       platformDir: platformCacheDir
     })
   }

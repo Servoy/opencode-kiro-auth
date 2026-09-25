@@ -1,31 +1,26 @@
 import { describe, expect, mock, test } from 'bun:test'
 import { AccountManager, createDeterministicAccountId } from '../plugin/accounts.js'
 import type { ManagedAccount } from '../plugin/types.js'
+import { makeKiroDbStub } from './helpers/kiro-db-stub.js'
 
 // Mock DB and external dependencies
 const sessionStore = new Map<string, string>()
 
 mock.module('../plugin/storage/sqlite.js', () => ({
-  kiroDb: {
+  kiroDb: makeKiroDbStub({
     getAccounts: () => [],
     upsertAccount: () => Promise.resolve(),
     updateAccountTokens: () => Promise.resolve(),
     deleteAccount: () => Promise.resolve(),
     batchUpsertAccounts: () => Promise.resolve(),
-    // mock.module() registers globally for the whole bun test run, not just
-    // this file, so this stub must cover every kiroDb method any other test
-    // file's code path might hit — otherwise a different test file silently
-    // fails depending on run order (see #tool-compatibility.test.ts).
     getConversationId: () => undefined,
     setConversationId: () => {},
     deleteConversationId: () => {},
-    // Added with session affinity. mock.module is global to the run, so a
-    // stub missing a method silently disables the feature in other files.
     getSessionAccount: (sessionId: string) => sessionStore.get(sessionId),
     setSessionAccount: (sessionId: string, accountId: string) => {
       sessionStore.set(sessionId, accountId)
     }
-  }
+  })
 }))
 mock.module('../plugin/sync/kiro-cli.js', () => ({
   syncFromKiroCli: () => Promise.resolve(),

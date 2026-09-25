@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'bun:test'
+import { makeKiroDbStub } from './helpers/kiro-db-stub.js'
 
 // Stateful mock so consecutive calls can resolve prior setConversationId
 // entries — mirrors the real DB enough to exercise deriveConversationIds.
@@ -7,7 +8,7 @@ const convStore = new Map<string, { convId: string; agentContinuationId: string 
 const sessionStore = new Map<string, string>()
 
 mock.module('../plugin/storage/sqlite.js', () => ({
-  kiroDb: {
+  kiroDb: makeKiroDbStub({
     getConversationId: (_ws: string, fp: string) => convStore.get(fp),
     setConversationId: (_ws: string, fp: string, convId: string, agentContinuationId: string) => {
       convStore.set(fp, { convId, agentContinuationId })
@@ -15,8 +16,6 @@ mock.module('../plugin/storage/sqlite.js', () => ({
     deleteConversationId: (ws: string, fp: string) => {
       convStore.delete(`${ws}\0${fp}`)
     },
-    // Added with session affinity. mock.module is global to the run, so a stub
-    // missing a method silently disables the feature in other files.
     getSessionAccount: (sessionId: string) => sessionStore.get(sessionId),
     setSessionAccount: (sessionId: string, accountId: string) => {
       sessionStore.set(sessionId, accountId)
@@ -26,7 +25,7 @@ mock.module('../plugin/storage/sqlite.js', () => ({
     updateAccountTokens: () => Promise.resolve(),
     deleteAccount: () => Promise.resolve(),
     batchUpsertAccounts: () => Promise.resolve()
-  }
+  })
 }))
 
 mock.module('../plugin/sync/kiro-cli.js', () => ({
