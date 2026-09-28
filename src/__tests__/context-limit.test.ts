@@ -1,5 +1,19 @@
 import { describe, expect, test } from 'bun:test'
+import { errorResponse } from '../core/request/request-handler'
 import { buildModelRegistry, getModelContextLimit } from '../plugin/model-registry'
+
+describe('errorResponse: terminal errors reach the user through the response body', () => {
+  test('builds an OpenAI-shaped error the host displays', async () => {
+    const res = errorResponse(
+      402,
+      'Kiro: usage limit reached (1010/1000). Add another account or wait for the monthly reset.'
+    )
+    expect(res.status).toBe(402)
+    const body = (await res.json()) as { error: { message: string; type: string } }
+    expect(body.error.message).toContain('usage limit reached')
+    expect(body.error.type).toBe('kiro_error')
+  })
+})
 
 /**
  * The registry advertises a context limit to OpenCode; the streaming transformers multiply Kiro's

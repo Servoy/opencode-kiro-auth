@@ -35,6 +35,10 @@ export class ErrorHandler {
     newContext?: RequestContext
     switchAccount?: boolean
     forceRefresh?: boolean
+    // The human-readable reason for a terminal (non-retryable) failure, so the
+    // caller can surface it in the response the host renders. The toast alone
+    // does not reach the user on our hosts.
+    terminalReason?: string
   }> {
     const readBody = async (): Promise<string> => {
       try {
@@ -50,7 +54,7 @@ export class ErrorHandler {
       const message = this.enrichIfInvalidModel(reason, account, model)
       logger.warn(`HTTP 400 on ${account.email}: ${message || 'unknown'}`)
       showToast(`400: ${message || 'unknown'}`, 'error')
-      return { shouldRetry: false }
+      return { shouldRetry: false, terminalReason: message || 'Bad request' }
     }
 
     if (response.status === 401 && context.retry < this.config.rate_limit_max_retries) {
@@ -93,7 +97,10 @@ export class ErrorHandler {
       }
 
       showToast(`500: ${errorMessage}. Persistent server error, please retry shortly.`, 'error')
-      return { shouldRetry: false }
+      return {
+        shouldRetry: false,
+        terminalReason: `${errorMessage}. Persistent server error, please retry shortly.`
+      }
     }
 
     if (response.status === 429) {
@@ -116,12 +123,11 @@ export class ErrorHandler {
         )
         return { shouldRetry: true, newContext: { ...context, retry: context.retry + 1 } }
       }
-      showToast(
-        `429: still rate limited after ${this.config.rate_limit_max_retries} retries. ` +
-          `The server asked for ${Math.ceil(w / 1000)}s — add a second Kiro account or retry shortly.`,
-        'error'
-      )
-      return { shouldRetry: false }
+      const rateLimitedMsg =
+        `Rate limited: the server asked for ${Math.ceil(w / 1000)}s after ` +
+        `${this.config.rate_limit_max_retries} retries. Add a second Kiro account or retry shortly.`
+      showToast(`429: ${rateLimitedMsg}`, 'error')
+      return { shouldRetry: false, terminalReason: rateLimitedMsg }
     }
 
     if (response.status === 402 || response.status === 403) {
@@ -197,13 +203,13 @@ export class ErrorHandler {
       }
 
       showToast(`${response.status}: ${errorReason}`, 'error')
-      return { shouldRetry: false }
+      return { shouldRetry: false, terminalReason: errorReason }
     }
 
     const reason = await readBody()
     logger.warn(`HTTP ${response.status} on ${account.email}: ${reason || response.statusText}`)
     showToast(`${response.status}: ${reason || response.statusText}`, 'error')
-    return { shouldRetry: false }
+    return { shouldRetry: false, terminalReason: reason || response.statusText }
   }
 
   async handleNetworkError(

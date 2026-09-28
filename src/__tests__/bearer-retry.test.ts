@@ -167,7 +167,12 @@ describe('RequestHandler SDK error recovery', () => {
     sdkHttpStatus = 403
     const { handler, getForceRefreshCalls } = createHarness()
 
-    await expect(request(handler)).rejects.toThrow('Kiro Error: 403')
+    // Terminal failures now return a host-visible error Response, not a throw,
+    // so the reason reaches the user where the toast cannot.
+    const response = await request(handler)
+    expect(response.status).toBe(403)
+    const body = (await response.json()) as { error: { message: string } }
+    expect(body.error.message).toContain('Kiro:')
 
     expect(sendCalls).toBe(2)
     expect(getForceRefreshCalls()).toBe(1)
@@ -187,6 +192,9 @@ describe('RequestHandler SDK error recovery', () => {
     }
     handler.triggerReauth = async () => false
 
+    // The account is marked unhealthy, so the next loop iteration escalates to
+    // the all-accounts-unhealthy reauth path (a throw), not the per-request
+    // terminal Response.
     await expect(request(handler)).rejects.toThrow()
 
     // SDK called only once: no retry with the dead token, so no lock-up.
@@ -234,7 +242,7 @@ describe('RequestHandler SDK error recovery', () => {
     sdkHttpStatus = 400
     const { handler } = createHarness()
 
-    await expect(request(handler)).rejects.toThrow(/Kiro Error: 400/)
+    expect((await request(handler)).status).toBe(400)
 
     expect(sendCalls).toBe(1)
   })
@@ -246,7 +254,7 @@ describe('RequestHandler SDK error recovery', () => {
     sdkHttpStatus = 400
     const { handler } = createHarness()
 
-    await expect(request(handler)).rejects.toThrow(/Kiro Error: 400/)
+    expect((await request(handler)).status).toBe(400)
 
     expect(sendCalls).toBe(2)
   })
@@ -278,7 +286,7 @@ describe('RequestHandler catalog recovery wiring', () => {
     sdkHttpStatus = 403
     const { handler, account, getForceRefreshCalls } = createHarness()
 
-    await expect(request(handler)).rejects.toThrow()
+    await request(handler)
 
     // The handler kicks off discovery on each attempt and gives it a recovery
     // callback (the bearer-403 retry means the loop runs more than once).

@@ -72,6 +72,21 @@ function contextLengthResponse(message: string): Response {
   )
 }
 
+/**
+ * OpenAI-shaped error Response for a terminal failure.
+ *
+ * The toast surface does not reach the user on our hosts (a no-op on v2, and a
+ * long-standing OpenCode issue drops it on v1), so a thrown "Kiro Error: N"
+ * showed the user only a bare status. Returning the reason in an error body the
+ * host renders is the one channel both versions display.
+ */
+export function errorResponse(status: number, message: string): Response {
+  return new Response(JSON.stringify({ error: { message, type: 'kiro_error' } }), {
+    status,
+    headers: { 'Content-Type': 'application/json' }
+  })
+}
+
 const passthroughHostsLogged = new Set<string>()
 const MAX_PASSTHROUGH_HOSTS_LOGGED = 5
 
@@ -569,7 +584,9 @@ export class RequestHandler {
             if (reauthed) continue
           }
 
-          throw new Error(`Kiro Error: ${httpStatus}`)
+          // Terminal: return the reason in a body the host renders, since the
+          // toast does not reach the user on either host version.
+          return errorResponse(httpStatus, this.terminalMessage(httpStatus, errorResult, acc))
         }
 
         const networkResult = await this.errorHandler.handleNetworkError(e, { retry }, showToast)
@@ -920,6 +937,25 @@ export class RequestHandler {
       return false
     }
     return accounts.every((acc) => isPermanentlyUnusable(acc))
+  }
+
+  /**
+   * The user-facing message for a terminal HTTP failure. A 402 gets the usage
+   * numbers spelled out; everything else carries the reason the error handler
+   * extracted, falling back to the bare status.
+   */
+  private terminalMessage(
+    httpStatus: number,
+    errorResult: { terminalReason?: string },
+    account: ManagedAccount
+  ): string {
+    if (httpStatus === 402) {
+      const limit = account.limitCount ?? 0
+      const used = account.usedCount ?? 0
+      const counts = limit > 0 ? ` (${used}/${limit})` : ''
+      return `Kiro: usage limit reached${counts}. Add another account or wait for the monthly reset.`
+    }
+    return `Kiro: ${errorResult.terminalReason || `request failed (${httpStatus})`}`
   }
 
   private sleep(ms: number): Promise<void> {

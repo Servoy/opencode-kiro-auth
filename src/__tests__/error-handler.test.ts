@@ -74,6 +74,30 @@ describe('ErrorHandler: 400', () => {
   })
 })
 
+// ── terminal reason (host-visible, since the toast does not reach the user) ───
+
+describe('ErrorHandler: terminal reason for the caller to surface', () => {
+  test('402 quota carries the reason, not just a toast', async () => {
+    const acc = makeAccount()
+    const mgr = new AccountManager([acc])
+    const handler = new ErrorHandler(defaultConfig, mgr)
+    const res = makeResponse(402, { message: 'You have reached the limit.' })
+    const result = await handler.handle(null, res, acc, { retry: 0 }, noToast)
+    expect(result.shouldRetry).toBe(false)
+    expect(result.terminalReason).toContain('reached the limit')
+  })
+
+  test('429 exhausted carries a reason mentioning adding an account', async () => {
+    const acc = makeAccount()
+    const mgr = new AccountManager([acc])
+    const handler = new ErrorHandler(defaultConfig, mgr)
+    const res = makeResponse(429, { message: 'Too many' }, { 'retry-after': '30' })
+    const result = await handler.handle(null, res, acc, { retry: 3 }, noToast)
+    expect(result.shouldRetry).toBe(false)
+    expect(result.terminalReason).toMatch(/account/i)
+  })
+})
+
 // ── 401 ───────────────────────────────────────────────────────────────────────
 
 describe('ErrorHandler: 401', () => {
