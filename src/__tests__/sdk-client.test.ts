@@ -3,7 +3,14 @@ import {
   GenerateAssistantResponseCommand
 } from '@aws/codewhisperer-streaming-client'
 import { describe, expect, test } from 'bun:test'
-import { clearSdkClientCache, createSdkClient, resolveKiroEndpoint } from '../plugin/sdk-client'
+import {
+  acquireSdkClient,
+  clearSdkClientCache,
+  createSdkClient,
+  isSdkClientInUse,
+  releaseSdkClient,
+  resolveKiroEndpoint
+} from '../plugin/sdk-client'
 import type { KiroAuthDetails } from '../plugin/types'
 
 function auth(): KiroAuthDetails {
@@ -143,6 +150,93 @@ describe('SDK client', () => {
     expect(second).toBe(first)
 
     clearSdkClientCache()
+  })
+
+  test('acquire/release track in-flight usage and only the last release clears it', () => {
+    clearSdkClientCache()
+    const client = createSdkClient(auth(), 'us-east-1', undefined, 300_000, 'ses_A')
+    acquireSdkClient(client)
+    acquireSdkClient(client)
+    expect(isSdkClientInUse(client)).toBe(true)
+    releaseSdkClient(client)
+    expect(isSdkClientInUse(client)).toBe(true)
+    releaseSdkClient(client)
+    expect(isSdkClientInUse(client)).toBe(false)
+    clearSdkClientCache()
+  })
+
+  test('token refresh does not destroy a client that is still streaming', () => {
+    // The abort race: sessionId keys the cache, but a token refresh on the SAME
+    // session replaces the entry and used to destroy the old client outright —
+    // killing the socket a still-running stream was reading. Now the old client
+    // is retired and only torn down once its in-flight request releases.
+    clearSdkClientCache()
+    const a = auth()
+    const old = createSdkClient(a, 'us-east-1', undefined, 300_000, 'ses_A')
+    acquireSdkClient(old)
+
+    let destroyed = false
+    const origDestroy = old.destroy.bind(old)
+    old.destroy = () => {
+      destroyed = true
+      origDestroy()
+    }
+
+    const refreshed = createSdkClient(
+      { ...a, access: 'new-token' },
+      'us-east-1',
+      undefined,
+      300_000,
+      'ses_A'
+    )
+    expect(refreshed).not.toBe(old)
+    expect(destroyed).toBe(false)
+
+    releaseSdkClient(old)
+    expect(destroyed).toBe(true)
+
+    clearSdkClientCache()
+  })
+
+  test('LRU eviction skips an in-use client and destroys an idle one instead', () => {
+    clearSdkClientCache()
+    const busy = createSdkClient(auth(), 'us-east-1', undefined, 300_000, 'ses_busy')
+    acquireSdkClient(busy)
+
+    let busyDestroyed = false
+    const orig = busy.destroy.bind(busy)
+    busy.destroy = () => {
+      busyDestroyed = true
+      orig()
+    }
+
+    // Fill well past the cap with idle sessions; the busy one must survive.
+    for (let i = 0; i < 40; i++) {
+      createSdkClient(auth(), 'us-east-1', undefined, 300_000, `ses_${i}`)
+    }
+
+    expect(busyDestroyed).toBe(false)
+    releaseSdkClient(busy)
+    clearSdkClientCache()
+  })
+
+  test('clearSdkClientCache retires an in-use client rather than aborting it', () => {
+    clearSdkClientCache()
+    const client = createSdkClient(auth(), 'us-east-1', undefined, 300_000, 'ses_A')
+    acquireSdkClient(client)
+
+    let destroyed = false
+    const orig = client.destroy.bind(client)
+    client.destroy = () => {
+      destroyed = true
+      orig()
+    }
+
+    clearSdkClientCache()
+    expect(destroyed).toBe(false)
+
+    releaseSdkClient(client)
+    expect(destroyed).toBe(true)
   })
 
   test('per-session keying is LRU-bounded so it cannot grow without limit', () => {

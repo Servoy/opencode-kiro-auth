@@ -24,17 +24,31 @@ export class ResponseHandler {
     return this.handleNonStreaming(response, model, conversationId, toolNameMap)
   }
 
+  /**
+   * `onStreamEnd` fires once the response is fully consumed — after the last
+   * streamed event, or immediately for a non-streaming body. The caller uses it
+   * to release the SDK client: the stream is read lazily after this returns, so
+   * releasing any earlier would free a client whose socket is still in use.
+   */
   async handleSdkSuccess(
     sdkResponse: any,
     model: string,
     conversationId: string,
     streaming: boolean,
-    toolNameMap?: ToolNameMap
+    toolNameMap?: ToolNameMap,
+    onStreamEnd?: () => void
   ): Promise<Response> {
     if (streaming) {
-      return this.handleSdkStreaming(sdkResponse, model, conversationId, toolNameMap)
+      return this.handleSdkStreaming(sdkResponse, model, conversationId, toolNameMap, onStreamEnd)
     }
-    return this.handleSdkNonStreaming(sdkResponse, model, conversationId, toolNameMap)
+    const response = await this.handleSdkNonStreaming(
+      sdkResponse,
+      model,
+      conversationId,
+      toolNameMap
+    )
+    onStreamEnd?.()
+    return response
   }
 
   private async handleStreaming(
@@ -65,7 +79,8 @@ export class ResponseHandler {
     sdkResponse: any,
     model: string,
     conversationId: string,
-    toolNameMap?: ToolNameMap
+    toolNameMap?: ToolNameMap,
+    onStreamEnd?: () => void
   ): Promise<Response> {
     const s = transformSdkStream(sdkResponse, model, conversationId, toolNameMap)
     return new Response(
@@ -78,6 +93,8 @@ export class ResponseHandler {
             c.close()
           } catch (err) {
             c.error(err)
+          } finally {
+            onStreamEnd?.()
           }
         }
       }),

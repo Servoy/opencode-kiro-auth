@@ -44,6 +44,8 @@ interface ClientCacheEntry {
   token: string
   endpoint: string
   fieldsKey: string
+  inFlight: number
+  retired: boolean
 }
 
 // Per-session keying grows with every session, so the cache is LRU-bounded.
@@ -53,15 +55,101 @@ const MAX_CACHED_CLIENTS = 32
 
 const clientCache = new Map<string, ClientCacheEntry>()
 
+const clientToKey = new Map<CodeWhispererStreamingClient, string>()
+
+const retiredClients = new Map<
+  CodeWhispererStreamingClient,
+  { inFlight: number; timer: ReturnType<typeof setTimeout> | null }
+>()
+const RETIRE_GRACE_MS = 30_000
+
+/** Register one more in-flight request against the client's cache entry. */
+export function acquireSdkClient(client: CodeWhispererStreamingClient): void {
+  const key = clientToKey.get(client)
+  if (!key) return
+  const entry = clientCache.get(key)
+  if (entry && entry.client === client) entry.inFlight++
+}
+
+/**
+ * Mark one in-flight request done. If the client was retired while streaming,
+ * destroy it once the last request finishes — never before.
+ */
+export function releaseSdkClient(client: CodeWhispererStreamingClient): void {
+  const key = clientToKey.get(client)
+  if (key) {
+    const entry = clientCache.get(key)
+    if (entry && entry.client === client) {
+      entry.inFlight = Math.max(0, entry.inFlight - 1)
+      if (entry.retired && entry.inFlight === 0) {
+        clientCache.delete(key)
+        clientToKey.delete(client)
+        try {
+          entry.client.destroy()
+        } catch {}
+      }
+      return
+    }
+  }
+  const retired = retiredClients.get(client)
+  if (retired) {
+    retired.inFlight = Math.max(0, retired.inFlight - 1)
+    if (retired.inFlight === 0) {
+      if (retired.timer) clearTimeout(retired.timer)
+      retiredClients.delete(client)
+      try {
+        client.destroy()
+      } catch {}
+    }
+  }
+}
+
+/** Whether the client still has at least one in-flight request. */
+export function isSdkClientInUse(client: CodeWhispererStreamingClient): boolean {
+  const key = clientToKey.get(client)
+  if (key) {
+    const entry = clientCache.get(key)
+    if (entry && entry.client === client) return entry.inFlight > 0
+  }
+  const retired = retiredClients.get(client)
+  return retired ? retired.inFlight > 0 : false
+}
+
+/**
+ * Move a still-streaming client out of the cache into the retired set instead
+ * of destroying it. The last releaseSdkClient frees it; the grace timer is the
+ * backstop for a stream that never settles.
+ */
+function retireClient(entry: ClientCacheEntry): void {
+  const timer = setTimeout(() => {
+    retiredClients.delete(entry.client)
+    try {
+      entry.client.destroy()
+    } catch {}
+  }, RETIRE_GRACE_MS)
+  if (typeof timer === 'object' && 'unref' in timer) timer.unref()
+  retiredClients.set(entry.client, { inFlight: entry.inFlight, timer })
+  clientToKey.delete(entry.client)
+}
+
 function evictOldestClients(): void {
   while (clientCache.size > MAX_CACHED_CLIENTS) {
-    const oldest = clientCache.keys().next().value
-    if (oldest === undefined) return
-    const entry = clientCache.get(oldest)
-    clientCache.delete(oldest)
-    try {
-      entry?.client.destroy()
-    } catch {}
+    let removedOne = false
+    for (const [key, entry] of clientCache) {
+      clientCache.delete(key)
+      if (entry.inFlight > 0) {
+        entry.retired = true
+        retireClient(entry)
+      } else {
+        clientToKey.delete(entry.client)
+        try {
+          entry.client.destroy()
+        } catch {}
+      }
+      removedOne = true
+      break
+    }
+    if (!removedOne) return
   }
 }
 
@@ -86,12 +174,16 @@ export function createSdkClient(
     return cached.client
   }
 
-  // Token rotated (refresh) or endpoint changed — tear down the stale client
-  // so its sockets/agent don't leak before we replace the cache entry.
   if (cached) {
-    try {
-      cached.client.destroy()
-    } catch {}
+    if (cached.inFlight > 0) {
+      cached.retired = true
+      retireClient(cached)
+    } else {
+      clientToKey.delete(cached.client)
+      try {
+        cached.client.destroy()
+      } catch {}
+    }
   }
 
   const machineId = getMachineId(auth)
@@ -156,7 +248,16 @@ export function createSdkClient(
   // Re-set on an existing key must move it to the newest slot, or the LRU
   // sweep below could evict the entry we just refreshed.
   clientCache.delete(cacheKey)
-  clientCache.set(cacheKey, { client, token, endpoint, fieldsKey })
+  const newEntry: ClientCacheEntry = {
+    client,
+    token,
+    endpoint,
+    fieldsKey,
+    inFlight: 0,
+    retired: false
+  }
+  clientCache.set(cacheKey, newEntry)
+  clientToKey.set(client, cacheKey)
   evictOldestClients()
   registerProcessCleanup()
   return client
@@ -190,8 +291,16 @@ function registerProcessCleanup(): void {
 }
 
 export function clearSdkClientCache(): void {
-  for (const entry of clientCache.values()) {
-    entry.client.destroy()
+  for (const [_key, entry] of clientCache) {
+    if (entry.inFlight > 0) {
+      entry.retired = true
+      retireClient(entry)
+    } else {
+      clientToKey.delete(entry.client)
+      try {
+        entry.client.destroy()
+      } catch {}
+    }
   }
   clientCache.clear()
 }

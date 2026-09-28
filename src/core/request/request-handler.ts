@@ -10,7 +10,7 @@ import * as logger from '../../plugin/logger'
 import { refreshModelCatalog } from '../../plugin/models'
 import { transformToSdkRequest } from '../../plugin/request'
 import { readRequestOptions } from '../../plugin/request-options'
-import { createSdkClient } from '../../plugin/sdk-client'
+import { acquireSdkClient, createSdkClient, releaseSdkClient } from '../../plugin/sdk-client'
 import { kiroDb } from '../../plugin/storage/sqlite'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
 import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../plugin/types'
@@ -391,14 +391,23 @@ export class RequestHandler {
         this.logSdkRequest(sdkPrep, acc, apiTimestamp)
       }
 
+      const client = createSdkClient(
+        auth,
+        sdkPrep.region,
+        sdkPrep.modelRequestFields,
+        this.config.request_timeout_ms,
+        sessionId
+      )
+      // Held until send() fails or the stream is fully consumed, so no refresh,
+      // eviction or dispose can destroy the client mid-stream.
+      acquireSdkClient(client)
+      let released = false
+      const releaseOnce = () => {
+        if (released) return
+        released = true
+        releaseSdkClient(client)
+      }
       try {
-        const client = createSdkClient(
-          auth,
-          sdkPrep.region,
-          sdkPrep.modelRequestFields,
-          this.config.request_timeout_ms,
-          sessionId
-        )
         const command = new GenerateAssistantResponseCommand({
           conversationState: sdkPrep.conversationState as any,
           profileArn: sdkPrep.profileArn
@@ -431,7 +440,8 @@ export class RequestHandler {
           model,
           sdkPrep.conversationId,
           sdkPrep.streaming,
-          sdkPrep.toolNameMap
+          sdkPrep.toolNameMap,
+          releaseOnce
         )
         // Which side is slow is otherwise unanswerable. `upstream` is the wait
         // for Kiro to start answering and dominates everything else; `handoff`
@@ -447,6 +457,8 @@ export class RequestHandler {
         logger.debug(`[REQ] done convId=${sdkPrep.conversationId}`)
         return result
       } catch (e: any) {
+        // No stream will run to release it.
+        releaseOnce()
         logger.warn(
           `[REQ] error convId=${sdkPrep.conversationId}: ${e?.name || ''} ${e?.message?.slice(0, 200) || String(e).slice(0, 200)}`
         )
