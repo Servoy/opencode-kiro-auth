@@ -725,6 +725,34 @@ export class KiroDatabase {
   }
 
   /**
+   * A per-account burn total over the last `windowMs`, across ALL sessions —
+   * not just the `getRecentSessionUsage` page (which is capped for display).
+   *
+   * The panel derives its "credits/day" from this: with hundreds of sessions,
+   * the capped list only spanned the newest day or two, so the panel divided a
+   * week's spend by a day and over-reported the rate. This sums every session
+   * active in the window and returns the earliest activity, so the divisor is
+   * the true measured span.
+   */
+  getBurnTotals(
+    windowMs: number,
+    now = Date.now()
+  ): Array<{ accountId: string; credits: number; earliestUsed: number }> {
+    const cutoff = now - windowMs
+    const rows = this.db
+      .prepare(
+        `SELECT account_id, SUM(est_credits) AS credits, MIN(first_used) AS earliest
+         FROM session_usage WHERE last_used >= ? GROUP BY account_id`
+      )
+      .all(cutoff) as Array<{ account_id: string; credits: number; earliest: number }>
+    return rows.map((r) => ({
+      accountId: r.account_id,
+      credits: r.credits ?? 0,
+      earliestUsed: r.earliest ?? now
+    }))
+  }
+
+  /**
    * Heartbeat this instance's version + install path, and reap dead/stale rows.
    *
    * Keyed by pid so instances never clobber each other's row; the DB's own

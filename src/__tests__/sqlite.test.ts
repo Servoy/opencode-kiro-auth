@@ -596,4 +596,37 @@ describe('KiroDatabase: session_usage', () => {
     expect(recent[0]?.directory).toBe('/b')
     expect(recent[0]?.accounts).toHaveLength(2)
   })
+
+  test('getBurnTotals sums est_credits per account across every session, not the display page', () => {
+    for (let i = 0; i < 30; i++) db.recordSessionRequest(`burn-${i}`, 'acc-1')
+    db.apportionSessionCredits('acc-1', 60, 0) // 60 credits spread over 30 sessions
+    const totals = db.getBurnTotals(7 * 24 * 60 * 60 * 1000)
+    const acc1 = totals.find((t) => t.accountId === 'acc-1')
+    // The recent-session page caps at 20, but the burn total covers all 30.
+    expect(acc1?.credits).toBeCloseTo(60, 5)
+  })
+
+  test('getBurnTotals keeps accounts separate and reports the earliest activity', () => {
+    const now = Date.now()
+    db.recordSessionRequest('burn-a', 'acc-1')
+    db.recordSessionRequest('burn-b', 'acc-2')
+    db.apportionSessionCredits('acc-1', 10, 0)
+    db.apportionSessionCredits('acc-2', 25, 0)
+    const totals = db.getBurnTotals(7 * 24 * 60 * 60 * 1000, now)
+    const byId = new Map(totals.map((t) => [t.accountId, t]))
+    expect(byId.get('acc-1')?.credits).toBeCloseTo(10, 5)
+    expect(byId.get('acc-2')?.credits).toBeCloseTo(25, 5)
+    // earliestUsed is real activity, so the panel's credits/day divisor is the
+    // measured span rather than a capped page.
+    expect(byId.get('acc-1')!.earliestUsed).toBeLessThanOrEqual(now)
+  })
+
+  test('getBurnTotals excludes sessions whose last activity predates the window', () => {
+    db.recordSessionRequest('recent', 'acc-1')
+    db.apportionSessionCredits('acc-1', 5, 0)
+    // Evaluate the window as if now were an hour in the future with a 1ms span:
+    // the row's last_used sits well before that cutoff, so it must be excluded.
+    const totals = db.getBurnTotals(1, Date.now() + 60 * 60 * 1000)
+    expect(totals.find((t) => t.accountId === 'acc-1')).toBeUndefined()
+  })
 })

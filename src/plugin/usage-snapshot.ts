@@ -58,6 +58,19 @@ export interface SessionUsageSnapshot {
   accounts: SessionAccountUsageSnapshot[]
 }
 
+/**
+ * A per-account burn total over a fixed window, summed across every session —
+ * not just the capped `sessions` list. The panel divides `credits` by the
+ * measured span (now − earliestUsed, floored at a day) for an accurate
+ * credits/day that does not collapse when there are hundreds of sessions.
+ */
+export interface BurnTotalSnapshot {
+  accountId: string
+  windowDays: number
+  credits: number
+  earliestUsed: number
+}
+
 /** One live plugin instance in the pool: its version and where it loaded from. */
 export interface PluginInstanceSnapshot {
   pid: number
@@ -84,7 +97,16 @@ export interface UsageSnapshotFile {
   accounts: AccountUsageSnapshot[]
   /** Recent sessions with request counts and estimated credits (newest first). */
   sessions: SessionUsageSnapshot[]
+  /**
+   * Per-account burn totals over a fixed window, across ALL sessions. The
+   * `sessions` list is capped for display, so the panel uses this — not that
+   * list — to compute credits/day, which otherwise collapsed with many sessions.
+   */
+  burn: BurnTotalSnapshot[]
 }
+
+/** Window the burn totals cover, in days. */
+const BURN_WINDOW_DAYS = 7
 
 /**
  * The running plugin's version and the path it loaded from, for the panel's
@@ -210,8 +232,15 @@ export function writeUsageSnapshot(
     mkdirSync(dir, { recursive: true })
     let sessions: SessionUsageSnapshot[] = []
     let pluginInstances: PluginInstanceSnapshot[] = []
+    let burn: BurnTotalSnapshot[] = []
     try {
       sessions = kiroDb.getRecentSessionUsage(20)
+      burn = kiroDb.getBurnTotals(BURN_WINDOW_DAYS * 24 * 60 * 60 * 1000, now).map((b) => ({
+        accountId: b.accountId,
+        windowDays: BURN_WINDOW_DAYS,
+        credits: b.credits,
+        earliestUsed: b.earliestUsed
+      }))
       if (registeredPluginVersion) {
         kiroDb.heartbeatInstance(registeredPluginVersion, registeredPluginSource)
       }
@@ -231,7 +260,8 @@ export function writeUsageSnapshot(
       pluginVersion: registeredPluginVersion,
       pluginInstances,
       accounts: accounts.map((a) => buildAccountSnapshot(a, usageByAccountId.get(a.id), now)),
-      sessions
+      sessions,
+      burn
     }
     const target = snapshotPath()
     const tmp = `${target}.${process.pid}.tmp`
