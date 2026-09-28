@@ -18,6 +18,14 @@ const binaryToBase64Replacer = (_key: string, value: unknown): unknown => {
  */
 export const getLogDir = (): string => getConfigDir()
 
+/**
+ * Where per-request API dumps go: a `kiro-log/` subdir of the config dir.
+ *
+ * Kept out of the config dir itself so turning on request logging does not
+ * scatter loose JSON next to kiro.json, kiro.db and plugin.log.
+ */
+export const getApiLogDir = (): string => join(getConfigDir(), 'kiro-log')
+
 const writeToFile = (level: string, message: string, ...args: unknown[]) => {
   try {
     const dir = getLogDir()
@@ -50,7 +58,7 @@ const writeApiLog = (
   isError = false
 ) => {
   try {
-    const dir = getLogDir()
+    const dir = getApiLogDir()
     mkdirSync(dir, { recursive: true })
     const prefix = isError ? 'error_' : ''
     const filename = `${prefix}${timestamp}_${type}.json`
@@ -103,7 +111,7 @@ export function logApiError(requestData: any, responseData: any, timestamp: stri
   writeApiLog('response', responseData, timestamp, true)
   const errorType = responseData.status ? `HTTP ${responseData.status}` : 'Network Error'
   const email = requestData.email || 'unknown'
-  error(`${errorType} on ${email} - See error_${timestamp}_request.json`)
+  error(`${errorType} on ${email} - See kiro-log/error_${timestamp}_request.json`)
 }
 
 export function getTimestamp(): string {

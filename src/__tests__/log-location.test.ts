@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
 import { getUserConfigPath } from '../plugin/config/loader.js'
 import { getConfigDir } from '../plugin/config/paths.js'
-import { getLogDir } from '../plugin/logger.js'
+import { getApiLogDir, getLogDir } from '../plugin/logger.js'
 
 // The bug this locks out: plugin.log resolving somewhere other than the config,
 // so it lands where nobody looks. Assert the wiring against the real
@@ -15,5 +15,10 @@ describe('the log and the config share one directory', () => {
 
   test('kiro.json resolves inside that same dir', () => {
     expect(getUserConfigPath()).toBe(join(getLogDir(), 'kiro.json'))
+  })
+
+  test('API request dumps go in a kiro-log subdir, not the config dir itself', () => {
+    // Enabling request logging must not scatter loose JSON next to kiro.json.
+    expect(getApiLogDir()).toBe(join(getConfigDir(), 'kiro-log'))
   })
 })
