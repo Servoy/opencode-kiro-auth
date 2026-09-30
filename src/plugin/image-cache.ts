@@ -61,6 +61,12 @@ interface CacheEntry {
   // Lets callers skip the history scan entirely on long sessions where no
   // images were ever attached.
   everHadImages: boolean
+  // The payload historyLength at which the image was last really present (fresh
+  // upload or still in the incoming history). The carry-forward compares the
+  // current historyLength against this to expire an image the conversation has
+  // moved past — and to drop it entirely when a compaction shrinks history
+  // below it. null when unknown (older on-disk entries predate this field).
+  lastSeenAtHistoryLength: number | null
 }
 
 export interface ImageCacheOptions {
@@ -95,7 +101,12 @@ export class ImageCache {
     return `${workspace}\0${fingerprint}`
   }
 
-  set(workspace: string, fingerprint: string, images: KiroImage[]): void {
+  set(
+    workspace: string,
+    fingerprint: string,
+    images: KiroImage[],
+    historyLength: number | null = null
+  ): void {
     if (images.length === 0) return
     const totalBytes = images.reduce((n, im) => n + im.source.bytes.byteLength, 0)
     const key = this.k(workspace, fingerprint)
@@ -103,7 +114,8 @@ export class ImageCache {
       images,
       totalBytes,
       lastAccess: this.now(),
-      everHadImages: true
+      everHadImages: true,
+      lastSeenAtHistoryLength: historyLength
     }
     // delete-then-set so the entry moves to the tail of the Map's insertion
     // order — that's what makes the eviction sweep pick the truly oldest.
@@ -122,7 +134,12 @@ export class ImageCache {
    *
    * Returns the final image count for diagnostics.
    */
-  upsert(workspace: string, fingerprint: string, newImages: KiroImage[]): number {
+  upsert(
+    workspace: string,
+    fingerprint: string,
+    newImages: KiroImage[],
+    historyLength: number | null = null
+  ): number {
     const key = this.k(workspace, fingerprint)
     // Try in-memory first; fall back to disk so cross-restart upserts merge
     // with what we already persisted instead of overwriting it.
@@ -162,7 +179,8 @@ export class ImageCache {
       images: merged,
       totalBytes: total,
       lastAccess: this.now(),
-      everHadImages: true
+      everHadImages: true,
+      lastSeenAtHistoryLength: historyLength
     }
     this.cache.delete(key)
     this.cache.set(key, entry)
@@ -203,6 +221,20 @@ export class ImageCache {
   delete(workspace: string, fingerprint: string): void {
     this.cache.delete(this.k(workspace, fingerprint))
     this.deleteFromDisk(workspace, fingerprint)
+  }
+
+  /**
+   * The payload historyLength at which this conversation's image was last
+   * really present, or null when the cache never saw it. The carry-forward
+   * uses it to expire an image the conversation has moved past or compacted
+   * away. Reads memory first, then disk (older files return null for the field).
+   */
+  lastSeenAtHistoryLength(workspace: string, fingerprint: string): number | null {
+    const key = this.k(workspace, fingerprint)
+    const entry =
+      this.cache.get(key) ?? (this.cacheDir ? this.loadEntryFromDisk(workspace, fingerprint) : null)
+    if (entry && this.cache.get(key) === undefined) this.cache.set(key, entry)
+    return entry ? entry.lastSeenAtHistoryLength : null
   }
 
   // True if this conversation has ever carried images. Lets callers skip
@@ -253,6 +285,7 @@ export class ImageCache {
         workspace,
         fingerprint,
         updatedAt: entry.lastAccess,
+        lastSeenAtHistoryLength: entry.lastSeenAtHistoryLength,
         images: entry.images.map((im) => ({
           format: im.format,
           b64: Buffer.from(im.source.bytes).toString('base64')
@@ -290,7 +323,15 @@ export class ImageCache {
       }
       if (images.length === 0) return null
       const totalBytes = images.reduce((n, im) => n + im.source.bytes.byteLength, 0)
-      return { images, totalBytes, lastAccess: stat.mtimeMs, everHadImages: true }
+      const lastSeen =
+        typeof data.lastSeenAtHistoryLength === 'number' ? data.lastSeenAtHistoryLength : null
+      return {
+        images,
+        totalBytes,
+        lastAccess: stat.mtimeMs,
+        everHadImages: true,
+        lastSeenAtHistoryLength: lastSeen
+      }
     } catch {
       return null
     }

@@ -840,16 +840,19 @@ describe('fingerprint stability across image-strip', () => {
 })
 
 describe('image carry-forward: no images on tool-result turns', () => {
-  function seedCache(workspace: string, firstUserText: string) {
+  function seedCache(workspace: string, firstUserText: string, historyLength = 0) {
     const crypto = require('crypto')
     const fingerprint = crypto
       .createHash('sha256')
       .update(workspace + '\0' + firstUserText)
       .digest('hex')
       .slice(0, 32)
-    imageCache.set(workspace, fingerprint, [
-      { format: 'png', source: { bytes: new Uint8Array([137, 80, 78, 71]) } }
-    ])
+    imageCache.set(
+      workspace,
+      fingerprint,
+      [{ format: 'png', source: { bytes: new Uint8Array([137, 80, 78, 71]) } }],
+      historyLength
+    )
   }
 
   test('images ARE carried forward onto a tool-result turn', () => {
@@ -912,6 +915,61 @@ describe('image carry-forward: no images on tool-result turns', () => {
 
     const uim = result.conversationState.currentMessage?.userInputMessage as any
     expect((uim?.images ?? []).length).toBeGreaterThan(0)
+  })
+
+  test('carries forward an image sent in the very first message (historyLength 0)', () => {
+    // The image arrived at historyLength 0; the next text-only turn sits within
+    // the window. lastSeen==0 must count as a real value, not "never seen".
+    const workspace = '/ws-carry-fwd-first-msg'
+    seedCache(workspace, 'look at this', 0)
+
+    const result = transformToSdkRequest(
+      {
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'look at this' }] },
+          { role: 'assistant', content: 'I see it.' },
+          { role: 'user', content: 'What color is it?' }
+        ]
+      },
+      'auto',
+      auth,
+      false,
+      0,
+      undefined,
+      workspace,
+      true
+    )
+
+    const uim = result.conversationState.currentMessage?.userInputMessage as any
+    expect((uim?.images ?? []).length).toBeGreaterThan(0)
+  })
+
+  test('does NOT resurrect an image after the history was compacted away', () => {
+    // The image was last present at historyLength 200; a compaction collapses
+    // the conversation to a couple of entries. historyLength now sits far below
+    // lastSeen, so the image is stale and must not be re-attached.
+    const workspace = '/ws-carry-fwd-compacted'
+    seedCache(workspace, 'look at this', 200)
+
+    const result = transformToSdkRequest(
+      {
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'look at this' }] },
+          { role: 'assistant', content: 'summary checkpoint' },
+          { role: 'user', content: 'continue with the new task' }
+        ]
+      },
+      'auto',
+      auth,
+      false,
+      0,
+      undefined,
+      workspace,
+      true
+    )
+
+    const uim = result.conversationState.currentMessage?.userInputMessage as any
+    expect((uim?.images ?? []).length).toBe(0)
   })
 })
 

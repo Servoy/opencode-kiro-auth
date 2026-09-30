@@ -181,6 +181,27 @@ describe('ImageCache.upsert (merge + dedup + caps)', () => {
   })
 })
 
+describe('ImageCache.lastSeenAtHistoryLength', () => {
+  test('records the history length where an image was last really present', () => {
+    const c = new ImageCache()
+    c.upsert('/ws', 'fp', [img()], 100)
+    expect(c.lastSeenAtHistoryLength('/ws', 'fp')).toBe(100)
+    c.upsert('/ws', 'fp', [img(100, 'png', 2)], 104)
+    expect(c.lastSeenAtHistoryLength('/ws', 'fp')).toBe(104)
+  })
+
+  test('history length 0 (image in the first message) is a real value, not "unset"', () => {
+    const c = new ImageCache()
+    c.upsert('/ws', 'fp', [img()], 0)
+    expect(c.lastSeenAtHistoryLength('/ws', 'fp')).toBe(0)
+  })
+
+  test('returns null for a conversation the cache never saw', () => {
+    const c = new ImageCache()
+    expect(c.lastSeenAtHistoryLength('/ws', 'nope')).toBeNull()
+  })
+})
+
 describe('ImageCache.hasEverHadImages', () => {
   test('returns false when no entry exists', () => {
     const c = new ImageCache()

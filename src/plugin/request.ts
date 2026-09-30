@@ -39,6 +39,11 @@ import type {
   ToolNameMap
 } from './types'
 
+// How many turns past its last real appearance an image is still carried
+// forward. Covers the immediate follow-up ("what's in that screenshot") while a
+// compaction — which collapses historyLength — falls outside it and drops the image.
+const CARRY_FORWARD_TURN_WINDOW = 2
+
 /**
  * Look up or mint a stable convId for this conversation.
  *
@@ -528,12 +533,29 @@ function buildCodeWhispererRequest(
     }
 
     const known = [...freshImages, ...historyImages]
-    if (known.length > 0) imageCache.upsert(workspaceKey, fingerprint, known)
+    // Record the historyLength where the image is really present, so a later
+    // turn can tell "the conversation moved a little" from "it was compacted".
+    if (known.length > 0) imageCache.upsert(workspaceKey, fingerprint, known, history.length)
 
     // History still holds them, or the user just attached one: nothing to do.
     if (freshImages.length === 0 && historyImages.length === 0) {
-      const carried = imageCache.get(workspaceKey, fingerprint)
-      if (carried && carried.length > 0) uim.images = carried.slice(0, MAX_KIRO_IMAGES)
+      const lastSeen = imageCache.lastSeenAtHistoryLength(workspaceKey, fingerprint)
+      // Carry forward only while the conversation has grown a little past where
+      // the image last appeared. A compaction drops historyLength below lastSeen
+      // (or the gap widens past the window); either way the image is stale — drop
+      // it so a summarised-away screenshot never becomes leading again. lastSeen
+      // uses `!= null` so an image sent in the first message (historyLength 0)
+      // still counts.
+      const withinWindow =
+        lastSeen != null &&
+        history.length >= lastSeen &&
+        history.length - lastSeen <= CARRY_FORWARD_TURN_WINDOW
+      if (withinWindow) {
+        const carried = imageCache.get(workspaceKey, fingerprint)
+        if (carried && carried.length > 0) uim.images = carried.slice(0, MAX_KIRO_IMAGES)
+      } else if (lastSeen != null) {
+        imageCache.delete(workspaceKey, fingerprint)
+      }
     }
   }
 
