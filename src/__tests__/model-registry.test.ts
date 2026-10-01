@@ -9,7 +9,13 @@ const registry = buildModelRegistry() as Record<string, any>
 
 /** The models that carry an effort dial. */
 const thinkingIDs = Object.keys(registry).filter((id) => registry[id].variants)
-const XHIGH_MODELS = ['claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-5']
+const XHIGH_MODELS = [
+  'claude-opus-4-7',
+  'claude-opus-4-8',
+  'claude-opus-5',
+  'claude-opus-5-5',
+  'claude-sonnet-5'
+]
 
 describe('model registry', () => {
   test('every advertised model is resolvable to a Kiro model ID', () => {
@@ -26,6 +32,7 @@ describe('model registry', () => {
         'claude-opus-4-7',
         'claude-opus-4-8',
         'claude-opus-5',
+        'claude-opus-5-5',
         'claude-sonnet-4-5',
         'claude-sonnet-4-6',
         'claude-sonnet-5'
