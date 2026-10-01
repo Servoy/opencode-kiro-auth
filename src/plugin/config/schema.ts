@@ -104,7 +104,7 @@ export const KiroConfigSchema = z.object({
   // it risks 400s on long many-turn sessions; lowering it trims context sooner.
   max_payload_bytes: z.number().min(100_000).max(5_500_000).default(5_000_000),
 
-  /** Write the debug-level diagnostics ([REQ], [TRIM], [IMG]) to plugin.log. */
+  /** Write the debug-level diagnostics ([REQ], [TRIM], [IMG]) to kiro-plugin.log. */
   trace: z.boolean().default(false),
 
   /** Append the account's quota percentage to each model name in the picker. */

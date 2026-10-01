@@ -351,7 +351,7 @@ export class IdcAuthMethod {
           const err = e instanceof Error ? e : new Error(String(e))
           logger.error('IDC auth callback failed', err)
           throw new Error(
-            `IDC authorization failed: ${err.message}. Check the plugin log (plugin.log next to your kiro.json). For Identity Center accounts, ensure a Q Developer/CodeWhisperer profile is selected (try: kiro-cli profile).`
+            `IDC authorization failed: ${err.message}. Check the plugin log (kiro-plugin.log next to your kiro.json). For Identity Center accounts, ensure a Q Developer/CodeWhisperer profile is selected (try: kiro-cli profile).`
           )
         }
       }

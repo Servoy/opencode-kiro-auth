@@ -36,7 +36,7 @@ function joinFor(platform: NodeJS.Platform, ...parts: string[]): string {
 }
 
 /**
- * The plugin's state dir (kiro.json, kiro.db, plugin.log), matching where
+ * The plugin's state dir (kiro.json, kiro.db, kiro-plugin.log), matching where
  * OpenCode keeps its own global config so the two sit together:
  *
  * - `XDG_CONFIG_HOME` set (any OS): `$XDG_CONFIG_HOME/opencode`
@@ -98,7 +98,7 @@ function platformCacheDir(): string {
  * touching process state.
  *
  * The test branch matters: the suite eagerly opens kiro.db and appends to
- * plugin.log, so without an isolated dir it would write to the developer's
+ * kiro-plugin.log, so without an isolated dir it would write to the developer's
  * real ones. The dir is suffixed with `testPid` so each `bun test` process
  * gets a fresh kiro.db — the db is machine-shared and survives in tmp between
  * runs, so a shared path let a lock row from a prior run wedge the next.
@@ -117,10 +117,10 @@ export function resolveDir(opts: {
 
 /**
  * The one directory the plugin's state lives in: kiro.json, kiro.db and
- * plugin.log all sit here, so finding the config finds the log.
+ * kiro-plugin.log all sit here, so finding the config finds the log.
  *
  * Resolved once and cached for the life of the module instance. The choice
- * must be stable: a plugin.log that resolves to one place at startup and
+ * must be stable: a kiro-plugin.log that resolves to one place at startup and
  * another after a kiro.json appears is a log split across two files, which is
  * the bug this caching prevents. Set KIRO_CONFIG_DIR to move the whole set.
  *

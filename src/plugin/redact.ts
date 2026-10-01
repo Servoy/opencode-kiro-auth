@@ -19,7 +19,7 @@ const BEARER_LOOSE = /\b(Bearer|Basic|token)\s+[A-Za-z0-9._\-+/:]{20,}=*/g
 /**
  * Mask secrets in a log line before it is written.
  *
- * Best-effort barrier against accidental credential leaks in plugin.log — the
+ * Best-effort barrier against accidental credential leaks in kiro-plugin.log — the
  * live provider request carries a Kiro bearer token in its `authorization`
  * header, and the incoming-request debug line logs headers verbatim. Applied
  * at the logger's single write point so every level and message is covered.
