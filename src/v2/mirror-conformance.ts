@@ -2,7 +2,7 @@ import type { Plugin } from '@opencode/plugin'
 import { buildWebSearchProviderV2 } from '../plugin/web-search.js'
 import { buildIntegrationMethods } from './integration.js'
 import { buildV2Provider } from './models-bridge.js'
-import type { V2SessionHttpResponse } from './types.js'
+import type { V2FormStringField, V2SessionHttpResponse } from './types.js'
 
 /**
  * Compile-time drift guard. Fails `npm run typecheck` when the pinned
@@ -80,6 +80,22 @@ void _providerAddArg
 const _methodRegs = buildIntegrationMethods('kiro', [])
 const _methodUpdateArg: MethodUpdateArg | undefined = _methodRegs[0] as never
 void _methodUpdateArg
+
+// Prove our sign-in form field assigns into the real host method's `form`
+// element type. The sign-in bug was a dropped form; if the official OAuth
+// method stops accepting a `form`, or renames/retypes its field, this fails
+// typecheck and forces a mirror update rather than silently reverting to the
+// no-prompts behaviour that sent users to the wrong device page.
+type OAuthMethodReg = Extract<MethodUpdateArg, { method: { type: 'oauth' } }>
+type HostOAuthMethod = OAuthMethodReg['method']
+type HostFormField = NonNullable<HostOAuthMethod['form']>[number]
+const _hostFormField: HostFormField = {
+  type: 'string',
+  key: 'start_url',
+  title: 'IAM Identity Center Start URL',
+  placeholder: 'https://your-company.awsapps.com/start'
+} satisfies V2FormStringField
+void _hostFormField
 
 // Fails typecheck if our provider's execute return (mapped WebSearch.Result[])
 // stops matching the official websearch editor.add definition — the shape that

@@ -1,8 +1,47 @@
 import type {
   V2Credential,
+  V2FormStringField,
   V2IntegrationOAuthAuthorization,
   V2IntegrationOAuthMethod
 } from './types.js'
+
+/** A v1 auth prompt (from `idcPrompts`): a text field with a key and message. */
+interface V1Prompt {
+  type: string
+  key: string
+  message?: string
+  placeholder?: string
+}
+
+/**
+ * Map the v1 auth prompts to v2 form fields so the host renders the sign-in
+ * inputs (Start URL, Region, Profile ARN). Dropping these was the v2 sign-in
+ * bug: with no form the host asked nothing, called authorize with no answer,
+ * and the device page fell back to AWS Builder ID. Returns undefined when there
+ * are no prompts — the host form must be non-empty when present.
+ */
+function toV2Form(prompts: unknown): V2FormStringField[] | undefined {
+  if (!Array.isArray(prompts) || prompts.length === 0) return undefined
+  const fields = (prompts as V1Prompt[])
+    .filter((p) => typeof p?.key === 'string' && p.key.length > 0)
+    .map((p) => ({
+      type: 'string' as const,
+      key: p.key,
+      title: p.message,
+      placeholder: p.placeholder
+    }))
+  return fields.length > 0 ? fields : undefined
+}
+
+/** Narrow the host's form answer to the string inputs the v1 flow consumes. */
+function answerToInputs(answer: unknown): Record<string, string> {
+  if (!answer || typeof answer !== 'object') return {}
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(answer as Record<string, unknown>)) {
+    if (typeof v === 'string') out[k] = v
+  }
+  return out
+}
 
 /**
  * The v1 `authorize` result shape (from `IdcAuthMethod.authorize`): a device
@@ -76,15 +115,18 @@ export function buildIntegrationMethods(
 ): V2IntegrationMethodRegistration[] {
   return v1Methods.map((m, i) => {
     const methodID = `${integrationID}-oauth-${i}`
+    const form = toV2Form(m.prompts)
+    const method: V2IntegrationOAuthMethod = {
+      id: methodID,
+      type: 'oauth' as const,
+      label: m.label,
+      ...(form ? { form } : {})
+    }
     return {
       integrationID,
-      method: {
-        id: methodID,
-        type: 'oauth' as const,
-        label: m.label
-      },
-      authorize: async (): Promise<V2IntegrationOAuthAuthorization> => {
-        const started = await m.authorize({})
+      method,
+      authorize: async (answer?: unknown): Promise<V2IntegrationOAuthAuthorization> => {
+        const started = await m.authorize(answerToInputs(answer))
         return {
           url: started.url,
           instructions: started.instructions ?? 'Complete sign-in in your browser.',

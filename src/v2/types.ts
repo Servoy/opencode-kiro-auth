@@ -119,10 +119,24 @@ export interface V2WebSearchDomain {
   reload(): Promise<void>
 }
 
+// A single v2 form field. Mirrors the subset of @opencode/schema Form.StringField
+// the integration sign-in needs: a text input with a key, a title and an
+// optional placeholder. The host renders these before calling authorize.
+export interface V2FormStringField {
+  type: 'string'
+  key: string
+  title?: string
+  placeholder?: string
+  required?: boolean
+}
+
 export interface V2IntegrationOAuthMethod {
   id: string
   type: 'oauth'
   label: string
+  // The sign-in form the host shows before authorize. Omitted when the method
+  // asks for nothing. Non-empty when present (the host schema requires it).
+  form?: V2FormStringField[]
 }
 
 export interface V2Credential {
