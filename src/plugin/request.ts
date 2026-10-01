@@ -39,10 +39,13 @@ import type {
   ToolNameMap
 } from './types'
 
-// How many turns past its last real appearance an image is still carried
-// forward. Covers the immediate follow-up ("what's in that screenshot") while a
-// compaction — which collapses historyLength — falls outside it and drops the image.
-const CARRY_FORWARD_TURN_WINDOW = 2
+// How many incoming messages past its last real appearance an image is still
+// carried forward. Measured in messages (not turns), and a turn is a user +
+// assistant pair, so a few immediate follow-ups fit in this window — enough for
+// "what's in that screenshot" to keep working. A compaction collapses the
+// message count far below where the image sat, landing well outside the window
+// so the stale image is dropped.
+const CARRY_FORWARD_TURN_WINDOW = 6
 
 /**
  * Look up or mint a stable convId for this conversation.
@@ -533,23 +536,26 @@ function buildCodeWhispererRequest(
     }
 
     const known = [...freshImages, ...historyImages]
-    // Record the historyLength where the image is really present, so a later
-    // turn can tell "the conversation moved a little" from "it was compacted".
-    if (known.length > 0) imageCache.upsert(workspaceKey, fingerprint, known, history.length)
+    // Key the window on the incoming message count, not the post-trim history.
+    // `history` is shrunk by the payload-size trim above, so on exactly the long
+    // sessions the bug bites it would read as "compacted" even when the user
+    // only grew the conversation. `msgs` is the real conversation length and
+    // collapses only on an actual compaction.
+    if (known.length > 0) imageCache.upsert(workspaceKey, fingerprint, known, msgs.length)
 
     // History still holds them, or the user just attached one: nothing to do.
     if (freshImages.length === 0 && historyImages.length === 0) {
       const lastSeen = imageCache.lastSeenAtHistoryLength(workspaceKey, fingerprint)
       // Carry forward only while the conversation has grown a little past where
-      // the image last appeared. A compaction drops historyLength below lastSeen
-      // (or the gap widens past the window); either way the image is stale — drop
-      // it so a summarised-away screenshot never becomes leading again. lastSeen
-      // uses `!= null` so an image sent in the first message (historyLength 0)
-      // still counts.
+      // the image last appeared. A compaction drops the message count below
+      // lastSeen (or the gap widens past the window); either way the image is
+      // stale — drop it so a summarised-away screenshot never becomes leading
+      // again. lastSeen uses `!= null` so an image sent in the first message
+      // (count 0/1) still counts.
       const withinWindow =
         lastSeen != null &&
-        history.length >= lastSeen &&
-        history.length - lastSeen <= CARRY_FORWARD_TURN_WINDOW
+        msgs.length >= lastSeen &&
+        msgs.length - lastSeen <= CARRY_FORWARD_TURN_WINDOW
       if (withinWindow) {
         const carried = imageCache.get(workspaceKey, fingerprint)
         if (carried && carried.length > 0) uim.images = carried.slice(0, MAX_KIRO_IMAGES)

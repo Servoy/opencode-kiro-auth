@@ -840,7 +840,7 @@ describe('fingerprint stability across image-strip', () => {
 })
 
 describe('image carry-forward: no images on tool-result turns', () => {
-  function seedCache(workspace: string, firstUserText: string, historyLength = 0) {
+  function seedCache(workspace: string, firstUserText: string, lastSeenMessageCount = 0) {
     const crypto = require('crypto')
     const fingerprint = crypto
       .createHash('sha256')
@@ -851,7 +851,7 @@ describe('image carry-forward: no images on tool-result turns', () => {
       workspace,
       fingerprint,
       [{ format: 'png', source: { bytes: new Uint8Array([137, 80, 78, 71]) } }],
-      historyLength
+      lastSeenMessageCount
     )
   }
 
@@ -917,8 +917,8 @@ describe('image carry-forward: no images on tool-result turns', () => {
     expect((uim?.images ?? []).length).toBeGreaterThan(0)
   })
 
-  test('carries forward an image sent in the very first message (historyLength 0)', () => {
-    // The image arrived at historyLength 0; the next text-only turn sits within
+  test('carries forward an image sent in the very first message (message count 0)', () => {
+    // The image arrived at message count 0; the next text-only turn sits within
     // the window. lastSeen==0 must count as a real value, not "never seen".
     const workspace = '/ws-carry-fwd-first-msg'
     seedCache(workspace, 'look at this', 0)
@@ -970,6 +970,46 @@ describe('image carry-forward: no images on tool-result turns', () => {
 
     const uim = result.conversationState.currentMessage?.userInputMessage as any
     expect((uim?.images ?? []).length).toBe(0)
+  })
+
+  test('carries forward on a long session the size-trim shrinks (gate reads the pre-trim count)', () => {
+    // The real bug this fixes: on a long conversation the payload-size trim
+    // drops most history entries, so the post-trim history length is tiny even
+    // though the user only grew the conversation. Keying the window on the
+    // trimmed length read that as a compaction and dropped a live image. The
+    // gate must key on the incoming message count, which is still large here.
+    const workspace = '/ws-carry-fwd-longsession'
+    const messages: any[] = []
+    // ~40 big pairs → well over nothing-special but forced over a tight cap below.
+    for (let i = 0; i < 40; i++) {
+      messages.push({ role: 'user', content: 'u'.repeat(20000) })
+      messages.push({ role: 'assistant', content: 'a'.repeat(20000) })
+    }
+    messages.push({ role: 'user', content: 'What is in that screenshot?' })
+
+    // The image was last really present at message count 80 — a couple of
+    // messages back from the current 81. Seed exactly that.
+    seedCache(workspace, 'u'.repeat(20000), messages.length - 1)
+
+    const result = transformToSdkRequest(
+      { messages },
+      'auto',
+      auth,
+      false,
+      20000,
+      undefined,
+      workspace,
+      true,
+      undefined,
+      // Tight cap forces the size-trim to gut the history array.
+      300_000
+    )
+
+    const uim = result.conversationState.currentMessage?.userInputMessage as any
+    // Post-trim history is far shorter than 81, yet the image survives because
+    // the gate keys on the incoming message count, not the trimmed length.
+    expect((result.conversationState.history ?? []).length).toBeLessThan(40)
+    expect((uim?.images ?? []).length).toBeGreaterThan(0)
   })
 })
 
