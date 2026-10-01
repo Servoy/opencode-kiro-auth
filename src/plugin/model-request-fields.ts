@@ -13,8 +13,9 @@ export const EFFORT_OFF = 'off' as const
 export interface AdditionalModelRequestFields {
   /** Claude family reasoning channel. */
   output_config?: { effort: Effort }
-  /** GPT family reasoning channel; the service reads one or the other. */
-  reasoning?: { effort: Effort }
+  /** GPT family reasoning channel; the service reads one or the other.
+   *  GPT accepts `none` as its off switch, which Claude's enum does not. */
+  reasoning?: { effort: Effort | 'none' }
   /** Adaptive is the service default; disabled is the only real off switch. */
   thinking?: { type: 'adaptive' | 'disabled' }
   max_tokens?: number
@@ -46,11 +47,15 @@ export function buildModelRequestFields(
   if (getCatalogCapabilities(kiroModel)?.supportsRequestFields === false) return undefined
 
   const fields: AdditionalModelRequestFields = {}
+  const gpt = isGptFamily(kiroModel)
 
   if (thinkingDisabled) {
-    fields.thinking = { type: 'disabled' }
+    // GPT has no thinking.type; its off is reasoning.effort = none. The Claude
+    // disabled switch sent to GPT is a 400, and vice versa.
+    if (gpt) fields.reasoning = { effort: 'none' }
+    else fields.thinking = { type: 'disabled' }
   } else if (effort) {
-    if (isGptFamily(kiroModel)) fields.reasoning = { effort }
+    if (gpt) fields.reasoning = { effort }
     else fields.output_config = { effort }
   }
 

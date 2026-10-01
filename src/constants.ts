@@ -87,6 +87,10 @@ export const MODEL_MAPPING: Record<string, string> = {
   'claude-opus-5-thinking': 'claude-opus-5',
   'claude-opus-5-5': 'claude-opus-5.5',
   'claude-opus-5-5-thinking': 'claude-opus-5.5',
+  // OpenAI GPT (effort under reasoning.effort, no -thinking twin)
+  'gpt-5.6-sol': 'gpt-5.6-sol',
+  'gpt-5.6-terra': 'gpt-5.6-terra',
+  'gpt-5.6-luna': 'gpt-5.6-luna',
   // Auto
   auto: 'auto',
   // Open weight models

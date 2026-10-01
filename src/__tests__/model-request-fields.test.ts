@@ -33,6 +33,27 @@ describe('the additionalModelRequestFields block', () => {
     expect(fields?.reasoning).toBeUndefined()
   })
 
+  test('off on a GPT model names reasoning none, not the Claude thinking switch', () => {
+    // GPT has no thinking.type field; its off is reasoning.effort = none. The
+    // Claude disabled switch would be a 400 before a single token.
+    const fields = buildModelRequestFields('gpt-5.6-sol', 'max', true)
+    expect(fields).toEqual({ reasoning: { effort: 'none' } })
+    expect(fields?.thinking).toBeUndefined()
+    expect(fields?.output_config).toBeUndefined()
+  })
+
+  test('a GPT model never emits the Claude thinking or output_config channels', () => {
+    // One wrong channel 400s the whole request, so hold it at every dial
+    // position the registry offers plus the absent one.
+    for (const level of [undefined, 'low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      for (const disabled of [false, true]) {
+        const fields = buildModelRequestFields('gpt-5.6-terra', level, disabled)
+        expect(fields?.thinking).toBeUndefined()
+        expect(fields?.output_config).toBeUndefined()
+      }
+    }
+  })
+
   test('carries a max_tokens ceiling when one is asked for', () => {
     expect(buildModelRequestFields('claude-sonnet-5', undefined, false, 8000)).toEqual({
       max_tokens: 8000

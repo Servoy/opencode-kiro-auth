@@ -9,12 +9,16 @@ const registry = buildModelRegistry() as Record<string, any>
 
 /** The models that carry an effort dial. */
 const thinkingIDs = Object.keys(registry).filter((id) => registry[id].variants)
+/** Every GPT tier, read off the registry rather than restated — a new tier is
+ *  covered the moment it is added, with no second list to keep in step. */
+const gptIDs = Object.keys(registry).filter((id) => id.startsWith('gpt-'))
 const XHIGH_MODELS = [
   'claude-opus-4-7',
   'claude-opus-4-8',
   'claude-opus-5',
   'claude-opus-5-5',
-  'claude-sonnet-5'
+  'claude-sonnet-5',
+  ...gptIDs
 ]
 
 describe('model registry', () => {
@@ -35,7 +39,10 @@ describe('model registry', () => {
         'claude-opus-5-5',
         'claude-sonnet-4-5',
         'claude-sonnet-4-6',
-        'claude-sonnet-5'
+        'claude-sonnet-5',
+        'gpt-5.6-sol',
+        'gpt-5.6-terra',
+        'gpt-5.6-luna'
       ].sort()
     )
   })
@@ -48,9 +55,14 @@ describe('model registry', () => {
     }
   })
 
-  test('does not advertise Kiro GPT tiers, which use a different reasoning contract', () => {
-    for (const id of Object.keys(registry)) {
-      expect(id.startsWith('gpt-')).toBe(false)
+  test('advertises the Kiro GPT-5.6 tiers with an effort dial', () => {
+    // GPT routes effort through reasoning.effort (model-request-fields.ts), but
+    // from the registry's side it is a thinking model like any other. The count
+    // guards the loop: dropping every GPT tier must fail here, not pass on an
+    // empty set.
+    expect(gptIDs.length).toBeGreaterThanOrEqual(3)
+    for (const id of gptIDs) {
+      expect(registry[id].variants).toBeDefined()
     }
   })
 

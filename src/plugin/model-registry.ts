@@ -34,12 +34,37 @@ interface ModelSpec {
 /**
  * Models Kiro exposes, keyed by the OpenCode-facing model ID.
  *
- * Anthropic and open-weight models only. Kiro's GPT-5.6 tiers are deliberately
- * absent: they configure reasoning through `reasoning.effort` / `reasoning.mode`
- * rather than `output_config.effort`, so they need their own request path.
+ * Includes Kiro's GPT-5.6 tiers: they carry effort under `reasoning.effort`
+ * rather than `output_config.effort` and take `none` as their off switch, both
+ * handled in model-request-fields.ts. They have no `-thinking` twin and no 1M
+ * variant to spell out — the single entry's 1M window is their only size.
  */
 export const MODEL_SPECS: Record<string, ModelSpec> = {
   auto: { name: 'Auto', rate: '1.0x', limit: CONTEXT_1M, modalities: MULTIMODAL },
+
+  // OpenAI GPT-5.6. Rate is the short-context multiplier; requests over 272K
+  // tokens bill at double, a Kiro-side split this plugin does not model.
+  'gpt-5.6-sol': {
+    name: 'GPT-5.6 Sol',
+    rate: '4.4x',
+    limit: CONTEXT_1M_128K_OUT,
+    modalities: TEXT_ONLY,
+    thinking: true
+  },
+  'gpt-5.6-terra': {
+    name: 'GPT-5.6 Terra',
+    rate: '2.2x',
+    limit: CONTEXT_1M_128K_OUT,
+    modalities: TEXT_ONLY,
+    thinking: true
+  },
+  'gpt-5.6-luna': {
+    name: 'GPT-5.6 Luna',
+    rate: '1.1x',
+    limit: CONTEXT_1M_128K_OUT,
+    modalities: TEXT_ONLY,
+    thinking: true
+  },
 
   // Claude Sonnet
   'claude-sonnet-4': {
