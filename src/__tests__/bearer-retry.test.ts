@@ -193,9 +193,12 @@ describe('RequestHandler SDK error recovery', () => {
     handler.triggerReauth = async () => false
 
     // The account is marked unhealthy, so the next loop iteration escalates to
-    // the all-accounts-unhealthy reauth path (a throw), not the per-request
-    // terminal Response.
-    await expect(request(handler)).rejects.toThrow()
+    // the all-accounts-unhealthy reauth path. With reauth exhausted it returns a
+    // host-visible 401 telling the user to sign in again, not an opaque throw.
+    const response = await request(handler)
+    expect(response.status).toBe(401)
+    const body = (await response.json()) as { error: { message: string } }
+    expect(body.error.message).toMatch(/sign in again/i)
 
     // SDK called only once: no retry with the dead token, so no lock-up.
     expect(sendCalls).toBe(1)
@@ -272,7 +275,9 @@ describe('RequestHandler SDK error recovery', () => {
       return false
     }
 
-    await expect(request(handler)).rejects.toThrow()
+    const response = await request(handler)
+    expect(response.status).toBe(401)
+    expect((await response.json()).error.message).toMatch(/sign in again/i)
 
     expect(sendCalls).toBe(0)
     expect(reauthCalls).toBe(1)
@@ -309,6 +314,8 @@ describe('RequestHandler catalog recovery wiring', () => {
     const { handler } = createHarness()
     handler.tokenRefresher.forceRefresh = async () => false
 
+    // forceRefresh never marks the account unhealthy here, so this exhausts the
+    // retry budget rather than hitting the reauth path — a throw, as before.
     await expect(request(handler)).rejects.toThrow()
 
     expect(typeof catalogRecover).toBe('function')

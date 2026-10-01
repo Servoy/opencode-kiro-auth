@@ -178,9 +178,8 @@ export class TokenRefresher {
         error.code === 'ExpiredClientException' ||
         error.code === 'HTTP_401' ||
         error.code === 'HTTP_403' ||
-        error.message.includes('Invalid refresh token provided') ||
-        error.message.includes('Invalid grant provided') ||
-        error.message.includes('Client is expired'))
+        isPermanentError(error.code) ||
+        isPermanentError(error.message))
     ) {
       await this.accountManager.markUnhealthy(account, error.code || error.message)
       return { account, shouldContinue: true }

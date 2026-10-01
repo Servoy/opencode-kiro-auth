@@ -68,6 +68,15 @@ describe('isPermanentError', () => {
   test('detects Account Suspended', () => {
     expect(isPermanentError('Account Suspended')).toBe(true)
   })
+
+  test('detects an invalid_request / Invalid request refresh rejection', () => {
+    // The IDC token endpoint returns {"error":"invalid_request"} with
+    // message "Invalid request" when the refresh token itself is dead. That
+    // is a sign-in-again state, not a transient blip — observed in the wild
+    // leaving a user stuck in an endless, silent refresh loop.
+    expect(isPermanentError('invalid_request')).toBe(true)
+    expect(isPermanentError('Refresh failed: Invalid request')).toBe(true)
+  })
 })
 
 describe('what a failed token refresh tells the user', () => {

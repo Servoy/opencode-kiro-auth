@@ -104,3 +104,24 @@ describe('classifying failures', () => {
     }
   })
 })
+
+describe('a dead refresh token (invalid_request) escalates to sign-in', () => {
+  test('marks the account unhealthy and continues instead of throwing unrecoverable', async () => {
+    // Observed in the wild: the IDC token endpoint rejected the refresh token
+    // with code "invalid_request" / message "Invalid request". That used to
+    // miss the recognition list and get thrown raw, so the request loop never
+    // escalated to reauth and the plugin retried the dead token forever.
+    const { refresher, account, marked } = createRefresher()
+    const { KiroTokenRefreshError } = await import('../plugin/errors.js')
+
+    const result = await (refresher as any).handleRefreshError(
+      new KiroTokenRefreshError('Refresh failed: Invalid request', 'invalid_request'),
+      account,
+      () => {}
+    )
+
+    expect(result.shouldContinue).toBe(true)
+    expect(marked.length).toBe(1)
+    expect(marked[0]).toContain('invalid_request')
+  })
+})

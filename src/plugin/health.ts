@@ -33,6 +33,8 @@ export function isPermanentError(reason?: string): boolean {
     r.includes('invalid_grant') ||
     r.includes('invalid_client') ||
     r.includes('invalid_token') ||
+    r.includes('invalid_request') ||
+    r.includes('invalid request') ||
     r.includes('invalidtoken') ||
     r.includes('expired_token') ||
     r.includes('expiredtoken') ||

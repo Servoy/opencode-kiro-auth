@@ -87,6 +87,24 @@ export function errorResponse(status: number, message: string): Response {
   })
 }
 
+// Distinguishes "account selection raised reauth-required" from "no account yet,
+// loop and retry" (null) in the select path, so the former returns a rendered
+// 401 instead of being swallowed as another backoff.
+const REAUTH_REQUIRED = Symbol('reauth-required')
+
+/**
+ * The terminal response when every account's sign-in is dead and re-auth could
+ * not recover it. A dead refresh token is only fixable by signing in again, so
+ * the body tells the user exactly that rather than looping on a token the
+ * server keeps rejecting. 401 is the status the host renders for this.
+ */
+export function reauthRequiredResponse(): Response {
+  return errorResponse(
+    401,
+    'Kiro: your sign-in has expired and could not be refreshed. Open the Kiro provider in OpenCode and sign in again.'
+  )
+}
+
 const passthroughHostsLogged = new Set<string>()
 const MAX_PASSTHROUGH_HOSTS_LOGGED = 5
 
@@ -335,22 +353,24 @@ export class RequestHandler {
       if (this.allAccountsPermanentlyUnhealthy()) {
         const reauthed = await this.triggerReauth(showToast)
         if (!reauthed) {
-          throw new Error('All accounts are permanently unhealthy. Please re-authenticate.')
+          return reauthRequiredResponse()
         }
         continue
       }
 
-      let acc = await this.accountSelector
+      let acc: ManagedAccount | null | typeof REAUTH_REQUIRED = await this.accountSelector
         .selectHealthyAccount(showToast, sessionId)
         .catch(async (e) => {
           if (e instanceof Error && e.message.includes('reauth required')) {
             const reauthed = await this.triggerReauth(showToast)
-            if (!reauthed)
-              throw new Error('All accounts are unhealthy or rate-limited. Please re-authenticate.')
+            if (!reauthed) return REAUTH_REQUIRED
             return null
           }
           throw e
         })
+      if (acc === REAUTH_REQUIRED) {
+        return reauthRequiredResponse()
+      }
       if (!acc) {
         consecutiveNullAccounts++
         const backoffDelay = Math.min(1000 * Math.pow(2, consecutiveNullAccounts - 1), 10000)
