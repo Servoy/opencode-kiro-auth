@@ -459,7 +459,7 @@ export class RequestHandler {
         ).$metadata
 
         if (apiTimestamp) {
-          this.logSdkResponse(sdkPrep, apiTimestamp)
+          this.logSdkResponse(sdkPrep, meta, apiTimestamp)
         }
 
         if (bearerRetried) {
@@ -749,14 +749,22 @@ export class RequestHandler {
     )
   }
 
-  private logSdkResponse(prep: SdkPreparedRequest, timestamp: string): void {
+  // Logged the moment the SDK call returns, before the response stream is read.
+  // All that is true here is that Kiro accepted the request; the stream's
+  // content and how it ends are still unknown, so this does not claim an HTTP
+  // 200 — an invented status that masked empty or truncated streams.
+  private logSdkResponse(
+    prep: SdkPreparedRequest,
+    meta: { attempts?: number; totalRetryDelay?: number } | undefined,
+    timestamp: string
+  ): void {
     logger.logApiResponse(
       {
-        status: 200,
-        statusText: 'OK',
-        headers: {},
+        phase: 'request-accepted',
         conversationId: prep.conversationId,
-        model: prep.effectiveModel
+        model: prep.effectiveModel,
+        sdkAttempts: meta?.attempts ?? 1,
+        sdkTotalRetryDelayMs: meta?.totalRetryDelay ?? 0
       },
       timestamp
     )

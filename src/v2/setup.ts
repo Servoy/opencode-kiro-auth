@@ -5,6 +5,7 @@ import { AccountCache } from '../infrastructure/database/account-cache.js'
 import { AccountRepository } from '../infrastructure/database/account-repository.js'
 import { AccountManager } from '../plugin/accounts.js'
 import { loadConfig } from '../plugin/config/index.js'
+import { getConfigDir } from '../plugin/config/paths.js'
 import { imageCache } from '../plugin/image-cache.js'
 import * as logger from '../plugin/logger.js'
 import { refreshModelCatalog, subscribeCatalogUpdated } from '../plugin/models.js'
@@ -30,7 +31,7 @@ export function createV2Setup(id: string) {
   return async (ctx: V2Context): Promise<V2Cleanup> => {
     const config = loadConfig(ctx.location.directory)
     logger.setDebugEnabled(config.trace === true)
-    logger.log(`Kiro v2 plugin init: configDir resolved, directory=${ctx.location.directory}`)
+    logger.log(`Kiro v2 plugin init: configDir=${getConfigDir()}`)
 
     // The v2 host toast surface is not wired yet; the log is the guaranteed
     // sink, matching how the v1 branch degrades when a host has no TUI.
