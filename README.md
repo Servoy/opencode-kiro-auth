@@ -1,45 +1,74 @@
 # OpenCode Kiro Auth Plugin
 
-[![npm version](https://img.shields.io/npm/v/@zhafron/opencode-kiro-auth)](https://www.npmjs.com/package/@zhafron/opencode-kiro-auth)
-[![npm downloads](https://img.shields.io/npm/dm/@zhafron/opencode-kiro-auth)](https://www.npmjs.com/package/@zhafron/opencode-kiro-auth)
-[![license](https://img.shields.io/npm/l/@zhafron/opencode-kiro-auth)](https://www.npmjs.com/package/@zhafron/opencode-kiro-auth)
+[![npm version](https://img.shields.io/npm/v/@servoy/opencode-kiro-auth)](https://www.npmjs.com/package/@servoy/opencode-kiro-auth)
+[![npm downloads](https://img.shields.io/npm/dm/@servoy/opencode-kiro-auth)](https://www.npmjs.com/package/@servoy/opencode-kiro-auth)
+[![license](https://img.shields.io/npm/l/@servoy/opencode-kiro-auth)](https://www.npmjs.com/package/@servoy/opencode-kiro-auth)
 
-OpenCode plugin for AWS Kiro (CodeWhisperer) providing access to Claude Sonnet and Haiku
-models with substantial trial quotas.
+OpenCode plugin for AWS Kiro (CodeWhisperer). It exposes every model Kiro
+serves — Claude Opus, Sonnet and Haiku, OpenAI's GPT-5.6 tiers, and the open-weight
+models (DeepSeek, GLM, MiniMax, Qwen) — each with its own reasoning dial. Works on
+both OpenCode v1 and v2 hosts from the same build.
 
 ## Features
 
-- **Multiple Auth Methods**: Supports AWS Builder ID (IDC), IAM Identity Center (custom
+- **Every Kiro model**: Claude Opus/Sonnet/Haiku, the GPT-5.6 tiers (Sol, Terra,
+  Luna) and the open-weight models, discovered from Kiro's own catalog so each
+  carries its real context window and capabilities.
+- **v1 and v2 hosts**: One build runs on both OpenCode generations; the host
+  binding differs, the request core is shared.
+- **Multiple Auth Methods**: AWS Builder ID (IDC), IAM Identity Center (custom
   Start URL), and Kiro Desktop (CLI-based) authentication.
-- **Auto-Sync Kiro CLI**: Automatically imports and synchronizes active sessions from
-  your local `kiro-cli` SQLite database.
-- **Gradual Context Truncation**: Intelligently prevents error 400 by reducing context
-  size dynamically during retries.
-- **Intelligent Account Rotation**: Prioritizes multi-account usage based on lowest
-  available quota.
-- **High-Performance Storage**: Efficient account and usage management using native Bun
+- **Auto-Sync Kiro CLI**: Imports and synchronizes active sessions from your
+  local `kiro-cli` SQLite database.
+- **Gradual Context Truncation**: Trims oversized conversations to prevent an
+  error 400, keeping tool-use/tool-result pairs intact.
+- **Intelligent Account Rotation**: Prioritizes multi-account usage based on
+  lowest available quota.
+- **High-Performance Storage**: Account and usage management on native Bun/Node
   SQLite.
-- **Native Thinking Mode**: Streams Kiro's native reasoning to OpenCode's thinking
-  block, with the reasoning flags declared on every thinking model, so it renders
-  without any model configuration.
+- **Native Thinking Mode**: Streams Kiro's native reasoning to OpenCode's
+  thinking block, with the reasoning flags declared on every thinking model, so
+  it renders without any model configuration.
 - **Reasoning Dial**: Every model that has one carries `off` through `max` as
-  OpenCode variants, set per model or per agent.
+  OpenCode variants, set per model or per agent. Claude reads
+  `output_config.effort`, GPT reads `reasoning.effort`.
 - **Automated Recovery**: Exponential backoff for rate limits and automated token
   refresh.
 
 ## Installation
 
-Add the plugin to your `opencode.json` or `opencode.jsonc`:
+Add the plugin to your `opencode.json` or `opencode.jsonc`. The npm package is
+the recommended install — it is pinned, versioned and published on every
+release:
 
 ```json
 {
-  "plugin": ["@servoy/opencode-kiro-auth"]
+  "plugins": ["@servoy/opencode-kiro-auth"]
 }
 ```
+
+On OpenCode v1 the key is `plugin` (singular); v2 renamed it to `plugins`. The
+plugin itself runs on both.
 
 That is the whole configuration. The plugin registers the `kiro` provider and
 advertises every model Kiro exposes, each with its own reasoning dial. Run
 `/models` to pick one.
+
+### Nightly build
+
+For the latest `master` before it is released, point at the nightly tarball
+instead. It is rebuilt and tested on every push to `master`, bundled into a
+single file, and published to a fixed release asset:
+
+```json
+{
+  "plugins": ["https://github.com/Servoy/opencode-kiro-auth/releases/download/_master/opencode-kiro-auth.tgz"]
+}
+```
+
+The URL never changes; the build behind it does. Use it to try an unreleased
+fix. It is not version-pinned and can change under you, so prefer the npm
+package for anything you depend on.
 
 Defining `provider.kiro.models` yourself replaces the plugin's registry entirely.
 Only do that to rename or restrict models, and see the reasoning flags below.
@@ -128,7 +157,7 @@ path in `opencode.json` or `opencode.jsonc`:
 
 ```json
 {
-  "plugin": ["/path/to/opencode-kiro-auth"]
+  "plugins": ["/path/to/opencode-kiro-auth"]
 }
 ```
 
@@ -261,10 +290,15 @@ on rather than describing them.
 The plugin follows OpenCode's own directory resolution. You can override it with
 environment variables:
 
-- `KIRO_CONFIG_DIR` — move all state (`kiro.json`, `kiro.db`, `plugin.log`) to an explicit directory.
+- `KIRO_CONFIG_DIR` — move all state (`kiro.json`, `kiro.db`, `kiro-plugin.log`) to an explicit directory.
 - `KIRO_CACHE_DIR` — move the regenerable image cache to an explicit directory.
 - `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` — honoured on every platform (Windows included), matching OpenCode.
 - `KIRO_IGNORE_XDG=true` — ignore `XDG_CONFIG_HOME`/`XDG_CACHE_HOME` and use the OS default location instead. Useful when a host (e.g. Servoy) relocates XDG for its own config but you want the plugin to stay on the standard path. An explicit `KIRO_CONFIG_DIR`/`KIRO_CACHE_DIR` still wins over this.
+
+## Releases
+
+Per-version release notes are on the
+[releases page](https://github.com/Servoy/opencode-kiro-auth/releases).
 
 ## Acknowledgements
 

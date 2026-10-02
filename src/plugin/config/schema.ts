@@ -99,9 +99,10 @@ export const KiroConfigSchema = z.object({
   // with CONTENT_LENGTH_EXCEEDS_THRESHOLD. The hard limit is structure-dependent
   // (verified against the live API): a single message is accepted up to ~7.6MB,
   // but conversations with many history entries are rejected as low as ~5.9MB.
-  // The 4MB default stays safely below the lowest observed failure regardless of
-  // structure, while allowing far more context than a conservative cap. Raising
-  // it risks 400s on long many-turn sessions; lowering it trims context sooner.
+  // The 5MB default stays below the lowest observed failure while allowing far
+  // more context than a conservative cap; the 5.5MB ceiling keeps a configured
+  // value under the same bound. Raising it risks 400s on long many-turn
+  // sessions; lowering it trims context sooner.
   max_payload_bytes: z.number().min(100_000).max(5_500_000).default(5_000_000),
 
   /** Write the debug-level diagnostics ([REQ], [TRIM], [IMG]) to kiro-plugin.log. */
