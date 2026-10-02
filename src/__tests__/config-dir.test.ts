@@ -180,9 +180,23 @@ describe('platform config dir: state location per OS', () => {
     ).toBe('C:\\Users\\alice\\AppData\\Roaming\\opencode')
   })
 
-  test('KIRO_IGNORE_XDG only takes effect when set to exactly "true"', () => {
-    // A stray "false"/"0"/"" must not silently disable XDG.
-    for (const value of ['false', '0', '', '1', 'yes']) {
+  test('KIRO_IGNORE_XDG accepts the shapes a user actually sets (quoted, cased, 1)', () => {
+    // Windows `setx KIRO_IGNORE_XDG "true"` stores the quotes; a user may also
+    // type TRUE or 1. All of these opt out and fall back to the OS default.
+    for (const value of ['true', 'TRUE', ' true ', '"true"', "'true'", '1', '"1"']) {
+      expect(
+        resolvePlatformConfigDir({
+          platform: 'darwin',
+          home: HOME_NIX,
+          env: { XDG_CONFIG_HOME: '/home/alice/.servoy', KIRO_IGNORE_XDG: value }
+        })
+      ).toBe('/home/alice/.config/opencode')
+    }
+  })
+
+  test('KIRO_IGNORE_XDG stays off for negative or junk values', () => {
+    // A stray "false"/"0"/""/garbage must not silently disable XDG.
+    for (const value of ['false', '0', '', 'yes', 'no', 'maybe', '"false"']) {
       expect(
         resolvePlatformConfigDir({
           platform: 'darwin',

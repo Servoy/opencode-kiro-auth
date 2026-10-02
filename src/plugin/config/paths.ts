@@ -20,11 +20,21 @@ function currentEnv(): PlatformEnv {
 /**
  * Whether to skip the XDG bases and fall through to the platform default.
  *
- * Only the exact string `"true"` enables it, so a stray `"false"`/`"0"`/empty
- * value can never silently strand a host's state somewhere unexpected.
+ * Accepts the affirmative shapes a user actually sets the variable to —
+ * `true`/`1`, any case — after trimming whitespace and the wrapping quotes
+ * Windows `setx` can leave behind (`setx KIRO_IGNORE_XDG "true"` stores the
+ * quotes, so a strict `=== 'true'` silently ignored a correctly-set var). Only
+ * an affirmative value enables it; `false`/`0`/empty/anything else never does,
+ * so a stray value can't strand a host's state somewhere unexpected.
  */
 function ignoreXdg(env: Record<string, string | undefined>): boolean {
-  return env.KIRO_IGNORE_XDG === 'true'
+  const raw = env.KIRO_IGNORE_XDG
+  if (raw === undefined) return false
+  const normalized = raw
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .toLowerCase()
+  return normalized === 'true' || normalized === '1'
 }
 
 // Join with the target platform's separator, not node:path's host-dependent
