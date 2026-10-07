@@ -2,10 +2,16 @@ import type { AuthHook } from '@opencode-ai/plugin'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
 import { RegionSchema } from '../../plugin/config/schema.js'
 import * as logger from '../../plugin/logger.js'
+import type { ManagedAccount } from '../../plugin/types.js'
 import { writeUsageSnapshot } from '../../plugin/usage-snapshot.js'
 import { summarizeUsage } from '../../plugin/usage.js'
 import { UsageTracker } from '../account/usage-tracker.js'
-import { API_KEY_PATTERN, ApiKeyAuthMethod } from './api-key-method.js'
+import {
+  API_KEY_PATTERN,
+  ApiKeyAuthMethod,
+  configuredApiKey,
+  maskApiKey
+} from './api-key-method.js'
 import { IdcAuthMethod } from './idc-auth-method.js'
 import { TokenRefresher } from './token-refresher.js'
 
@@ -78,6 +84,8 @@ export class AuthHandler {
       logger.log('Kiro CLI sync: done', { importedAccounts: accounts.length })
     }
 
+    await this.autoRegisterApiKey()
+
     // Refresh usage before the summary toast: the persisted value is stale after
     // the monthly reset until the first request syncs. Backgrounded so it never
     // delays the auth loader, and falls back to the stored value on error.
@@ -136,6 +144,35 @@ export class AuthHandler {
     }
   }
 
+  /**
+   * Register a configured key on startup with no interactive login — the
+   * headless / Servoy-IDE path. Reuses authorize() for one registration path;
+   * skipped once an apikey account exists so starts do not re-hit GetProfile.
+   * Non-fatal.
+   */
+  private async autoRegisterApiKey(): Promise<void> {
+    const key = configuredApiKey(this.config)
+    if (!key) return
+
+    try {
+      const accounts = await this.repository.findAll()
+      if (accounts.some((a: ManagedAccount) => a.authMethod === 'apikey')) return
+    } catch {
+      // A findAll hiccup is no reason to skip; let authorize decide.
+    }
+
+    try {
+      const apiKeyMethod = new ApiKeyAuthMethod(this.config, this.repository, this.accountManager)
+      await apiKeyMethod.authorize()
+      this.repository.invalidateCache()
+      logger.log('API key auto-registered from configuration')
+    } catch (e) {
+      logger.warn('API key auto-register failed (non-fatal)', {
+        error: e instanceof Error ? e.message : String(e)
+      })
+    }
+  }
+
   private logUsageSummary(showToast?: ToastFunction): void {
     if (!this.accountManager) return
     const accounts = this.accountManager.getAccounts()
@@ -172,6 +209,7 @@ export class AuthHandler {
 
     const configStartUrl = this.config.idc_start_url
     const configRegion = this.config.idc_region
+    const preset = configuredApiKey(this.config)
 
     return [
       {
@@ -213,12 +251,16 @@ export class AuthHandler {
           {
             type: 'text' as const,
             key: 'api_key',
-            message: 'Kiro API key (created under API Keys at app.kiro.dev)',
-            placeholder: 'ksk_...',
-            validate: (value: string) =>
-              API_KEY_PATTERN.test(value.trim())
-                ? undefined
-                : 'Enter a Kiro API key starting with ksk_'
+            message: preset
+              ? 'Kiro API key (leave blank to use the one from KIRO_API_KEY / kiro.json)'
+              : 'Kiro API key (created under API Keys at app.kiro.dev)',
+            placeholder: preset ? maskApiKey(preset) : 'ksk_...',
+            // Blank passes only when a configured key can stand in for it.
+            validate: (value: string) => {
+              const v = value.trim()
+              if (!v) return preset ? undefined : 'Enter a Kiro API key starting with ksk_'
+              return API_KEY_PATTERN.test(v) ? undefined : 'Enter a Kiro API key starting with ksk_'
+            }
           }
         ],
         authorize: (inputs?: any) => apiKeyMethod.authorize(inputs)

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 // Capture logger calls so the lock-held test can assert no warning was logged.
 const warnings: string[] = []
@@ -247,6 +247,17 @@ describe('what the sign-in form offers', () => {
 })
 
 describe('the API key sign-in method', () => {
+  // A configured key flips the prompt to its "leave blank to reuse" shape. These
+  // tests assert the no-key shape, so clear a developer's exported KIRO_API_KEY.
+  const savedEnvKey = process.env.KIRO_API_KEY
+  beforeEach(() => {
+    delete process.env.KIRO_API_KEY
+  })
+  afterEach(() => {
+    if (savedEnvKey === undefined) delete process.env.KIRO_API_KEY
+    else process.env.KIRO_API_KEY = savedEnvKey
+  })
+
   function methods(config: Record<string, unknown> = {}) {
     const handler = new AuthHandler(config as any, {} as any)
     handler.setAccountManager({} as any)
@@ -323,5 +334,108 @@ describe('the API key sign-in method', () => {
     } finally {
       globalThis.fetch = original
     }
+  })
+})
+
+describe('AuthHandler.initialize auto-registers a configured API key', () => {
+  const savedEnvKey = process.env.KIRO_API_KEY
+  const KEY = 'ksk_AUTOREGISTER0000000000000000000'
+  beforeEach(() => {
+    delete process.env.KIRO_API_KEY
+  })
+  afterEach(() => {
+    if (savedEnvKey === undefined) delete process.env.KIRO_API_KEY
+    else process.env.KIRO_API_KEY = savedEnvKey
+  })
+
+  // A repo whose findAll returns the given accounts, recording saves. Real
+  // AuthHandler, real ApiKeyAuthMethod — only the DB boundary and network are
+  // stubbed, so initialize's skip-if-exists guard runs for real.
+  function setup(existing: ManagedAccount[]) {
+    const saved: ManagedAccount[] = []
+    const repo: any = {
+      findAll: async () => existing,
+      save: async (a: ManagedAccount) => void saved.push(a),
+      invalidateCache: () => {}
+    }
+    const handler = new AuthHandler(
+      { default_region: 'eu-central-1', auto_sync_kiro_cli: false },
+      repo
+    )
+    handler.setAccountManager({ getAccounts: () => existing, addAccount: async () => {} } as any)
+    return { handler, saved }
+  }
+
+  const original = globalThis.fetch
+  function stubKiro() {
+    globalThis.fetch = (async (input: any) => {
+      const url = typeof input === 'string' ? input : input.url
+      if (url.includes('management.')) {
+        return new Response(
+          JSON.stringify({ profile: { arn: 'arn:aws:codewhisperer:eu-central-1:1:profile/A' } }),
+          { status: 200 }
+        )
+      }
+      return new Response(JSON.stringify({ userInfo: { email: 'k@example.com' } }), { status: 200 })
+    }) as unknown as typeof fetch
+  }
+
+  test('registers the key when no apikey account exists yet', async () => {
+    process.env.KIRO_API_KEY = KEY
+    const { handler, saved } = setup([])
+    stubKiro()
+    try {
+      await handler.initialize()
+    } finally {
+      globalThis.fetch = original
+    }
+    expect(saved).toHaveLength(1)
+    expect(saved[0]!.authMethod).toBe('apikey')
+    expect(saved[0]!.accessToken).toBe(KEY)
+  })
+
+  test('skips when an apikey account already exists — no second GetProfile', async () => {
+    process.env.KIRO_API_KEY = KEY
+    const existing: ManagedAccount = {
+      id: 'existing',
+      email: 'k@example.com',
+      authMethod: 'apikey',
+      region: 'eu-central-1',
+      refreshToken: 'apikey:ffff',
+      accessToken: KEY,
+      expiresAt: 0,
+      rateLimitResetTime: 0,
+      isHealthy: true,
+      failCount: 0
+    }
+    const { handler, saved } = setup([existing])
+    let fetched = false
+    globalThis.fetch = (async () => {
+      fetched = true
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      await handler.initialize()
+    } finally {
+      globalThis.fetch = original
+    }
+    expect(saved).toHaveLength(0)
+    expect(fetched).toBe(false)
+  })
+
+  test('does nothing when no key is configured', async () => {
+    const { handler, saved } = setup([])
+    let fetched = false
+    globalThis.fetch = (async () => {
+      fetched = true
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      await handler.initialize()
+    } finally {
+      globalThis.fetch = original
+    }
+    expect(saved).toHaveLength(0)
+    expect(fetched).toBe(false)
   })
 })
