@@ -49,4 +49,28 @@ describe('redactSecrets', () => {
     expect(out).not.toContain('aoaAAAAAlongsecrettokenpayload1234567890abcdefghij')
     expect(out).toContain('"model":"auto"')
   })
+
+  describe('a Kiro API key', () => {
+    const KEY = 'ksk_TESTKEY000000000000000000000000'
+
+    test('masks a bare key', () => {
+      const out = redactSecrets(`signing in with ${KEY} now`)
+      expect(out).not.toContain(KEY)
+      expect(out).toContain('[redacted]')
+    })
+
+    test('masks a key in key=value form', () => {
+      expect(redactSecrets(`api_key=${KEY}`)).not.toContain(KEY)
+      expect(redactSecrets(`{"key":"${KEY}"}`)).not.toContain(KEY)
+    })
+
+    test('masks a key after Bearer', () => {
+      expect(redactSecrets(`authorization: Bearer ${KEY}`)).not.toContain(KEY)
+    })
+
+    test('leaves text that only starts with ksk_ untouched', () => {
+      const raw = 'prefix ksk_ and ksk_short are not keys'
+      expect(redactSecrets(raw)).toBe(raw)
+    })
+  })
 })

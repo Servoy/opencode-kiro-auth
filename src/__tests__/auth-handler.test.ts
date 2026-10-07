@@ -245,3 +245,83 @@ describe('what the sign-in form offers', () => {
     expect(arn.validate('')).toBeUndefined()
   })
 })
+
+describe('the API key sign-in method', () => {
+  function methods(config: Record<string, unknown> = {}) {
+    const handler = new AuthHandler(config as any, {} as any)
+    handler.setAccountManager({} as any)
+    return handler.getMethods() as any[]
+  }
+
+  const KEY = 'ksk_TESTKEY000000000000000000000000'
+
+  test('is offered third, as type api with a single api_key prompt', () => {
+    const all = methods()
+    expect(all).toHaveLength(3)
+    expect(all.map((m) => m.type)).toEqual(['oauth', 'oauth', 'api'])
+    expect(all[2].label).toBe('Kiro API key')
+    expect(all[2].prompts).toHaveLength(1)
+    expect(all[2].prompts[0].key).toBe('api_key')
+    expect(all[2].prompts[0].type).toBe('text')
+  })
+
+  test('the two Identity Center methods are unchanged', () => {
+    const [builder, profile] = methods()
+    expect(builder.label).toBe('AWS Builder ID / IAM Identity Center')
+    expect(profile.label).toBe('IAM Identity Center with Profile ARN')
+    expect(builder.prompts.map((p: any) => p.key)).toEqual(['start_url', 'idc_region'])
+  })
+
+  test('the prompt accepts a ksk_ key, with or without stray whitespace', () => {
+    const { validate } = methods()[2].prompts[0]
+    expect(validate(KEY)).toBeUndefined()
+    expect(validate(`  ${KEY}\n`)).toBeUndefined()
+  })
+
+  test('the prompt rejects anything else without echoing it', () => {
+    const { validate } = methods()[2].prompts[0]
+    expect(validate('')).toBe('Enter a Kiro API key starting with ksk_')
+    for (const bad of ['ksk_short', 'sk-ant-api03-0000000000000000000', `${KEY} extra`]) {
+      const message = validate(bad)
+      expect(typeof message).toBe('string')
+      expect(message).not.toContain(bad)
+    }
+  })
+
+  test('authorize signs in through ApiKeyAuthMethod and hands the host only the placeholder', async () => {
+    const original = globalThis.fetch
+    const seen: string[] = []
+    globalThis.fetch = (async (input: any) => {
+      const url = typeof input === 'string' ? input : input.url
+      seen.push(url)
+      if (url.includes('management.')) {
+        return new Response(
+          JSON.stringify({ profile: { arn: 'arn:aws:codewhisperer:us-east-1:1:profile/AAA' } }),
+          { status: 200 }
+        )
+      }
+      return new Response(JSON.stringify({ userInfo: { email: 'k@example.com' } }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const saved: any[] = []
+    const handler = new AuthHandler(
+      { default_region: 'us-east-1' } as any,
+      {
+        save: async (acc: any) => {
+          saved.push(acc)
+        }
+      } as any
+    )
+    handler.setAccountManager({ addAccount: async () => {} } as any)
+
+    try {
+      const result = await (handler.getMethods() as any[])[2].authorize({ api_key: KEY })
+      expect(result).toEqual({ type: 'success', key: 'kiro-managed' })
+      expect(saved).toHaveLength(1)
+      expect(saved[0].accessToken).toBe(KEY)
+      expect(seen.some((u) => u.includes('management.us-east-1.kiro.dev'))).toBe(true)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+})

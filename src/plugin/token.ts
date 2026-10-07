@@ -6,6 +6,13 @@ import { kiroHeaders } from './http-headers.js'
 import type { KiroAuthDetails, RefreshParts } from './types'
 
 export async function refreshAccessToken(auth: KiroAuthDetails): Promise<KiroAuthDetails> {
+  if (auth.authMethod === 'apikey') {
+    throw new KiroTokenRefreshError(
+      'unauthorized: API keys cannot be refreshed',
+      'API_KEY_NOT_REFRESHABLE'
+    )
+  }
+
   const p = decodeRefreshToken(auth.refresh)
   const isIdc = auth.authMethod === 'idc'
   const oidcRegion = auth.oidcRegion || auth.region

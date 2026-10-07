@@ -3,6 +3,7 @@ import { accessTokenExpired } from '../kiro/auth.js'
 import type { AccountManager } from './accounts.js'
 import { kiroHeaders } from './http-headers.js'
 import * as logger from './logger.js'
+import { kiroUserAgent } from './sdk-client.js'
 import { refreshAccessToken } from './token.js'
 import type { KiroAuthDetails } from './types'
 
@@ -117,7 +118,9 @@ export async function kiroWebSearch(
       Authorization: `Bearer ${auth.access}`,
       'Content-Type': 'application/x-amz-json-1.0',
       'X-Amz-Target': MCP_TARGET,
-      ...kiroHeaders(auth.profileArn)
+      ...kiroHeaders(auth.profileArn, auth.authMethod),
+      // Unlike the SDK calls, fetch names no client; InvokeMCP answers 403 to a key without one.
+      ...(auth.authMethod === 'apikey' ? { 'user-agent': kiroUserAgent(auth) } : {})
     },
     body: JSON.stringify({
       profileArn: auth.profileArn,

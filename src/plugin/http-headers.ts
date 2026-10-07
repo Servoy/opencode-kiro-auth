@@ -7,6 +7,8 @@
  * so a path added later inherited nothing. Building the set in one place is
  * what keeps that from happening again.
  */
+import type { KiroAuthMethod } from './types.js'
+
 const KIRO_AGENT_MODE = 'vibe'
 
 /** Opt out of content retention. Kiro CLI sets this on every service call. */
@@ -17,12 +19,18 @@ const KIRO_OPT_OUT = 'true'
  *
  * `profileArn` is sent as a header as well as in the body — the Kiro CLI does
  * both, and the management endpoints read it from the header.
+ *
+ * A key is the same Bearer as a token; only `tokentype` tells the service it is one.
  */
-export function kiroHeaders(profileArn?: string): Record<string, string> {
+export function kiroHeaders(
+  profileArn?: string,
+  authMethod?: KiroAuthMethod
+): Record<string, string> {
   const headers: Record<string, string> = {
     'x-amzn-kiro-agent-mode': KIRO_AGENT_MODE,
     'x-amzn-codewhisperer-optout': KIRO_OPT_OUT
   }
   if (profileArn) headers['x-amzn-kiro-profile-arn'] = profileArn
+  if (authMethod === 'apikey') headers.tokentype = 'API_KEY'
   return headers
 }

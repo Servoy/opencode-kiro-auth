@@ -821,6 +821,8 @@ export class RequestHandler {
    * so the catalog stops rather than repeats the same rejected call.
    */
   private async recoverAuthForCatalog(acc: ManagedAccount): Promise<KiroAuthDetails | undefined> {
+    // A catalog failure says nothing about the key's chat access; don't kill the account for it.
+    if (acc.authMethod === 'apikey') return undefined
     const refreshed = await this.tokenRefresher.forceRefresh(
       acc,
       this.accountManager.toAuthDetails(acc)
@@ -830,6 +832,13 @@ export class RequestHandler {
 
   private async triggerReauth(showToast: ToastFunction): Promise<boolean> {
     if (!this.client) return false
+
+    // The device flow signs in to IdC/Builder ID; it cannot replace a rejected key.
+    const pool = this.accountManager.getAccounts()
+    if (pool.length > 0 && pool.every((acc) => acc.authMethod === 'apikey')) {
+      showToast('No Kiro API key is usable. Sign in again with a valid key.', 'error')
+      return false
+    }
 
     // Progressive cooldown: 5s, 10s, 20s, 40s, capped at 60s.
     if (this.reauthFailureStreak > 0) {
@@ -891,7 +900,7 @@ export class RequestHandler {
       logger.warn('Reauth: starting oauth flow')
 
       const accounts = this.accountManager.getAccounts()
-      const account = accounts[0]
+      const account = accounts.find((acc) => acc.authMethod !== 'apikey')
       const inputs: Record<string, string> = {}
       if (account) {
         if (account.profileArn) inputs.profile_arn = account.profileArn

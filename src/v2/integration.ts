@@ -56,13 +56,26 @@ export interface V1AuthorizeResult {
   callback: () => Promise<{ type: 'success'; key?: string } | { type: 'failed' }>
 }
 
-/** A single entry from `AuthHandler.getMethods()`. */
+/** A single OAuth entry from `AuthHandler.getMethods()`. */
 export interface V1AuthMethod {
   label: string
-  type: string
+  type: 'oauth'
   prompts?: unknown[]
   authorize: (inputs?: Record<string, string>) => Promise<V1AuthorizeResult>
 }
+
+/** The API key entry: `authorize` stores the key itself and answers with the placeholder. */
+export interface V1ApiAuthMethod {
+  label: string
+  type: 'api'
+  prompts?: unknown[]
+  authorize: (
+    inputs?: Record<string, string>
+  ) => Promise<{ type: 'success'; key: string } | { type: 'failed' }>
+}
+
+/** The v2 oauth method needs a url and the host may open it, so it points at Kiro's web app. */
+const KIRO_API_KEYS_URL = 'https://app.kiro.dev/'
 
 /**
  * A placeholder OAuth credential handed to the v2 host after a successful
@@ -98,23 +111,25 @@ export function buildPlaceholderCredential(methodID: string): V2PlaceholderCrede
 }
 
 /**
- * Adapt the v1 `AuthHandler` OAuth methods to v2 integration method
- * registrations. Pure: performs no host I/O, so it is unit-testable without a
- * live context.
+ * Adapt the v1 `AuthHandler` methods to v2 integration method registrations.
+ * Pure: performs no host I/O, so it is unit-testable without a live context.
  *
  * v2 integration expects the host to own the credential, but Kiro keeps its
  * accounts in kiro.db (multi-account rotation, health, profileArn). So the v2
- * `authorize` is used only as a trigger: it runs the v1 device-code flow
- * (which persists the account), then resolves a placeholder credential purely
- * so the host shows the integration as connected. The real auth never leaves
- * kiro.db.
+ * `authorize` is used only as a trigger: it runs the v1 flow (which persists
+ * the account), then resolves a placeholder credential purely so the host
+ * shows the integration as connected. The real auth never leaves kiro.db.
+ *
+ * The API key method is registered as an `oauth` method with a form rather
+ * than a host `key` method: a host-owned key would put a second copy of the
+ * secret in the host's store.
  */
 export function buildIntegrationMethods(
   integrationID: string,
-  v1Methods: V1AuthMethod[]
+  v1Methods: Array<V1AuthMethod | V1ApiAuthMethod>
 ): V2IntegrationMethodRegistration[] {
   return v1Methods.map((m, i) => {
-    const methodID = `${integrationID}-oauth-${i}`
+    const methodID = m.type === 'api' ? `${integrationID}-apikey` : `${integrationID}-oauth-${i}`
     const form = toV2Form(m.prompts)
     const method: V2IntegrationOAuthMethod = {
       id: methodID,
@@ -122,6 +137,24 @@ export function buildIntegrationMethods(
       label: m.label,
       ...(form ? { form } : {})
     }
+
+    if (m.type === 'api') {
+      return {
+        integrationID,
+        method,
+        authorize: async (answer?: unknown): Promise<V2IntegrationOAuthAuthorization> => {
+          const result = await m.authorize(answerToInputs(answer))
+          if (result.type !== 'success') throw new Error('Kiro API key sign-in failed.')
+          return {
+            url: KIRO_API_KEYS_URL,
+            instructions: 'API key saved.',
+            mode: 'auto',
+            callback: Promise.resolve(buildPlaceholderCredential(methodID))
+          }
+        }
+      }
+    }
+
     return {
       integrationID,
       method,

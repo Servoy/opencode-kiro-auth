@@ -5,6 +5,7 @@ import * as logger from '../../plugin/logger.js'
 import { writeUsageSnapshot } from '../../plugin/usage-snapshot.js'
 import { summarizeUsage } from '../../plugin/usage.js'
 import { UsageTracker } from '../account/usage-tracker.js'
+import { API_KEY_PATTERN, ApiKeyAuthMethod } from './api-key-method.js'
 import { IdcAuthMethod } from './idc-auth-method.js'
 import { TokenRefresher } from './token-refresher.js'
 
@@ -167,6 +168,7 @@ export class AuthHandler {
     }
 
     const idcMethod = new IdcAuthMethod(this.config, this.repository, this.accountManager)
+    const apiKeyMethod = new ApiKeyAuthMethod(this.config, this.repository, this.accountManager)
 
     const configStartUrl = this.config.idc_start_url
     const configRegion = this.config.idc_region
@@ -203,6 +205,23 @@ export class AuthHandler {
           }
         ],
         authorize: (inputs?: any) => idcMethod.authorize(inputs)
+      },
+      {
+        label: 'Kiro API key',
+        type: 'api' as const,
+        prompts: [
+          {
+            type: 'text' as const,
+            key: 'api_key',
+            message: 'Kiro API key (created under API Keys at app.kiro.dev)',
+            placeholder: 'ksk_...',
+            validate: (value: string) =>
+              API_KEY_PATTERN.test(value.trim())
+                ? undefined
+                : 'Enter a Kiro API key starting with ksk_'
+          }
+        ],
+        authorize: (inputs?: any) => apiKeyMethod.authorize(inputs)
       }
     ]
   }
