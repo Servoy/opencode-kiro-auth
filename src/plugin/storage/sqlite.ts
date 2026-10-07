@@ -4,7 +4,7 @@ import { getConfigDir } from '../config/paths'
 import type { ManagedAccount } from '../types'
 import { openDatabase, type SqliteDatabase } from './database-driver'
 import { deduplicateAccounts, mergeAccounts, withDatabaseLock } from './locked-operations'
-import { runMigrations } from './migrations'
+import { dropLoginsSupersededByApiKey, runMigrations } from './migrations'
 
 const DB_PATH = join(getConfigDir(), 'kiro.db')
 
@@ -114,6 +114,23 @@ export class KiroDatabase {
 
   getAccounts(): any[] {
     return this.db.prepare('SELECT * FROM accounts').all()
+  }
+
+  /**
+   * Drop IDC/desktop logins an API key now supersedes, under the write lock.
+   * Run after an auto-register whose ARN landed too late for the startup
+   * migration. Returns the dropped account ids for in-memory pruning.
+   */
+  async dropLoginsSupersededByApiKey(): Promise<string[]> {
+    let dropped: string[] = []
+    await withDatabaseLock(
+      this.path,
+      async () => {
+        dropped = dropLoginsSupersededByApiKey(this.db)
+      },
+      'dropLoginsSupersededByApiKey'
+    )
+    return dropped
   }
 
   private upsertAccountInternal(acc: any) {

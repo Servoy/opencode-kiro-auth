@@ -176,12 +176,13 @@ function migrateCollapseDuplicateAccounts(db: SqliteDatabase): void {
  * pool into multi-account mode (rotation, rate-limit waits) over a single quota.
  * The key wins deliberately — losing the login's fallback is the accepted cost
  * of not running dual accounts. Every removed login is logged by name so the
- * disappearance is never silent.
+ * disappearance is never silent. Returns the dropped account ids so a caller
+ * running it after startup can prune its in-memory pool too.
  */
-function dropLoginsSupersededByApiKey(db: SqliteDatabase): void {
+export function dropLoginsSupersededByApiKey(db: SqliteDatabase): string[] {
   const superseded = db
     .prepare(
-      `SELECT email, auth_method, profile_arn FROM accounts
+      `SELECT id, email, auth_method, profile_arn FROM accounts
        WHERE auth_method != 'apikey'
          AND profile_arn IS NOT NULL AND profile_arn != ''
          AND profile_arn IN (
@@ -189,9 +190,9 @@ function dropLoginsSupersededByApiKey(db: SqliteDatabase): void {
            WHERE auth_method = 'apikey' AND profile_arn IS NOT NULL AND profile_arn != ''
          )`
     )
-    .all() as Array<{ email: string; auth_method: string; profile_arn: string }>
+    .all() as Array<{ id: string; email: string; auth_method: string; profile_arn: string }>
 
-  if (superseded.length === 0) return
+  if (superseded.length === 0) return []
 
   db.prepare(
     `DELETE FROM accounts
@@ -210,6 +211,8 @@ function dropLoginsSupersededByApiKey(db: SqliteDatabase): void {
         `two-account pool on one subscription. Sign in again if you remove the key.`
     )
   }
+
+  return superseded.map((r) => r.id)
 }
 
 /** Delete every row a group query matches except the freshest usable one. */

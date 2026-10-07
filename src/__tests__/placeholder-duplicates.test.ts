@@ -374,6 +374,60 @@ describe('collapsing accounts that piled up', () => {
     expect(remaining[0]!.auth_method).toBe('apikey')
   })
 
+  // The key's ARN can land after the startup migration already ran (auto-register
+  // fires later in the same start), so the drop is also callable on demand. It
+  // returns the dropped ids so the caller can prune its in-memory pool too.
+  test('dropLoginsSupersededByApiKey drops the IDC row and returns its id', async () => {
+    await db.upsertAccount(
+      account({
+        id: 'idc-login',
+        authMethod: 'idc',
+        email: 'user@example.com',
+        profileArn: PROFILE,
+        refreshToken: 'r-idc',
+        expiresAt: 9_999,
+        isHealthy: true
+      })
+    )
+    await db.upsertAccount(
+      account({
+        id: 'apikey',
+        authMethod: 'apikey',
+        email: 'user@example.com',
+        profileArn: PROFILE,
+        refreshToken: 'apikey:ffffffffffffffff',
+        expiresAt: 0,
+        isHealthy: true
+      })
+    )
+
+    const dropped = await db.dropLoginsSupersededByApiKey()
+
+    expect(dropped).toEqual(['idc-login'])
+    const remaining = db.getAccounts() as any[]
+    expect(remaining).toHaveLength(1)
+    expect(remaining[0]!.id).toBe('apikey')
+  })
+
+  test('dropLoginsSupersededByApiKey is a no-op (empty result) with no matching key', async () => {
+    await db.upsertAccount(
+      account({
+        id: 'idc-login',
+        authMethod: 'idc',
+        email: 'user@example.com',
+        profileArn: PROFILE,
+        refreshToken: 'r-idc',
+        expiresAt: 9_999,
+        isHealthy: true
+      })
+    )
+
+    const dropped = await db.dropLoginsSupersededByApiKey()
+
+    expect(dropped).toEqual([])
+    expect(db.getAccounts()).toHaveLength(1)
+  })
+
   test('an API key leaves an IDC login on a DIFFERENT profile ARN alone', async () => {
     await db.upsertAccount(
       account({

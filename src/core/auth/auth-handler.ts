@@ -166,10 +166,28 @@ export class AuthHandler {
       await apiKeyMethod.authorize()
       this.repository.invalidateCache()
       logger.log('API key auto-registered from configuration')
+      await this.dropIdcLoginsSupersededByApiKey()
     } catch (e) {
       logger.warn('API key auto-register failed (non-fatal)', {
         error: e instanceof Error ? e.message : String(e)
       })
+    }
+  }
+
+  /**
+   * The startup migration ran before this registration, so the key's ARN was
+   * not yet present to supersede a matching IDC login. Run the drop now, then
+   * drop the same rows from the in-memory pool, so a fresh install settles to
+   * one account on the first start rather than the next.
+   */
+  private async dropIdcLoginsSupersededByApiKey(): Promise<void> {
+    const { kiroDb } = await import('../../plugin/storage/sqlite.js')
+    const removed = await kiroDb.dropLoginsSupersededByApiKey()
+    if (removed.length === 0) return
+    this.repository.invalidateCache()
+    const removedIds = new Set(removed)
+    for (const acc of this.accountManager?.getAccounts() ?? []) {
+      if (removedIds.has(acc.id)) this.accountManager?.removeAccount(acc)
     }
   }
 
