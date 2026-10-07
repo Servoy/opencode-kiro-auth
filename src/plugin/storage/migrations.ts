@@ -1,3 +1,4 @@
+import * as logger from '../logger'
 import type { SqliteDatabase } from './database-driver'
 
 export function runMigrations(db: SqliteDatabase): void {
@@ -151,6 +152,64 @@ function migrateCollapseDuplicateAccounts(db: SqliteDatabase): void {
       params: [group.region, group.profile_arn]
     })
   )
+
+  // Two emails for one key (usage returned an email once, a placeholder once)
+  // the email rule above cannot merge; fold on the key fingerprint instead.
+  // Must run every open — migrateToUniqueRefreshToken fires only once.
+  collapse(
+    db,
+    `SELECT refresh_token FROM accounts
+     WHERE auth_method = 'apikey'
+     GROUP BY refresh_token HAVING COUNT(*) > 1`,
+    (group) => ({
+      where: `auth_method = 'apikey' AND refresh_token = ?`,
+      params: [group.refresh_token]
+    })
+  )
+
+  dropLoginsSupersededByApiKey(db)
+}
+
+/**
+ * When an API key covers a profile ARN, drop any IDC/desktop login for the same
+ * ARN. The key and the old login are one subscription; keeping both puts the
+ * pool into multi-account mode (rotation, rate-limit waits) over a single quota.
+ * The key wins deliberately — losing the login's fallback is the accepted cost
+ * of not running dual accounts. Every removed login is logged by name so the
+ * disappearance is never silent.
+ */
+function dropLoginsSupersededByApiKey(db: SqliteDatabase): void {
+  const superseded = db
+    .prepare(
+      `SELECT email, auth_method, profile_arn FROM accounts
+       WHERE auth_method != 'apikey'
+         AND profile_arn IS NOT NULL AND profile_arn != ''
+         AND profile_arn IN (
+           SELECT profile_arn FROM accounts
+           WHERE auth_method = 'apikey' AND profile_arn IS NOT NULL AND profile_arn != ''
+         )`
+    )
+    .all() as Array<{ email: string; auth_method: string; profile_arn: string }>
+
+  if (superseded.length === 0) return
+
+  db.prepare(
+    `DELETE FROM accounts
+     WHERE auth_method != 'apikey'
+       AND profile_arn IS NOT NULL AND profile_arn != ''
+       AND profile_arn IN (
+         SELECT profile_arn FROM accounts
+         WHERE auth_method = 'apikey' AND profile_arn IS NOT NULL AND profile_arn != ''
+       )`
+  ).run()
+
+  for (const row of superseded) {
+    logger.log(
+      `Removed ${row.auth_method} login ${row.email} (${row.profile_arn}): ` +
+        `an API key now covers this profile, so the login is dropped to avoid a ` +
+        `two-account pool on one subscription. Sign in again if you remove the key.`
+    )
+  }
 }
 
 /** Delete every row a group query matches except the freshest usable one. */
@@ -272,9 +331,11 @@ function migrateToUniqueRefreshToken(db: SqliteDatabase): void {
       .all() as any[]
 
     for (const dup of duplicates) {
+      // Health first: a fresher-but-dead row must not win over a usable one.
       const accounts = db
         .prepare(
-          'SELECT * FROM accounts WHERE refresh_token = ? ORDER BY last_used DESC, expires_at DESC'
+          `SELECT * FROM accounts WHERE refresh_token = ?
+           ORDER BY is_healthy DESC, last_used DESC, expires_at DESC`
         )
         .all(dup.refresh_token) as any[]
 
