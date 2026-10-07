@@ -19,7 +19,7 @@ export function resolveKiroModel(model: string): string {
  * which is not the same as the service having said no — and a plugin that
  * cannot tell those apart acts on an answer nobody gave.
  */
-const CATALOG_VERSION = 2
+const CATALOG_VERSION = 3
 const VERSION_KEY = '__catalogVersion'
 
 const CATALOG_TTL_MS = 30 * 60 * 1000
@@ -41,7 +41,9 @@ export interface ModelCapabilities {
   inputTypes?: string[]
   /** Effort levels the model accepts, in the order the service lists them. */
   efforts?: string[]
-  supportsThinking?: boolean
+  /** Wire value that turns thinking off, read from the model's own enum.
+   *  Undefined when the enum has no off position (e.g. Opus 5.5). */
+  thinkingOffChannel?: 'disabled' | 'between_tools'
   /** Whether the model accepts an additionalModelRequestFields block at all. */
   supportsRequestFields?: boolean
   supportsCaching?: boolean
@@ -371,7 +373,16 @@ function readCapabilities(entry: any): ModelCapabilities {
   if (Array.isArray(efforts)) {
     caps.efforts = efforts.filter((e: unknown) => typeof e === 'string')
   }
-  if (schema?.thinking) caps.supportsThinking = true
+  // The catalog's enum names 'between_tools' as a valid value on
+  // claude-sonnet-5.5, but the inference endpoint 400s on it regardless
+  // (verified against the live service — the enum is necessary, not
+  // sufficient). Only 'disabled' is confirmed to work on the wire, so that
+  // is the only channel read here; 'between_tools' stays a type-level
+  // possibility with no path to being selected until the service accepts it.
+  const thinkingTypes: unknown = schema?.thinking?.properties?.type?.enum
+  if (Array.isArray(thinkingTypes) && thinkingTypes.includes('disabled')) {
+    caps.thinkingOffChannel = 'disabled'
+  }
 
   return caps
 }

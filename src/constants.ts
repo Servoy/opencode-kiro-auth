@@ -72,6 +72,8 @@ export const MODEL_MAPPING: Record<string, string> = {
   'claude-sonnet-5-thinking': 'claude-sonnet-5',
   'claude-sonnet-5-1m': 'claude-sonnet-5-1m',
   'claude-sonnet-5-1m-thinking': 'claude-sonnet-5-1m',
+  'claude-sonnet-5-5': 'claude-sonnet-5.5',
+  'claude-sonnet-5-5-thinking': 'claude-sonnet-5.5',
   // Claude Opus
   'claude-opus-4-5': 'claude-opus-4.5',
   'claude-opus-4-5-thinking': 'claude-opus-4.5',

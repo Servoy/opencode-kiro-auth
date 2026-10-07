@@ -269,7 +269,40 @@ describe('capabilities the catalog reports', () => {
   test('reads the effort levels out of the advertised schema', async () => {
     const caps = (await loadCatalog([CATALOG_ENTRY]))('claude-sonnet-4-6')
     expect(caps?.efforts).toEqual(['low', 'medium', 'high', 'max'])
-    expect(caps?.supportsThinking).toBe(true)
+    expect(caps?.thinkingOffChannel).toBe('disabled')
+  })
+
+  test('reports no off channel for between_tools (verified 400 on the live endpoint)', async () => {
+    // claude-sonnet-5.5's real schema: ['adaptive', 'between_tools'], no disabled.
+    // The enum names it, but the inference endpoint rejects it regardless.
+    const entry = {
+      ...CATALOG_ENTRY,
+      modelId: 'claude-sonnet-5.5',
+      additionalModelRequestFieldsSchema: {
+        properties: {
+          ...CATALOG_ENTRY.additionalModelRequestFieldsSchema.properties,
+          thinking: { properties: { type: { enum: ['adaptive', 'between_tools'] } } }
+        }
+      }
+    }
+    const caps = (await loadCatalog([entry]))('claude-sonnet-5.5')
+    expect(caps?.thinkingOffChannel).toBeUndefined()
+  })
+
+  test('reports no off channel when the enum has no off value', async () => {
+    // claude-opus-5.5's real schema: ['adaptive'] only.
+    const entry = {
+      ...CATALOG_ENTRY,
+      modelId: 'claude-opus-5.5',
+      additionalModelRequestFieldsSchema: {
+        properties: {
+          ...CATALOG_ENTRY.additionalModelRequestFieldsSchema.properties,
+          thinking: { properties: { type: { enum: ['adaptive'] } } }
+        }
+      }
+    }
+    const caps = (await loadCatalog([entry]))('claude-opus-5.5')
+    expect(caps?.thinkingOffChannel).toBeUndefined()
   })
 
   test('reads prompt caching, which the service does support', async () => {

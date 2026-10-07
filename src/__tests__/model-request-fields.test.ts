@@ -22,9 +22,9 @@ describe('the additionalModelRequestFields block', () => {
   })
 
   test('off disables thinking rather than asking for less of it', () => {
-    expect(buildModelRequestFields('claude-sonnet-5', 'low', true)).toEqual({
-      thinking: { type: 'disabled' }
-    })
+    // No live catalog in this test, so there is no confirmed off channel —
+    // the service's own adaptive default applies instead of a 400 guess.
+    expect(buildModelRequestFields('claude-sonnet-5', 'low', true)).toBeUndefined()
   })
 
   test('off wins over any effort that came with it', () => {
@@ -62,5 +62,68 @@ describe('the additionalModelRequestFields block', () => {
 
   test('off is the name the dial uses', () => {
     expect(EFFORT_OFF).toBe('off')
+  })
+})
+
+describe('off with a catalog-confirmed channel', () => {
+  async function withChannel(
+    kiroModel: string,
+    thinkingType: string[],
+    run: () => void | Promise<void>
+  ) {
+    const { refreshModelCatalog, resetModelCatalog } = await import('../plugin/models.js')
+    resetModelCatalog()
+    const original = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          models: [
+            {
+              modelId: kiroModel,
+              additionalModelRequestFieldsSchema: {
+                properties: { thinking: { properties: { type: { enum: thinkingType } } } }
+              }
+            }
+          ]
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+    try {
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+      await run()
+    } finally {
+      globalThis.fetch = original
+      resetModelCatalog()
+    }
+  }
+
+  test('disabled pins effort to the ceiling', async () => {
+    await withChannel('claude-sonnet-5', ['adaptive', 'disabled'], () => {
+      expect(buildModelRequestFields('claude-sonnet-5', 'xhigh', true)).toEqual({
+        thinking: { type: 'disabled' },
+        output_config: { effort: 'high' }
+      })
+    })
+  })
+
+  test('between_tools in the enum emits no thinking block (verified 400 live)', async () => {
+    // claude-sonnet-5.5's real schema: ['adaptive', 'between_tools']. The
+    // enum names it, but the live inference endpoint rejects it regardless.
+    await withChannel('claude-sonnet-5.5', ['adaptive', 'between_tools'], () => {
+      expect(buildModelRequestFields('claude-sonnet-5.5', 'max', true)).toBeUndefined()
+    })
+  })
+
+  test('no off value in the enum emits no thinking block at all', async () => {
+    // claude-opus-5.5's real schema: adaptive only.
+    await withChannel('claude-opus-5.5', ['adaptive'], () => {
+      expect(buildModelRequestFields('claude-opus-5.5', 'max', true)).toBeUndefined()
+    })
   })
 })

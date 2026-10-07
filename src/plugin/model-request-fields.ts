@@ -4,6 +4,10 @@ import { getCatalogCapabilities } from './models.js'
 /** The dial position that actually stops the model reasoning. */
 export const EFFORT_OFF = 'off' as const
 
+/** Effort ceiling the service enforces alongside `thinking.type: 'disabled'`;
+ *  it 400s above 'high'. */
+const OFF_EFFORT_CEILING: Effort = 'high'
+
 /**
  * The `additionalModelRequestFields` block, as the service names its members.
  *
@@ -16,8 +20,11 @@ export interface AdditionalModelRequestFields {
   /** GPT family reasoning channel; the service reads one or the other.
    *  GPT accepts `none` as its off switch, which Claude's enum does not. */
   reasoning?: { effort: Effort | 'none' }
-  /** Adaptive is the service default; disabled is the only real off switch. */
-  thinking?: { type: 'adaptive' | 'disabled' }
+  /** Adaptive is the service default; `disabled` is the only confirmed off
+   *  switch. `between_tools` is in the type because the catalog's enum names
+   *  it on claude-sonnet-5.5, but the inference endpoint 400s on it — see
+   *  `thinkingOffChannel` in models.ts — so nothing in this plugin emits it. */
+  thinking?: { type: 'adaptive' | 'disabled' | 'between_tools' }
   max_tokens?: number
 }
 
@@ -32,7 +39,8 @@ function isGptFamily(kiroModel: string): boolean {
  *
  * Leaving the block off is not the same as turning thinking off: with no
  * effort the service applies its own default, which the catalog reports as
- * `high`. Only `thinking.type = disabled` actually stops it.
+ * `high`. Only a catalog-confirmed `thinking.type` value actually stops it;
+ * which value that is varies per model (see `thinkingOffChannel`).
  */
 export function buildModelRequestFields(
   kiroModel: string,
@@ -52,8 +60,18 @@ export function buildModelRequestFields(
   if (thinkingDisabled) {
     // GPT has no thinking.type; its off is reasoning.effort = none. The Claude
     // disabled switch sent to GPT is a 400, and vice versa.
-    if (gpt) fields.reasoning = { effort: 'none' }
-    else fields.thinking = { type: 'disabled' }
+    if (gpt) {
+      fields.reasoning = { effort: 'none' }
+    } else {
+      // No catalog-confirmed channel means no safe way to turn thinking off —
+      // omitting the block leaves the service's own adaptive default in place
+      // rather than guessing a value the model may reject with a 400.
+      const channel = getCatalogCapabilities(kiroModel)?.thinkingOffChannel
+      if (channel) {
+        fields.thinking = { type: channel }
+        fields.output_config = { effort: OFF_EFFORT_CEILING }
+      }
+    }
   } else if (effort) {
     if (gpt) fields.reasoning = { effort }
     else fields.output_config = { effort }

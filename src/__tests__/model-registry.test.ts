@@ -18,6 +18,7 @@ const XHIGH_MODELS = [
   'claude-opus-5',
   'claude-opus-5-5',
   'claude-sonnet-5',
+  'claude-sonnet-5-5',
   ...gptIDs
 ]
 
@@ -40,6 +41,7 @@ describe('model registry', () => {
         'claude-sonnet-4-5',
         'claude-sonnet-4-6',
         'claude-sonnet-5',
+        'claude-sonnet-5-5',
         'gpt-5.6-sol',
         'gpt-5.6-terra',
         'gpt-5.6-luna'
@@ -104,13 +106,11 @@ describe('model registry', () => {
       }
     })
 
-    test('offers off as the first position on the dial', () => {
-      // Picking nothing is not off: the service then applies its own default,
-      // which the catalog reports as high. Off has to be asked for.
+    test('offers no off variant without a catalog-confirmed channel', () => {
+      // Fail-closed: a cold catalog means no model has a confirmed off wire
+      // value, so none should carry the variant that would 400 if guessed.
       for (const id of thinkingIDs) {
-        const names = Object.keys(registry[id].variants)
-        expect(names[0]).toBe('off')
-        expect(registry[id].variants.off).toEqual({ reasoningEffort: 'off' })
+        expect(Object.keys(registry[id].variants)).not.toContain('off')
       }
     })
 
@@ -141,6 +141,7 @@ describe('model registry', () => {
   test('carries limit and modalities', () => {
     expect(registry['claude-opus-5'].limit).toEqual({ context: 1000000, output: 128000 })
     expect(registry['claude-opus-5'].modalities).toBeDefined()
+    expect(registry['claude-sonnet-5-5'].limit).toEqual({ context: 1000000, output: 128000 })
   })
 })
 
