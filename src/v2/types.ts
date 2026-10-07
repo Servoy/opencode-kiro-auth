@@ -139,11 +139,13 @@ export interface V2IntegrationOAuthMethod {
   form?: V2FormStringField[]
 }
 
-// A host-side key method (no authorize callback); registered only so connect.key
-// is accepted for the self-heal.
-export interface V2IntegrationKeyMethod {
-  type: 'key'
-  label?: string
+// A host-side env method: the host forms a connection from the named environment
+// variable on its own and keeps it out of the sign-in picker. This is how a
+// configured KIRO_API_KEY brings the provider up headlessly (CI, an IDE launched
+// from a desktop icon) with no sign-in step.
+export interface V2IntegrationEnvMethod {
+  type: 'env'
+  names: string[]
 }
 
 export interface V2Credential {
@@ -173,7 +175,7 @@ export interface V2IntegrationEditor {
             authorize?: (answer: unknown) => Promise<V2IntegrationOAuthAuthorization>
             refresh?: (credential: unknown) => Promise<unknown>
           }
-        | { integrationID: string; method: V2IntegrationKeyMethod }
+        | { integrationID: string; method: V2IntegrationEnvMethod }
     ): void
   }
 }
@@ -181,9 +183,6 @@ export interface V2IntegrationEditor {
 export interface V2IntegrationDomain {
   transform(callback: (editor: V2IntegrationEditor) => void): Promise<V2Registration>
   reload(): Promise<void>
-  connect: {
-    key(input: { integrationID: string; key: string }): Promise<void>
-  }
   connection: {
     active(integrationID: string): Promise<unknown | undefined>
     resolve(connection: unknown): Promise<unknown | undefined>

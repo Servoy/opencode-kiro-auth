@@ -1,9 +1,10 @@
 import { Credential, Integration } from '@opencode/plugin'
 import { describe, expect, test } from 'bun:test'
 import {
+  buildEnvMethodRegistration,
   buildIntegrationMethods,
-  buildKeyMethodRegistration,
   buildPlaceholderCredential,
+  KIRO_API_KEY_ENV,
   KIRO_MANAGED_CREDENTIAL_ACCESS,
   type V1ApiAuthMethod,
   type V1AuthMethod
@@ -220,13 +221,16 @@ describe('buildIntegrationMethods with an API key method', () => {
   })
 })
 
-describe('buildKeyMethodRegistration', () => {
-  test('registers a label-less key method so it is not a second picker row', () => {
-    // A label would make the host list a duplicate "Kiro API key" in the sign-in
-    // picker beside the interactive oauth method; the key method exists only so
-    // connect.key is accepted for the auto-register self-heal.
-    const reg = buildKeyMethodRegistration('kiro')
-    expect(reg).toEqual({ integrationID: 'kiro', method: { type: 'key' } })
-    expect('label' in reg.method).toBe(false)
+describe('buildEnvMethodRegistration', () => {
+  test('registers an env method naming KIRO_API_KEY so the host connects headlessly', () => {
+    // An env method is how the host connects from the variable itself (CI, a
+    // GUI-launched IDE). The host keeps env methods out of the sign-in picker,
+    // so this adds no second row beside the interactive "Kiro API key" method.
+    const reg = buildEnvMethodRegistration('kiro')
+    expect(reg).toEqual({
+      integrationID: 'kiro',
+      method: { type: 'env', names: [KIRO_API_KEY_ENV] }
+    })
+    expect(reg.method.names).toContain('KIRO_API_KEY')
   })
 })

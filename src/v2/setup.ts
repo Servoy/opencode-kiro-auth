@@ -1,5 +1,4 @@
 import { KIRO_CONSTANTS } from '../constants.js'
-import { configuredApiKey } from '../core/auth/api-key-method.js'
 import { AuthHandler } from '../core/auth/auth-handler.js'
 import { RequestHandler } from '../core/request/request-handler.js'
 import { AccountCache } from '../infrastructure/database/account-cache.js'
@@ -18,8 +17,7 @@ import { clearSdkClientCache } from '../plugin/sdk-client.js'
 import { kiroDb } from '../plugin/storage/sqlite.js'
 import { noopToast, type ToastFn } from '../plugin/toast.js'
 import { buildWebSearchProviderV2 } from '../plugin/web-search.js'
-import { selfHealHostCredential } from './connect-self-heal.js'
-import { buildIntegrationMethods, buildKeyMethodRegistration } from './integration.js'
+import { buildEnvMethodRegistration, buildIntegrationMethods } from './integration.js'
 import { buildV2Provider } from './models-bridge.js'
 import { createRequestBridge } from './request-bridge.js'
 import type { V2Cleanup, V2Context, V2Registration, V2SessionHttpResponse } from './types.js'
@@ -73,23 +71,15 @@ export function createV2Setup(id: string) {
       for (const registration of buildIntegrationMethods(id, authHandler.getMethods() as never)) {
         editor.method.update(registration)
       }
-      // Without this the host rejects connect.key below ("Key method not found").
-      editor.method.update(buildKeyMethodRegistration(id))
+      // The host connects from KIRO_API_KEY itself (CI, a GUI-launched IDE) and
+      // keeps env methods out of the sign-in picker — no second API-key row.
+      editor.method.update(buildEnvMethodRegistration(id))
     })
     await ctx.integration.reload()
 
-    // After the reload: connect.key needs the key method to be registered first.
     const hasUsableAccount = accountManager.getCurrentOrNext() !== null
-    const healed = await selfHealHostCredential(
-      ctx.integration,
-      id,
-      hasUsableAccount,
-      configuredApiKey(config)
-    )
-    if (!healed) {
-      const hostConnection = await ctx.integration.connection.active(id).catch(() => undefined)
-      warnIfProviderWillNotRegister(hasUsableAccount, !!hostConnection)
-    }
+    const hostConnection = await ctx.integration.connection.active(id).catch(() => undefined)
+    warnIfProviderWillNotRegister(hasUsableAccount, !!hostConnection)
 
     // Read the account's real context windows before registering models, so the
     // advertised limit is the catalog's from the first request. Best-effort: a

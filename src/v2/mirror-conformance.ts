@@ -1,6 +1,6 @@
 import type { Plugin } from '@opencode/plugin'
 import { buildWebSearchProviderV2 } from '../plugin/web-search.js'
-import { buildIntegrationMethods, buildKeyMethodRegistration } from './integration.js'
+import { buildEnvMethodRegistration, buildIntegrationMethods } from './integration.js'
 import { buildV2Provider } from './models-bridge.js'
 import type { V2FormStringField, V2SessionHttpResponse } from './types.js'
 
@@ -24,7 +24,6 @@ type _ModelTransform = OfficialContext['model']['transform']
 type _ModelReload = OfficialContext['model']['reload']
 type _ToolTransform = OfficialContext['tool']['transform']
 type _IntegrationTransform = OfficialContext['integration']['transform']
-type _IntegrationConnectKey = OfficialContext['integration']['connect']['key']
 type _IntegrationConnActive = OfficialContext['integration']['connection']['active']
 type _IntegrationConnResolve = OfficialContext['integration']['connection']['resolve']
 type _SessionHook = OfficialContext['session']['hook']
@@ -42,7 +41,6 @@ export type MirrorConformance = [
   _ModelReload,
   _ToolTransform,
   _IntegrationTransform,
-  _IntegrationConnectKey,
   _IntegrationConnActive,
   _IntegrationConnResolve,
   _SessionHook,
@@ -83,11 +81,11 @@ const _methodRegs = buildIntegrationMethods('kiro', [])
 const _methodUpdateArg: MethodUpdateArg | undefined = _methodRegs[0] as never
 void _methodUpdateArg
 
-// The key method must assign into the official registration union with no cast.
-// Without it the host rejects connect.key ("Key method not found") and the
-// env-key provider never registers.
-const _keyMethodArg: MethodUpdateArg = buildKeyMethodRegistration('kiro')
-void _keyMethodArg
+// The env method must assign into the official registration union with no cast.
+// It is how a configured KIRO_API_KEY brings the provider up headlessly without
+// adding a sign-in picker row; a shape change upstream fails typecheck here.
+const _envMethodArg: MethodUpdateArg = buildEnvMethodRegistration('kiro')
+void _envMethodArg
 
 // Prove our sign-in form field assigns into the real host method's `form`
 // element type. The sign-in bug was a dropped form; if the official OAuth

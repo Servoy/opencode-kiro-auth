@@ -1,7 +1,7 @@
 import type {
   V2Credential,
   V2FormStringField,
-  V2IntegrationKeyMethod,
+  V2IntegrationEnvMethod,
   V2IntegrationOAuthAuthorization,
   V2IntegrationOAuthMethod
 } from './types.js'
@@ -96,17 +96,20 @@ export interface V2IntegrationMethodRegistration {
 /** Sentinel access value so a placeholder credential is never mistaken for a token. */
 export const KIRO_MANAGED_CREDENTIAL_ACCESS = 'kiro-managed'
 
+/** The env var the host reads to connect Kiro headlessly, no sign-in step. */
+export const KIRO_API_KEY_ENV = 'KIRO_API_KEY'
+
 /**
- * The v2 key method, registered only so the host accepts `connect.key` for the
- * self-heal (it refuses with "Key method not found" otherwise).
+ * Register `KIRO_API_KEY` as an env method. The host forms a connection from
+ * the variable itself — the headless path for CI and a GUI-launched IDE — and
+ * keeps env methods out of the sign-in picker, so this adds no second row next
+ * to the interactive "Kiro API key" oauth method.
  */
-export function buildKeyMethodRegistration(integrationID: string): {
+export function buildEnvMethodRegistration(integrationID: string): {
   integrationID: string
-  method: V2IntegrationKeyMethod
+  method: V2IntegrationEnvMethod
 } {
-  // No label: the interactive sign-in is the oauth method; a label here would
-  // show a duplicate "Kiro API key" row in the picker.
-  return { integrationID, method: { type: 'key' } }
+  return { integrationID, method: { type: 'env', names: [KIRO_API_KEY_ENV] } }
 }
 
 /**
