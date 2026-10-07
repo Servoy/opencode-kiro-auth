@@ -170,6 +170,9 @@ export interface V2IntegrationEditor {
 export interface V2IntegrationDomain {
   transform(callback: (editor: V2IntegrationEditor) => void): Promise<V2Registration>
   reload(): Promise<void>
+  connect: {
+    key(input: { integrationID: string; key: string }): Promise<void>
+  }
   connection: {
     active(integrationID: string): Promise<unknown | undefined>
     resolve(connection: unknown): Promise<unknown | undefined>

@@ -24,6 +24,7 @@ type _ModelTransform = OfficialContext['model']['transform']
 type _ModelReload = OfficialContext['model']['reload']
 type _ToolTransform = OfficialContext['tool']['transform']
 type _IntegrationTransform = OfficialContext['integration']['transform']
+type _IntegrationConnectKey = OfficialContext['integration']['connect']['key']
 type _IntegrationConnActive = OfficialContext['integration']['connection']['active']
 type _IntegrationConnResolve = OfficialContext['integration']['connection']['resolve']
 type _SessionHook = OfficialContext['session']['hook']
@@ -41,6 +42,7 @@ export type MirrorConformance = [
   _ModelReload,
   _ToolTransform,
   _IntegrationTransform,
+  _IntegrationConnectKey,
   _IntegrationConnActive,
   _IntegrationConnResolve,
   _SessionHook,

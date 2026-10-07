@@ -3,6 +3,10 @@ import { AuthHandler } from '../core/auth/auth-handler.js'
 import { RequestHandler } from '../core/request/request-handler.js'
 import { AccountCache } from '../infrastructure/database/account-cache.js'
 import { AccountRepository } from '../infrastructure/database/account-repository.js'
+import {
+  logAccountDiagnostics,
+  warnIfProviderWillNotRegister
+} from '../plugin/account-diagnostics.js'
 import { AccountManager } from '../plugin/accounts.js'
 import { loadConfig } from '../plugin/config/index.js'
 import { getConfigDir } from '../plugin/config/paths.js'
@@ -13,6 +17,7 @@ import { clearSdkClientCache } from '../plugin/sdk-client.js'
 import { kiroDb } from '../plugin/storage/sqlite.js'
 import { noopToast, type ToastFn } from '../plugin/toast.js'
 import { buildWebSearchProviderV2 } from '../plugin/web-search.js'
+import { selfHealHostCredential } from './connect-self-heal.js'
 import { buildIntegrationMethods } from './integration.js'
 import { buildV2Provider } from './models-bridge.js'
 import { createRequestBridge } from './request-bridge.js'
@@ -43,6 +48,20 @@ export function createV2Setup(id: string) {
     const accountManager = await AccountManager.loadFromDisk(config.account_selection_strategy)
     authHandler.setAccountManager(accountManager)
     await authHandler.initialize(toast)
+    logAccountDiagnostics(accountManager.getAccounts(), config.auto_sync_kiro_cli === true)
+
+    // The v2 host registers the provider only when it holds a credential for the
+    // integration in this XDG home's opencode.db. A usable account in kiro.db
+    // without that host credential is the silent dead end a split XDG home
+    // creates (Servoy's own ~/.servoy): write the managed placeholder a sign-in
+    // would, so the provider registers without a manual auth import. Only warn
+    // when that self-heal could not supply the credential.
+    const hasUsableAccount = accountManager.getCurrentOrNext() !== null
+    const healed = await selfHealHostCredential(ctx.integration, id, hasUsableAccount)
+    if (!healed) {
+      const hostConnection = await ctx.integration.connection.active(id).catch(() => undefined)
+      warnIfProviderWillNotRegister(hasUsableAccount, !!hostConnection)
+    }
 
     const requestHandler = new RequestHandler(
       accountManager,
