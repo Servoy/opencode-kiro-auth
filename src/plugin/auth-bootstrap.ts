@@ -9,8 +9,25 @@ import {
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { getConfigDir } from './config/paths.js'
 import * as logger from './logger.js'
 import { getCliDbPath } from './sync/kiro-cli-parser.js'
+
+/**
+ * Whether an API key is configured (env or kiro.json). Read directly, not via
+ * loadConfig: the bootstrap runs before the config pipeline. `configPath` is
+ * injectable because getConfigDir() caches once and ignores it under test.
+ */
+export function hasApiKey(configPath: string = join(getConfigDir(), 'kiro.json')): boolean {
+  if (process.env.KIRO_API_KEY?.trim()) return true
+  try {
+    if (!existsSync(configPath)) return false
+    const parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
+    return typeof parsed?.api_key === 'string' && parsed.api_key.trim().length > 0
+  } catch {
+    return false
+  }
+}
 
 function getOpenCodeAuthPath(): string {
   const dataRoot =
@@ -58,11 +75,11 @@ function writeAuthFile(authPath: string, auth: Record<string, any>): void {
  */
 export function bootstrapAuthIfNeeded(providerId: string): void {
   try {
-    const cliDbPath = getCliDbPath()
-    if (!existsSync(cliDbPath)) {
-      // Debug-level: the config hook runs constantly, incl. subprocesses where
-      // this path differs, so info-level would flood the log.
-      logger.debug('Bootstrap: Kiro CLI DB not found, skipping')
+    // Trigger on a local Kiro CLI DB (the social/IDC token source) or a
+    // configured API key — the latter brings the provider up with no kiro-cli.
+    if (!existsSync(getCliDbPath()) && !hasApiKey()) {
+      // debug: the config hook runs constantly, info would flood the log.
+      logger.debug('Bootstrap: no Kiro CLI DB and no API key, skipping')
       return
     }
 
