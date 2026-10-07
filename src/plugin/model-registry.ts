@@ -94,6 +94,13 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     modalities: MULTIMODAL,
     thinking: true
   },
+  'claude-sonnet-5-5': {
+    name: 'Claude Sonnet 5.5',
+    rate: '1.3x',
+    limit: CONTEXT_1M,
+    modalities: MULTIMODAL,
+    thinking: true
+  },
 
   // Claude Haiku
   'claude-haiku-4-5': {
