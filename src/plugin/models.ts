@@ -159,7 +159,7 @@ async function fetchCatalog(auth: KiroAuthDetails): Promise<Map<string, ModelCap
       Authorization: `Bearer ${auth.access}`,
       'Content-Type': 'application/x-amz-json-1.0',
       'X-Amz-Target': 'AmazonCodeWhispererService.ListAvailableModels',
-      ...kiroHeaders(auth.profileArn)
+      ...kiroHeaders(auth.profileArn, auth.authMethod)
     },
     body: JSON.stringify(payload)
   })

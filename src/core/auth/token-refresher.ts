@@ -93,6 +93,13 @@ export class TokenRefresher {
    * is the escalation path, and silence here is indistinguishable from a hang.
    */
   async forceRefresh(account: ManagedAccount, auth: KiroAuthDetails): Promise<boolean> {
+    // A rejected key has nothing to refresh and nothing in the CLI to recover from.
+    if (account.authMethod === 'apikey') {
+      logger.warn('Force refresh: API key rejected by Kiro', { email: account.email })
+      await this.markRefreshFailed(account, 'API key rejected by Kiro')
+      return false
+    }
+
     const previousToken = account.accessToken
 
     if (this.config.auto_sync_kiro_cli) {

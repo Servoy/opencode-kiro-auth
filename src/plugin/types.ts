@@ -2,7 +2,7 @@ import z from 'zod'
 import { EffortSchema, RegionSchema } from './config/schema'
 import type { AdditionalModelRequestFields } from './model-request-fields.js'
 
-export type KiroAuthMethod = 'idc' | 'desktop'
+export type KiroAuthMethod = 'idc' | 'desktop' | 'apikey'
 export type KiroRegion = z.infer<typeof RegionSchema>
 export type Effort = z.infer<typeof EffortSchema>
 

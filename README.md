@@ -148,7 +148,29 @@ that file, and a setting added by a later version is appended on start.
      server). If it doesn't, copy/paste the URL and enter the code printed by OpenCode.
    - You can also pre-configure defaults in `~/.config/opencode/kiro.json` via
      `idc_start_url` and `idc_region`.
-3. Configuration will be automatically managed at `~/.config/opencode/kiro.db`.
+3. **API key**:
+   - Create a key under **API Keys** at [app.kiro.dev](https://app.kiro.dev). Kiro offers
+     them on the Pro, Pro+, Pro Max and Power plans; on a subscription managed by an
+     administrator, the admin has to enable API keys first.
+   - Pick **Kiro API key** in the Kiro sign-in menu and paste the `ksk_...` key. The plugin
+     checks it with Kiro before saving anything, and the key is the only input.
+   - The plugin never refreshes a key. If Kiro rejects it (revoked, or API keys
+     disabled for the account), the account is marked unusable and you are asked to sign in
+     again. With only key accounts in the pool the plugin does not open the browser sign-in;
+     with an Identity Center account alongside, requests move to that account.
+   - Kiro documents API keys for CI and headless use and recommends browser sign-in for
+     interactive sessions, so using one in OpenCode is outside that guidance and Kiro may
+     restrict it.
+   - The key is stored in plain text in `~/.config/opencode/kiro.db`, like the other
+     credentials, and it is long-lived. Keep that file private. On OpenCode 2 the key field
+     is not masked while you type.
+   - The key is checked in `default_region` (`us-east-1` unless you set it in `kiro.json`);
+     other regions were not tested.
+   - Credits come from the same subscription as your other sign-ins. A key and an Identity
+     Center login on one subscription share one quota and show up as two accounts.
+   - Before downgrading to a plugin version without API key support, remove the key accounts:
+     `DELETE FROM accounts WHERE auth_method = 'apikey'` in `kiro.db`.
+4. Configuration will be automatically managed at `~/.config/opencode/kiro.db`.
 
 ## Local plugin development
 

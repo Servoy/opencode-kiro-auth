@@ -55,7 +55,7 @@ export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<UsageResu
         headers: {
           Authorization: `Bearer ${auth.access}`,
           'Content-Type': 'application/json',
-          ...kiroHeaders(auth.profileArn),
+          ...kiroHeaders(auth.profileArn, auth.authMethod),
           'amz-sdk-request': 'attempt=1; max=1'
         }
       })

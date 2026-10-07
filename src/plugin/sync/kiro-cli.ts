@@ -281,6 +281,8 @@ export async function syncFromKiroCli() {
 }
 
 export async function writeToKiroCli(acc: any) {
+  // A key is not a CLI login; writing it would replace the user's social token.
+  if (acc.authMethod === 'apikey') return
   const dbPath = getCliDbPath()
   if (!existsSync(dbPath)) return
   try {

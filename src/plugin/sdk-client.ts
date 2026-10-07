@@ -13,6 +13,11 @@ function getMachineId(auth: KiroAuthDetails): string {
   return crypto.createHash('sha256').update(key).digest('hex')
 }
 
+/** The client name Kiro sees on every call; some endpoints refuse a request without one. */
+export function kiroUserAgent(auth: KiroAuthDetails): string {
+  return `${KIRO_CONSTANTS.USER_AGENT}-${KIRO_VERSION}-${getMachineId(auth)}`
+}
+
 /**
  * Resolve the correct chat endpoint for the given auth details.
  *
@@ -186,7 +191,6 @@ export function createSdkClient(
     }
   }
 
-  const machineId = getMachineId(auth)
   const token = auth.access
 
   // Strip the path portion — the SDK constructs the full URL from region + endpoint.
@@ -198,7 +202,7 @@ export function createSdkClient(
     token: () => Promise.resolve({ token }),
     maxAttempts: KIRO_CLI_MAX_ATTEMPTS,
     retryMode: 'standard',
-    customUserAgent: [[`${KIRO_CONSTANTS.USER_AGENT}-${KIRO_VERSION}-${machineId}`]],
+    customUserAgent: [[kiroUserAgent(auth)]],
     requestHandler: {
       connectionTimeout: 10000,
       // How long Kiro may take to start answering. The timer is cleared once
@@ -215,7 +219,7 @@ export function createSdkClient(
   // Add Kiro-specific headers
   client.middlewareStack.add(
     (next: any) => async (args: any) => {
-      for (const [k, v] of Object.entries(kiroHeaders(auth.profileArn))) {
+      for (const [k, v] of Object.entries(kiroHeaders(auth.profileArn, auth.authMethod))) {
         args.request.headers[k] = v
       }
       return next(args)

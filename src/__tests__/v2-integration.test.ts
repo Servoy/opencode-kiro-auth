@@ -4,6 +4,7 @@ import {
   buildIntegrationMethods,
   buildPlaceholderCredential,
   KIRO_MANAGED_CREDENTIAL_ACCESS,
+  type V1ApiAuthMethod,
   type V1AuthMethod
 } from '../v2/integration.js'
 
@@ -137,5 +138,83 @@ describe('buildIntegrationMethods', () => {
     })
     expect(seen?.start_url).toBe('https://d-996749b310.awsapps.com/start')
     expect(seen?.idc_region).toBe('eu-central-1')
+  })
+})
+
+describe('buildIntegrationMethods with an API key method', () => {
+  const KEY_PROMPTS = [
+    { type: 'text', key: 'api_key', message: 'Kiro API key', placeholder: 'ksk_...' }
+  ]
+
+  function fakeApiMethod(
+    onAuthorize?: (inputs?: Record<string, string>) => void,
+    result: { type: 'success'; key: string } | { type: 'failed' } = {
+      type: 'success',
+      key: 'kiro-managed'
+    }
+  ): V1ApiAuthMethod {
+    return {
+      label: 'Kiro API key',
+      type: 'api',
+      prompts: KEY_PROMPTS,
+      authorize: async (inputs?: Record<string, string>) => {
+        onAuthorize?.(inputs)
+        return result
+      }
+    }
+  }
+
+  test('maps an api method to an oauth registration with a form and a stable id', () => {
+    const methods = buildIntegrationMethods('kiro', [
+      fakeV1Method('AWS Builder ID / IAM Identity Center'),
+      fakeV1Method('IAM Identity Center with Profile ARN'),
+      fakeApiMethod()
+    ])
+
+    expect(methods.map((m) => m.method.id)).toEqual(['kiro-oauth-0', 'kiro-oauth-1', 'kiro-apikey'])
+    const apiKey = methods[2]!
+    expect(apiKey.method.type).toBe('oauth')
+    expect(apiKey.method.label).toBe('Kiro API key')
+    expect((apiKey.method.form as Array<{ key: string }>).map((f) => f.key)).toEqual(['api_key'])
+  })
+
+  test('authorize runs the v1 authorize with the form answer and resolves the placeholder credential', async () => {
+    let seen: Record<string, string> | undefined
+    const methods = buildIntegrationMethods('kiro', [fakeApiMethod((inputs) => (seen = inputs))])
+
+    const auth = await methods[0]!.authorize({ api_key: 'ksk_TESTKEY000000000000000000000000' })
+
+    expect(seen).toEqual({ api_key: 'ksk_TESTKEY000000000000000000000000' })
+    expect(auth.mode).toBe('auto')
+    expect(await auth.callback).toEqual(buildPlaceholderCredential('kiro-apikey'))
+  })
+
+  test('the credential handed to the host never carries the key', async () => {
+    const methods = buildIntegrationMethods('kiro', [fakeApiMethod()])
+    const auth = await methods[0]!.authorize({ api_key: 'ksk_TESTKEY000000000000000000000000' })
+    const credential = await auth.callback
+
+    expect(JSON.stringify(credential)).not.toContain('ksk_')
+    expect(credential.access).toBe(KIRO_MANAGED_CREDENTIAL_ACCESS)
+  })
+
+  test('a failed v1 result makes the registration throw', async () => {
+    const methods = buildIntegrationMethods('kiro', [fakeApiMethod(undefined, { type: 'failed' })])
+
+    await expect(
+      methods[0]!.authorize({ api_key: 'ksk_TESTKEY000000000000000000000000' })
+    ).rejects.toThrow(/API key/)
+  })
+
+  test('an error from the v1 authorize reaches the host unchanged', async () => {
+    const method = fakeApiMethod()
+    method.authorize = async () => {
+      throw new Error('Kiro rejected the API key.')
+    }
+    const methods = buildIntegrationMethods('kiro', [method])
+
+    await expect(methods[0]!.authorize({ api_key: 'x' })).rejects.toThrow(
+      'Kiro rejected the API key.'
+    )
   })
 })
