@@ -145,22 +145,26 @@ export class KiroDatabase {
   }
 
   async upsertAccount(acc: ManagedAccount): Promise<void> {
-    await withDatabaseLock(this.path, async () => {
-      const existing = this.getAccounts().map(this.rowToAccount)
-      const merged = mergeAccounts(existing, [acc])
-      const deduplicated = deduplicateAccounts(merged)
+    await withDatabaseLock(
+      this.path,
+      async () => {
+        const existing = this.getAccounts().map(this.rowToAccount)
+        const merged = mergeAccounts(existing, [acc])
+        const deduplicated = deduplicateAccounts(merged)
 
-      this.db.exec('BEGIN TRANSACTION')
-      try {
-        for (const account of deduplicated) {
-          this.upsertAccountInternal(account)
+        this.db.exec('BEGIN TRANSACTION')
+        try {
+          for (const account of deduplicated) {
+            this.upsertAccountInternal(account)
+          }
+          this.db.exec('COMMIT')
+        } catch (e) {
+          this.db.exec('ROLLBACK')
+          throw e
         }
-        this.db.exec('COMMIT')
-      } catch (e) {
-        this.db.exec('ROLLBACK')
-        throw e
-      }
-    })
+      },
+      'upsertAccount'
+    )
   }
 
   /**
@@ -184,29 +188,33 @@ export class KiroDatabase {
     unhealthyReason?: string | null
     recoveryTime?: number | null
   }): Promise<void> {
-    await withDatabaseLock(this.path, async () => {
-      const sets = ['access_token = ?', 'refresh_token = ?', 'expires_at = ?', 'last_used = ?']
-      const params: any[] = [
-        fields.accessToken,
-        fields.refreshToken,
-        fields.expiresAt,
-        fields.lastUsed
-      ]
-      const add = (col: string, val: any): void => {
-        sets.push(`${col} = ?`)
-        params.push(val)
-      }
-      if (fields.email !== undefined) add('email', fields.email)
-      if (fields.profileArn !== undefined) add('profile_arn', fields.profileArn)
-      if (fields.clientId !== undefined) add('client_id', fields.clientId)
-      if (fields.isHealthy !== undefined) add('is_healthy', fields.isHealthy ? 1 : 0)
-      if (fields.failCount !== undefined) add('fail_count', fields.failCount)
-      if (fields.unhealthyReason !== undefined) add('unhealthy_reason', fields.unhealthyReason)
-      if (fields.recoveryTime !== undefined) add('recovery_time', fields.recoveryTime)
-      params.push(fields.id)
+    await withDatabaseLock(
+      this.path,
+      async () => {
+        const sets = ['access_token = ?', 'refresh_token = ?', 'expires_at = ?', 'last_used = ?']
+        const params: any[] = [
+          fields.accessToken,
+          fields.refreshToken,
+          fields.expiresAt,
+          fields.lastUsed
+        ]
+        const add = (col: string, val: any): void => {
+          sets.push(`${col} = ?`)
+          params.push(val)
+        }
+        if (fields.email !== undefined) add('email', fields.email)
+        if (fields.profileArn !== undefined) add('profile_arn', fields.profileArn)
+        if (fields.clientId !== undefined) add('client_id', fields.clientId)
+        if (fields.isHealthy !== undefined) add('is_healthy', fields.isHealthy ? 1 : 0)
+        if (fields.failCount !== undefined) add('fail_count', fields.failCount)
+        if (fields.unhealthyReason !== undefined) add('unhealthy_reason', fields.unhealthyReason)
+        if (fields.recoveryTime !== undefined) add('recovery_time', fields.recoveryTime)
+        params.push(fields.id)
 
-      this.db.prepare(`UPDATE accounts SET ${sets.join(', ')} WHERE id = ?`).run(...params)
-    })
+        this.db.prepare(`UPDATE accounts SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+      },
+      'updateAccountTokens'
+    )
   }
 
   /**
@@ -222,30 +230,40 @@ export class KiroDatabase {
     limitCount: number
     lastSync: number
   }): Promise<void> {
-    await withDatabaseLock(this.path, async () => {
-      this.db
-        .prepare('UPDATE accounts SET used_count = ?, limit_count = ?, last_sync = ? WHERE id = ?')
-        .run(fields.usedCount, fields.limitCount, fields.lastSync, fields.id)
-    })
+    await withDatabaseLock(
+      this.path,
+      async () => {
+        this.db
+          .prepare(
+            'UPDATE accounts SET used_count = ?, limit_count = ?, last_sync = ? WHERE id = ?'
+          )
+          .run(fields.usedCount, fields.limitCount, fields.lastSync, fields.id)
+      },
+      'updateAccountUsage'
+    )
   }
 
   async batchUpsertAccounts(accounts: ManagedAccount[]): Promise<void> {
-    await withDatabaseLock(this.path, async () => {
-      const existing = this.getAccounts().map(this.rowToAccount)
-      const merged = mergeAccounts(existing, accounts)
-      const deduplicated = deduplicateAccounts(merged)
+    await withDatabaseLock(
+      this.path,
+      async () => {
+        const existing = this.getAccounts().map(this.rowToAccount)
+        const merged = mergeAccounts(existing, accounts)
+        const deduplicated = deduplicateAccounts(merged)
 
-      this.db.exec('BEGIN TRANSACTION')
-      try {
-        for (const account of deduplicated) {
-          this.upsertAccountInternal(account)
+        this.db.exec('BEGIN TRANSACTION')
+        try {
+          for (const account of deduplicated) {
+            this.upsertAccountInternal(account)
+          }
+          this.db.exec('COMMIT')
+        } catch (e) {
+          this.db.exec('ROLLBACK')
+          throw e
         }
-        this.db.exec('COMMIT')
-      } catch (e) {
-        this.db.exec('ROLLBACK')
-        throw e
-      }
-    })
+      },
+      'batchUpsertAccounts'
+    )
   }
 
   async deleteAccount(id: string): Promise<void> {

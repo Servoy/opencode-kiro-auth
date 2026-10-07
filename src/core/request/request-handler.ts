@@ -211,8 +211,10 @@ export class RequestHandler {
 
     const sessionId = extractSessionId(init?.headers)
 
-    // Queue only matters when multiple accounts share rate limits.
-    if (this.accountManager.getAccountCount() <= 1) {
+    // One account has nothing to serialise against, so skip the queue entirely.
+    const accountCount = this.accountManager.getAccountCount()
+    if (accountCount <= 1) {
+      logger.debug(`[QUEUE] bypassed (accounts=${accountCount}) session=${sessionId ?? 'none'}`)
       return this.handleKiroRequest(url, init, showToast, sessionId)
     }
 
@@ -253,6 +255,7 @@ export class RequestHandler {
    * request that never settles must not wedge every later one in the process.
    */
   private async enqueueKiroRequest<T>(lane: string, run: () => Promise<T>): Promise<T> {
+    const hadPredecessor = RequestHandler.kiroRequestQueues.has(lane)
     const previous = RequestHandler.kiroRequestQueues.get(lane) ?? Promise.resolve()
     let release!: () => void
 
@@ -261,18 +264,22 @@ export class RequestHandler {
     })
     RequestHandler.kiroRequestQueues.set(lane, mine)
 
+    if (!hadPredecessor) {
+      logger.debug(`[QUEUE] lane=${lane} no wait`)
+    }
+
     const queueStart = Date.now()
-    const waited = await this.raceWithTimeout(
+    const settledFirst = await this.raceWithTimeout(
       previous.catch(() => {}),
       this.queueWaitMs()
     )
     const queuedMs = Date.now() - queueStart
-    if (!waited) {
+    if (!settledFirst) {
       logger.warn(
-        `Kiro request queue: predecessor still running after ${Math.round(this.queueWaitMs() / 1000)}s, proceeding in parallel`
+        `[QUEUE] lane=${lane} predecessor exceeded ${Math.round(this.queueWaitMs() / 1000)}s, proceeding in parallel`
       )
-    } else if (queuedMs > 100) {
-      logger.debug(`[QUEUE] lane=${lane} waited=${queuedMs}ms`)
+    } else if (hadPredecessor) {
+      logger.debug(`[QUEUE] lane=${lane} waited=${queuedMs}ms behind predecessor`)
     }
 
     try {

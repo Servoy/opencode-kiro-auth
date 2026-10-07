@@ -15,16 +15,29 @@ const LOCK_OPTIONS = {
   realpath: false
 }
 
-// In-process serialisation: prevents concurrent writes within the same process
-// from racing each other without paying the file-lock cost on every request.
 let inProcessLockChain: Promise<void> = Promise.resolve()
+let inFlight = 0
 
-export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T> {
-  // Serialise within this process first (cheap).
+/**
+ * Serialise one DB write against every other in this process, then take the
+ * cross-process file lock. All writes share one chain, so `label` names the
+ * write and the logged `ahead` count reveals when one waited behind others.
+ */
+export async function withDatabaseLock<T>(
+  dbPath: string,
+  fn: () => Promise<T>,
+  label = 'db'
+): Promise<T> {
   let resolveInProcess!: () => void
   const prev = inProcessLockChain
   inProcessLockChain = new Promise<void>((r) => (resolveInProcess = r))
+
+  const ahead = inFlight
+  inFlight++
+
+  const chainStart = Date.now()
   await prev
+  const chainWait = Date.now() - chainStart
 
   if (!existsSync(dbPath)) {
     const dir = dbPath.substring(0, dbPath.lastIndexOf('/'))
@@ -36,20 +49,20 @@ export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>):
   const waitStart = Date.now()
   try {
     release = await lockfile.lock(dbPath, LOCK_OPTIONS)
-    const waited = Date.now() - waitStart
+    const fileWait = Date.now() - waitStart
     const workStart = Date.now()
     try {
       return await fn()
     } finally {
-      // Contention on the shared database is invisible until it is slow, and
-      // then it looks like the request was slow. Only the notable cases: a
-      // wait or a hold of a few milliseconds is the normal, healthy shape.
       const held = Date.now() - workStart
-      if (waited > 50 || held > 250) {
-        logger.debug(`[LOCK] waited=${waited}ms held=${held}ms`)
+      if (chainWait > 50 || fileWait > 50 || held > 250 || ahead > 0) {
+        logger.debug(
+          `[LOCK] ${label} chainWait=${chainWait}ms (ahead=${ahead}) fileWait=${fileWait}ms held=${held}ms`
+        )
       }
     }
   } finally {
+    inFlight--
     if (release) {
       try {
         await release()
