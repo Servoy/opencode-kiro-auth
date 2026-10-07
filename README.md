@@ -62,7 +62,9 @@ single file, and published to a fixed release asset:
 
 ```json
 {
-  "plugins": ["https://github.com/Servoy/opencode-kiro-auth/releases/download/_master/opencode-kiro-auth.tgz"]
+  "plugins": [
+    "https://github.com/Servoy/opencode-kiro-auth/releases/download/_master/opencode-kiro-auth.tgz"
+  ]
 }
 ```
 
@@ -152,25 +154,68 @@ that file, and a setting added by a later version is appended on start.
    - Create a key under **API Keys** at [app.kiro.dev](https://app.kiro.dev). Kiro offers
      them on the Pro, Pro+, Pro Max and Power plans; on a subscription managed by an
      administrator, the admin has to enable API keys first.
-   - Pick **Kiro API key** in the Kiro sign-in menu and paste the `ksk_...` key. The plugin
-     checks it with Kiro before saving anything, and the key is the only input.
-   - The plugin never refreshes a key. If Kiro rejects it (revoked, or API keys
-     disabled for the account), the account is marked unusable and you are asked to sign in
-     again. With only key accounts in the pool the plugin does not open the browser sign-in;
-     with an Identity Center account alongside, requests move to that account.
+   - Provide it in any of three ways; the plugin validates it with Kiro before saving:
+     - **`KIRO_API_KEY` environment variable** (wins over the config file). With it set the
+       plugin registers the account on startup — no interactive login, no browser. This is
+       the headless / CI path, and the one that lets a GUI-launched host (e.g. an IDE) bring
+       the provider up on its own. See _Setting KIRO_API_KEY_ below.
+     - **`api_key` in `~/.config/opencode/kiro.json`**. Survives restarts, read by every
+       instance on the machine.
+     - **Interactive**: run `opencode auth login`, pick **Kiro API key**, and paste the
+       `ksk_...` key. When a key is already set in env or config, leaving the field blank
+       reuses it (the prompt shows a masked hint, never the full key).
+   - The region is handled for you: it comes from the key's own profile ARN. The plugin
+     tries `default_region` first, then the other Kiro regions, so you never set a region
+     for the key.
+   - The plugin never refreshes a key. If Kiro rejects it (revoked, or API keys disabled),
+     the account is marked unusable and you are asked to sign in again.
+   - If an API key and an Identity Center login cover the **same profile**, the key wins and
+     the IDC login is dropped on startup (logged, with the reason), so one subscription does
+     not run as a two-account pool. Sign in again if you later remove the key.
+   - The key is stored in plain text in `~/.config/opencode/kiro.db` (locked to `0600`), like
+     the other credentials, and it is long-lived. Keep that file private. On OpenCode 2 the
+     interactive key field is not masked while you type.
    - Kiro documents API keys for CI and headless use and recommends browser sign-in for
      interactive sessions, so using one in OpenCode is outside that guidance and Kiro may
      restrict it.
-   - The key is stored in plain text in `~/.config/opencode/kiro.db`, like the other
-     credentials, and it is long-lived. Keep that file private. On OpenCode 2 the key field
-     is not masked while you type.
-   - The key is checked in `default_region` (`us-east-1` unless you set it in `kiro.json`);
-     other regions were not tested.
-   - Credits come from the same subscription as your other sign-ins. A key and an Identity
-     Center login on one subscription share one quota and show up as two accounts.
    - Before downgrading to a plugin version without API key support, remove the key accounts:
      `DELETE FROM accounts WHERE auth_method = 'apikey'` in `kiro.db`.
 4. Configuration will be automatically managed at `~/.config/opencode/kiro.db`.
+
+### Setting `KIRO_API_KEY`
+
+A terminal `export` is seen only by programs started from that same shell. A host launched
+from a desktop icon, Dock or Finder does **not** inherit it, so set it where the GUI picks
+it up. Replace `ksk_your_key` with your own key.
+
+**macOS** — for a `.app` launched from Finder/Dock, use `launchctl`; a plain `~/.zshrc`
+`export` reaches terminal `opencode` but not the app:
+
+```bash
+launchctl setenv KIRO_API_KEY ksk_your_key     # for GUI-launched apps (resets on reboot)
+echo 'export KIRO_API_KEY=ksk_your_key' >> ~/.zprofile   # restores it on next login
+```
+
+**Linux** — add to the file your desktop session reads, then log out and back in:
+
+```bash
+echo 'export KIRO_API_KEY=ksk_your_key' >> ~/.profile
+```
+
+**Windows** — set it for your user (survives restarts), then restart the app:
+
+```powershell
+setx KIRO_API_KEY ksk_your_key
+```
+
+**Any OS, current terminal only** — for a quick run, prefix the command:
+
+```bash
+KIRO_API_KEY=ksk_your_key opencode
+```
+
+If a GUI host still will not inherit the variable, use the `api_key` option in
+`~/.config/opencode/kiro.json` instead — it does not depend on the environment at all.
 
 ## Local plugin development
 
@@ -294,6 +339,7 @@ on rather than describing them.
 - `idc_start_url`: IAM Identity Center start URL. Unset means AWS Builder ID.
 - `idc_region`: IAM Identity Center (SSO OIDC) region. Defaults to `us-east-1`.
 - `idc_profile_arn`: Q Developer profile ARN, when your organisation requires one.
+- `api_key`: A long-lived Kiro API key (`ksk_…`). The `KIRO_API_KEY` environment variable overrides it. See the API-key setup above for how to set the env var per OS. The region is never set here — it comes from the key's profile ARN.
 
 ## Storage
 
