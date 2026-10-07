@@ -413,7 +413,7 @@ export class RequestHandler {
       const histLen = (sdkPrep.conversationState as any).history?.length || 0
       const agentContId = (sdkPrep.conversationState as any).agentContinuationId || 'none'
       logger.debug(
-        `[REQ] convId=${sdkPrep.conversationId} history=${histLen} agentCont=${agentContId} model=${model} effort=${sdkPrep.effort ?? 'none'}`
+        `[REQ] convId=${sdkPrep.conversationId} history=${histLen} agentCont=${agentContId} model=${model} effort=${sdkPrep.effort ?? (thinkingDisabled ? 'off' : 'default')}`
       )
 
       // Attachments are the thing you most need to see when a model claims it
