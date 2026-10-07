@@ -139,6 +139,13 @@ export interface V2IntegrationOAuthMethod {
   form?: V2FormStringField[]
 }
 
+// A host-side key method (no authorize callback); registered only so connect.key
+// is accepted for the self-heal.
+export interface V2IntegrationKeyMethod {
+  type: 'key'
+  label?: string
+}
+
 export interface V2Credential {
   type: 'oauth'
   methodID: string
@@ -158,12 +165,16 @@ export interface V2IntegrationOAuthAuthorization {
 export interface V2IntegrationEditor {
   update(id: string, update: (integration: { id: string; name: string }) => void): void
   method: {
-    update(input: {
-      integrationID: string
-      method: V2IntegrationOAuthMethod
-      authorize?: (answer: unknown) => Promise<V2IntegrationOAuthAuthorization>
-      refresh?: (credential: unknown) => Promise<unknown>
-    }): void
+    update(
+      input:
+        | {
+            integrationID: string
+            method: V2IntegrationOAuthMethod
+            authorize?: (answer: unknown) => Promise<V2IntegrationOAuthAuthorization>
+            refresh?: (credential: unknown) => Promise<unknown>
+          }
+        | { integrationID: string; method: V2IntegrationKeyMethod }
+    ): void
   }
 }
 

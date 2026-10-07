@@ -8,41 +8,39 @@ export interface SelfHealIntegration {
 }
 
 /**
- * Register a host credential when a usable Kiro account exists but the host has
- * none, so the provider registers without a manual `opencode auth import`.
+ * Give the host a credential when a usable account exists but the host has none,
+ * so the provider registers without a manual `opencode auth import`. Never
+ * overwrites an existing connection or acts without a usable account.
  *
- * On v2 (opencode 2.0.23+) the host registers the provider only when it holds a
- * credential for the integration in this XDG home's opencode.db. A host run
- * under its own home (Servoy's `~/.servoy`) starts without one even though the
- * real account lives in kiro.db, and the host then fails a turn with an
- * unrelated error. The real tokens stay in kiro.db; this writes only the same
- * managed-sentinel placeholder a sign-in would. Never overwrites an existing
- * connection, and never acts without a usable account. Returns whether a
- * credential was written; false means the caller should keep warning.
+ * The real API key is handed over when configured (the host stores a valid
+ * Credential.Key the key method stands behind); otherwise the managed sentinel,
+ * which keeps the host store inert for CLI/IDC accounts. Trade-off: the real key
+ * means a second plaintext copy in opencode.db, accepted because it is already
+ * on this machine in the env/kiro.json it came from.
  */
 export async function selfHealHostCredential(
   integration: SelfHealIntegration,
   integrationID: string,
-  hasUsableAccount: boolean
+  hasUsableAccount: boolean,
+  apiKey?: string
 ): Promise<boolean> {
   if (!hasUsableAccount) return false
 
   const existing = await integration.connection.active(integrationID).catch(() => undefined)
   if (existing) return false
 
+  const key = apiKey?.trim() || KIRO_MANAGED_CREDENTIAL_ACCESS
   try {
-    await integration.connect.key({
-      integrationID,
-      key: KIRO_MANAGED_CREDENTIAL_ACCESS
-    })
+    await integration.connect.key({ integrationID, key })
     logger.log(
-      `Registered a managed host credential for "${integrationID}" so the provider registers; ` +
-        `real tokens stay in kiro.db.`
+      `Registered a host credential for "${integrationID}" so the provider registers ` +
+        `(${apiKey ? 'API key' : 'managed sentinel'}); real tokens stay in kiro.db.`
     )
     return true
   } catch (e) {
-    logger.debug(
-      `Self-heal: connect.key failed, leaving the diagnostic warning in place: ` +
+    // warn, not debug: this is exactly why the provider does not come up.
+    logger.warn(
+      `Self-heal: connect.key failed, provider will not register: ` +
         `${e instanceof Error ? e.message : String(e)}`
     )
     return false

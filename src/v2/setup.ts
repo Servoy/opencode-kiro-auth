@@ -1,4 +1,5 @@
 import { KIRO_CONSTANTS } from '../constants.js'
+import { configuredApiKey } from '../core/auth/api-key-method.js'
 import { AuthHandler } from '../core/auth/auth-handler.js'
 import { RequestHandler } from '../core/request/request-handler.js'
 import { AccountCache } from '../infrastructure/database/account-cache.js'
@@ -18,7 +19,7 @@ import { kiroDb } from '../plugin/storage/sqlite.js'
 import { noopToast, type ToastFn } from '../plugin/toast.js'
 import { buildWebSearchProviderV2 } from '../plugin/web-search.js'
 import { selfHealHostCredential } from './connect-self-heal.js'
-import { buildIntegrationMethods } from './integration.js'
+import { buildIntegrationMethods, buildKeyMethodRegistration } from './integration.js'
 import { buildV2Provider } from './models-bridge.js'
 import { createRequestBridge } from './request-bridge.js'
 import type { V2Cleanup, V2Context, V2Registration, V2SessionHttpResponse } from './types.js'
@@ -50,19 +51,6 @@ export function createV2Setup(id: string) {
     await authHandler.initialize(toast)
     logAccountDiagnostics(accountManager.getAccounts(), config.auto_sync_kiro_cli === true)
 
-    // The v2 host registers the provider only when it holds a credential for the
-    // integration in this XDG home's opencode.db. A usable account in kiro.db
-    // without that host credential is the silent dead end a split XDG home
-    // creates (Servoy's own ~/.servoy): write the managed placeholder a sign-in
-    // would, so the provider registers without a manual auth import. Only warn
-    // when that self-heal could not supply the credential.
-    const hasUsableAccount = accountManager.getCurrentOrNext() !== null
-    const healed = await selfHealHostCredential(ctx.integration, id, hasUsableAccount)
-    if (!healed) {
-      const hostConnection = await ctx.integration.connection.active(id).catch(() => undefined)
-      warnIfProviderWillNotRegister(hasUsableAccount, !!hostConnection)
-    }
-
     const requestHandler = new RequestHandler(
       accountManager,
       config,
@@ -85,8 +73,23 @@ export function createV2Setup(id: string) {
       for (const registration of buildIntegrationMethods(id, authHandler.getMethods() as never)) {
         editor.method.update(registration)
       }
+      // Without this the host rejects connect.key below ("Key method not found").
+      editor.method.update(buildKeyMethodRegistration(id))
     })
     await ctx.integration.reload()
+
+    // After the reload: connect.key needs the key method to be registered first.
+    const hasUsableAccount = accountManager.getCurrentOrNext() !== null
+    const healed = await selfHealHostCredential(
+      ctx.integration,
+      id,
+      hasUsableAccount,
+      configuredApiKey(config)
+    )
+    if (!healed) {
+      const hostConnection = await ctx.integration.connection.active(id).catch(() => undefined)
+      warnIfProviderWillNotRegister(hasUsableAccount, !!hostConnection)
+    }
 
     // Read the account's real context windows before registering models, so the
     // advertised limit is the catalog's from the first request. Best-effort: a

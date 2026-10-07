@@ -1,6 +1,7 @@
 import type {
   V2Credential,
   V2FormStringField,
+  V2IntegrationKeyMethod,
   V2IntegrationOAuthAuthorization,
   V2IntegrationOAuthMethod
 } from './types.js'
@@ -94,6 +95,19 @@ export interface V2IntegrationMethodRegistration {
 
 /** Sentinel access value so a placeholder credential is never mistaken for a token. */
 export const KIRO_MANAGED_CREDENTIAL_ACCESS = 'kiro-managed'
+
+/**
+ * The v2 key method, registered only so the host accepts `connect.key` for the
+ * self-heal (it refuses with "Key method not found" otherwise).
+ */
+export function buildKeyMethodRegistration(integrationID: string): {
+  integrationID: string
+  method: V2IntegrationKeyMethod
+} {
+  // No label: the interactive sign-in is the oauth method; a label here would
+  // show a duplicate "Kiro API key" row in the picker.
+  return { integrationID, method: { type: 'key' } }
+}
 
 /**
  * Build the placeholder credential the host stores after a self-managed

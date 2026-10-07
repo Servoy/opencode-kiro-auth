@@ -1,6 +1,6 @@
 import type { Plugin } from '@opencode/plugin'
 import { buildWebSearchProviderV2 } from '../plugin/web-search.js'
-import { buildIntegrationMethods } from './integration.js'
+import { buildIntegrationMethods, buildKeyMethodRegistration } from './integration.js'
 import { buildV2Provider } from './models-bridge.js'
 import type { V2FormStringField, V2SessionHttpResponse } from './types.js'
 
@@ -82,6 +82,12 @@ void _providerAddArg
 const _methodRegs = buildIntegrationMethods('kiro', [])
 const _methodUpdateArg: MethodUpdateArg | undefined = _methodRegs[0] as never
 void _methodUpdateArg
+
+// The key method must assign into the official registration union with no cast.
+// Without it the host rejects connect.key ("Key method not found") and the
+// env-key provider never registers.
+const _keyMethodArg: MethodUpdateArg = buildKeyMethodRegistration('kiro')
+void _keyMethodArg
 
 // Prove our sign-in form field assigns into the real host method's `form`
 // element type. The sign-in bug was a dropped form; if the official OAuth

@@ -41,13 +41,35 @@ function makeIntegration(opts: {
 }
 
 describe('selfHealHostCredential', () => {
-  test('writes the managed placeholder when an account exists and no host connection does', async () => {
+  test('writes the managed placeholder when an account exists, no host connection, and no API key', async () => {
     const integration = makeIntegration({ active: undefined })
     const healed = await selfHealHostCredential(integration, 'kiro', true)
     expect(healed).toBe(true)
     expect(integration.connectCalls).toEqual([
       { integrationID: 'kiro', key: KIRO_MANAGED_CREDENTIAL_ACCESS }
     ])
+  })
+
+  test('hands the host the REAL API key when one is configured, not the sentinel', async () => {
+    // A real ksk_ value is what lets the registered key method stand behind the
+    // host credential; the sentinel was rejected and the provider never came up.
+    const integration = makeIntegration({ active: undefined })
+    const healed = await selfHealHostCredential(
+      integration,
+      'kiro',
+      true,
+      'ksk_real_key_000000000000'
+    )
+    expect(healed).toBe(true)
+    expect(integration.connectCalls).toEqual([
+      { integrationID: 'kiro', key: 'ksk_real_key_000000000000' }
+    ])
+  })
+
+  test('a blank/whitespace API key falls back to the sentinel', async () => {
+    const integration = makeIntegration({ active: undefined })
+    await selfHealHostCredential(integration, 'kiro', true, '   ')
+    expect(integration.connectCalls[0]!.key).toBe(KIRO_MANAGED_CREDENTIAL_ACCESS)
   })
 
   test('does nothing without a usable account', async () => {

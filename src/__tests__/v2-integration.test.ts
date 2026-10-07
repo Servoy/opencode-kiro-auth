@@ -2,6 +2,7 @@ import { Credential, Integration } from '@opencode/plugin'
 import { describe, expect, test } from 'bun:test'
 import {
   buildIntegrationMethods,
+  buildKeyMethodRegistration,
   buildPlaceholderCredential,
   KIRO_MANAGED_CREDENTIAL_ACCESS,
   type V1ApiAuthMethod,
@@ -216,5 +217,16 @@ describe('buildIntegrationMethods with an API key method', () => {
     await expect(methods[0]!.authorize({ api_key: 'x' })).rejects.toThrow(
       'Kiro rejected the API key.'
     )
+  })
+})
+
+describe('buildKeyMethodRegistration', () => {
+  test('registers a label-less key method so it is not a second picker row', () => {
+    // A label would make the host list a duplicate "Kiro API key" in the sign-in
+    // picker beside the interactive oauth method; the key method exists only so
+    // connect.key is accepted for the auto-register self-heal.
+    const reg = buildKeyMethodRegistration('kiro')
+    expect(reg).toEqual({ integrationID: 'kiro', method: { type: 'key' } })
+    expect('label' in reg.method).toBe(false)
   })
 })
