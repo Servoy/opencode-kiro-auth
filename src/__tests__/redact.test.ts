@@ -68,8 +68,24 @@ describe('redactSecrets', () => {
       expect(redactSecrets(`authorization: Bearer ${KEY}`)).not.toContain(KEY)
     })
 
-    test('leaves text that only starts with ksk_ untouched', () => {
-      const raw = 'prefix ksk_ and ksk_short are not keys'
+    test('masks a key with no word boundary before it', () => {
+      // The gap a leading \b leaves: when the char before `ksk_` is itself a
+      // word char there is no boundary, so `\bksk_` would not fire. The key must
+      // be caught wherever it appears, boundary or not.
+      const out = redactSecrets(`anoiseprefix${KEY}`)
+      expect(out).not.toContain(KEY)
+    })
+
+    test('masks a truncated key below the 16-char validation floor', () => {
+      // A sliced key in a log is still a live secret; the redactor floor sits
+      // below the validation floor on purpose so a fragment is masked too.
+      const fragment = 'ksk_TESTKEY00000000' // ksk_ + 14 chars
+      expect(redactSecrets(`leaked ${fragment} here`)).not.toContain(fragment)
+    })
+
+    test('leaves the bare marker and too-short runs untouched', () => {
+      // `ksk_` alone, or with <8 body chars, is not a key and stays readable.
+      const raw = 'prefix ksk_ and ksk_abc are not keys'
       expect(redactSecrets(raw)).toBe(raw)
     })
   })

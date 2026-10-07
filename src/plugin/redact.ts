@@ -16,8 +16,9 @@ const AUTH_LINE = /\b([Aa]uthorization\s*[:=]\s*)(Bearer|Basic|token)\s+\S+/g
  */
 const BEARER_LOOSE = /\b(Bearer|Basic|token)\s+[A-Za-z0-9._\-+/:]{20,}=*/g
 
-/** A Kiro API key wherever it lands, with or without a scheme in front of it. */
-const KIRO_API_KEY = /\bksk_[A-Za-z0-9_-]{16,}/g
+// A Kiro key anywhere — no leading \b (catch it glued to a prefix), floor below
+// the 16+ validation length so a truncated key in a log is masked too.
+const KIRO_API_KEY = /ksk_[A-Za-z0-9_-]{8,}/g
 
 /**
  * Mask secrets in a log line before it is written.

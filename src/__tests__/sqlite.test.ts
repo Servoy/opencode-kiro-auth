@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { KiroDatabase } from '../plugin/storage/sqlite.js'
@@ -40,6 +40,40 @@ afterEach(() => {
 })
 
 // ── accounts CRUD ─────────────────────────────────────────────────────────────
+
+describe('KiroDatabase: file permissions', () => {
+  // POSIX only; a filesystem that cannot represent modes is not the target of
+  // this guard. kiro.db holds long-lived bearer credentials and is machine-
+  // shared, so it must not be world/group-readable.
+  const posix = process.platform !== 'win32'
+
+  test.if(posix)('a freshly created kiro.db is owner-only (0600), not 0644', () => {
+    const d = mkdtempSync(join(tmpdir(), 'kiro-perm-'))
+    const p = join(d, 'fresh.db')
+    const fresh = new KiroDatabase(p)
+    try {
+      expect(statSync(p).mode & 0o777).toBe(0o600)
+    } finally {
+      fresh.close()
+      rmSync(d, { recursive: true, force: true })
+    }
+  })
+
+  test.if(posix)('an existing world-readable db is clamped to 0600 on open', () => {
+    const d = mkdtempSync(join(tmpdir(), 'kiro-perm-'))
+    const p = join(d, 'legacy.db')
+    // Simulate a db left 0644 by an older version.
+    writeFileSync(p, '')
+    chmodSync(p, 0o644)
+    const reopened = new KiroDatabase(p)
+    try {
+      expect(statSync(p).mode & 0o777).toBe(0o600)
+    } finally {
+      reopened.close()
+      rmSync(d, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('KiroDatabase: accounts', () => {
   test('starts empty', () => {

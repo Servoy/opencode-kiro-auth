@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { getConfigDir } from '../config/paths'
 import type { ManagedAccount } from '../types'
@@ -7,6 +7,22 @@ import { deduplicateAccounts, mergeAccounts, withDatabaseLock } from './locked-o
 import { runMigrations } from './migrations'
 
 const DB_PATH = join(getConfigDir(), 'kiro.db')
+
+/**
+ * Clamp kiro.db and its WAL/SHM siblings to 0600. It holds long-lived bearer
+ * credentials and is shared machine-wide; the umask default 0644 would let any
+ * local user read another's key. Best-effort: a non-POSIX filesystem throws,
+ * which must not fail startup.
+ */
+function restrictDbPermissions(path: string): void {
+  for (const p of [path, `${path}-wal`, `${path}-shm`]) {
+    try {
+      if (existsSync(p)) chmodSync(p, 0o600)
+    } catch {
+      // Non-POSIX filesystem or a race; the next open retries.
+    }
+  }
+}
 
 /** One account's share of a session: what it served and what it is estimated to have cost. */
 export interface SessionAccountUsage {
@@ -77,6 +93,8 @@ export class KiroDatabase {
     this.db = openDatabase(path)
     this.db.exec('PRAGMA busy_timeout = 5000')
     this.init()
+    // After init so WAL has created the siblings; also re-clamps a legacy 0644 db.
+    restrictDbPermissions(path)
   }
   private init() {
     this.db.exec('PRAGMA journal_mode = WAL')
