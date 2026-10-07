@@ -22,9 +22,8 @@ describe('the additionalModelRequestFields block', () => {
   })
 
   test('off disables thinking rather than asking for less of it', () => {
-    expect(buildModelRequestFields('claude-sonnet-5', 'low', true)).toEqual({
-      thinking: { type: 'disabled' }
-    })
+    // No live catalog here, so there is no confirmed channel to send.
+    expect(buildModelRequestFields('claude-sonnet-5', 'low', true)).toBeUndefined()
   })
 
   test('off wins over any effort that came with it', () => {
@@ -62,5 +61,61 @@ describe('the additionalModelRequestFields block', () => {
 
   test('off is the name the dial uses', () => {
     expect(EFFORT_OFF).toBe('off')
+  })
+})
+
+describe('off with a catalog-confirmed channel', () => {
+  async function withChannel(kiroModel: string, enumValues: string[], run: () => void) {
+    const { refreshModelCatalog, resetModelCatalog } = await import('../plugin/models.js')
+    resetModelCatalog()
+    const original = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          models: [
+            {
+              modelId: kiroModel,
+              additionalModelRequestFieldsSchema: {
+                properties: { thinking: { properties: { type: { enum: enumValues } } } }
+              }
+            }
+          ]
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+    try {
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+      run()
+    } finally {
+      globalThis.fetch = original
+      resetModelCatalog()
+    }
+  }
+
+  test('disabled pins effort to the ceiling', async () => {
+    await withChannel('claude-sonnet-5', ['adaptive', 'disabled'], () => {
+      expect(buildModelRequestFields('claude-sonnet-5', 'xhigh', true)).toEqual({
+        thinking: { type: 'disabled' },
+        output_config: { effort: 'high' }
+      })
+    })
+  })
+
+  test('between_tools in the enum still emits no block (confirmed 400 live)', async () => {
+    await withChannel('claude-sonnet-5.5', ['adaptive', 'between_tools'], () => {
+      expect(buildModelRequestFields('claude-sonnet-5.5', 'max', true)).toBeUndefined()
+    })
+  })
+
+  test('no off value in the enum emits no block at all', async () => {
+    await withChannel('claude-opus-5.5', ['adaptive'], () => {
+      expect(buildModelRequestFields('claude-opus-5.5', 'max', true)).toBeUndefined()
+    })
   })
 })

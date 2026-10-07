@@ -97,7 +97,7 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   'claude-sonnet-5-5': {
     name: 'Claude Sonnet 5.5',
     rate: '1.3x',
-    limit: CONTEXT_1M,
+    limit: CONTEXT_1M_128K_OUT,
     modalities: MULTIMODAL,
     thinking: true
   },
@@ -225,21 +225,19 @@ function effortLevelsFor(kiroModel: string): readonly Effort[] | null {
  * which the catalog reports as `high`. Off has to be asked for, and it rides
  * on the same dial so it reads as the bottom of one scale.
  */
-function buildVariants(levels: readonly Effort[], canDisable: boolean): Record<string, unknown> {
+function buildVariants(
+  levels: readonly Effort[],
+  offChannel: 'disabled' | 'between_tools' | undefined
+): Record<string, unknown> {
   const variants: Record<string, unknown> = {}
-  if (canDisable) variants[EFFORT_OFF] = { reasoningEffort: EFFORT_OFF }
+  if (offChannel) variants[EFFORT_OFF] = { reasoningEffort: EFFORT_OFF }
   for (const level of levels) variants[level] = { reasoningEffort: level }
   return variants
 }
 
-/**
- * Whether the model takes `thinking.type = disabled`.
- *
- * Only the catalog knows; before it is read, assume a model with a dial can
- * also be turned off, which is true of every Claude model the service lists.
- */
-function canDisableThinking(kiroModel: string): boolean {
-  return getCatalogCapabilities(kiroModel)?.supportsThinking ?? true
+/** Only the catalog knows; cold or unreachable means no off variant. */
+function thinkingOffChannel(kiroModel: string): 'disabled' | 'between_tools' | undefined {
+  return getCatalogCapabilities(kiroModel)?.thinkingOffChannel
 }
 
 /**
@@ -301,7 +299,7 @@ export function buildModelRegistry(nameSuffix = ''): Record<string, unknown> {
     if (levels) {
       base.reasoning = true
       base.interleaved = { field: 'reasoning_content' }
-      base.variants = buildVariants(levels, canDisableThinking(kiroModel))
+      base.variants = buildVariants(levels, thinkingOffChannel(kiroModel))
     }
     models[modelID] = base
   }

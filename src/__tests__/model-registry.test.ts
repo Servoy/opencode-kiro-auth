@@ -106,13 +106,10 @@ describe('model registry', () => {
       }
     })
 
-    test('offers off as the first position on the dial', () => {
-      // Picking nothing is not off: the service then applies its own default,
-      // which the catalog reports as high. Off has to be asked for.
+    test('offers no off variant without a catalog-confirmed channel', () => {
+      // Fail-closed: a cold catalog means no model has a confirmed channel.
       for (const id of thinkingIDs) {
-        const names = Object.keys(registry[id].variants)
-        expect(names[0]).toBe('off')
-        expect(registry[id].variants.off).toEqual({ reasoningEffort: 'off' })
+        expect(Object.keys(registry[id].variants)).not.toContain('off')
       }
     })
 
@@ -143,6 +140,7 @@ describe('model registry', () => {
   test('carries limit and modalities', () => {
     expect(registry['claude-opus-5'].limit).toEqual({ context: 1000000, output: 128000 })
     expect(registry['claude-opus-5'].modalities).toBeDefined()
+    expect(registry['claude-sonnet-5-5'].limit).toEqual({ context: 1000000, output: 128000 })
   })
 })
 
