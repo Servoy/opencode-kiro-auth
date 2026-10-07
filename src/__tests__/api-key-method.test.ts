@@ -30,6 +30,14 @@ let email: string | undefined = 'user@example.com'
 let urls: string[] = []
 let bearers: string[] = []
 let tokentypes: string[] = []
+// Per-region GetProfile status, for the region-sweep tests. When a region has
+// an entry it wins over the flat profileStatus; otherwise profileStatus applies
+// so the existing single-region tests are unchanged.
+let profileStatusByRegion: Record<string, number> = {}
+
+function regionOf(url: string): string {
+  return url.match(/management\.([a-z0-9-]+)\.kiro\.dev/)?.[1] ?? ''
+}
 
 function installFetch(): void {
   globalThis.fetch = (async (input: any, init?: any) => {
@@ -40,8 +48,9 @@ function installFetch(): void {
     const target = String(init?.headers?.['X-Amz-Target'] ?? '')
 
     if (url.includes('management.') && target.endsWith('.GetProfile')) {
-      if (profileStatus !== 200) {
-        return new Response(JSON.stringify({ message: 'Invalid token' }), { status: profileStatus })
+      const status = profileStatusByRegion[regionOf(url)] ?? profileStatus
+      if (status !== 200) {
+        return new Response(JSON.stringify({ message: 'Invalid token' }), { status })
       }
       return new Response(JSON.stringify({ profile: { arn } }), { status: 200 })
     }
@@ -82,8 +91,15 @@ function makeMethod() {
   return new ApiKeyAuthMethod(CONFIG, repository, accountManager)
 }
 
+// A developer (or the Servoy IDE) may have KIRO_API_KEY exported; it must not
+// leak into tests that exercise the no-key / blank-input paths, or the config
+// fallback would silently supply a real key. Saved and restored.
+const savedEnvKey = process.env.KIRO_API_KEY
+
 beforeEach(() => {
+  delete process.env.KIRO_API_KEY
   profileStatus = 200
+  profileStatusByRegion = {}
   usageStatus = 200
   arn = ARN_A
   email = 'user@example.com'
@@ -100,6 +116,8 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch
+  if (savedEnvKey === undefined) delete process.env.KIRO_API_KEY
+  else process.env.KIRO_API_KEY = savedEnvKey
   db.close()
   rmSync(dir, { recursive: true, force: true })
 })
@@ -158,6 +176,35 @@ describe('API key sign-in', () => {
     }
     expect(await method.authorize().catch((e) => e)).toBeInstanceOf(Error)
     expect(urls).toHaveLength(0)
+    expect(saved).toHaveLength(0)
+  })
+
+  test('falls back to another Kiro region when the preferred one rejects the key', async () => {
+    // The Servoy case: default_region (us-east-1) is the wrong host for an
+    // eu-central-1 key, so GetProfile there rejects; the sweep then tries
+    // eu-central-1, which answers with the ARN. Only KIRO_API_KEY needs setting.
+    profileStatusByRegion = { 'us-east-1': 400, 'eu-central-1': 200 }
+    arn = ARN_A // eu-central-1 ARN
+
+    const result = await makeMethod().authorize({ api_key: KEY_A })
+
+    expect(result.type).toBe('success')
+    expect(saved).toHaveLength(1)
+    expect(saved[0]!.region).toBe('eu-central-1')
+    // Preferred region tried first, then the fallback.
+    const profileRegions = urls.filter((u) => u.includes('management.')).map(regionOf)
+    expect(profileRegions[0]).toBe('us-east-1')
+    expect(profileRegions).toContain('eu-central-1')
+  })
+
+  test('a key rejected by every region fails with the rejection, not a transport error', async () => {
+    profileStatusByRegion = { 'us-east-1': 403, 'eu-central-1': 403 }
+    const err: any = await makeMethod()
+      .authorize({ api_key: KEY_A })
+      .catch((e) => e)
+
+    expect(String(err.message)).toContain('rejected')
+    expect(String(err.message)).not.toContain(KEY_A)
     expect(saved).toHaveLength(0)
   })
 
@@ -258,6 +305,39 @@ describe('API key sign-in', () => {
     await method.authorize({ api_key: KEY_A })
 
     expect(db.getAccounts()).toHaveLength(1)
+  })
+
+  test('a blank prompt falls back to KIRO_API_KEY from the environment', async () => {
+    process.env.KIRO_API_KEY = KEY_A
+    await makeMethod().authorize({ api_key: '' })
+
+    expect(saved).toHaveLength(1)
+    expect(saved[0]!.accessToken).toBe(KEY_A)
+  })
+
+  test('no inputs at all (the auto-register call) uses the configured key', async () => {
+    const method = new ApiKeyAuthMethod({ default_region: 'us-east-1', api_key: KEY_A }, {
+      save: async (acc: ManagedAccount) => {
+        saved.push(acc)
+        await db.upsertAccount(acc)
+      }
+    } as any)
+    await method.authorize()
+
+    expect(saved).toHaveLength(1)
+    expect(saved[0]!.accessToken).toBe(KEY_A)
+  })
+
+  test('a typed malformed key is rejected even when a valid key is configured', async () => {
+    // The configured key must never silently stand in for a wrong paste.
+    process.env.KIRO_API_KEY = KEY_A
+    const err: any = await makeMethod()
+      .authorize({ api_key: 'ksk_short' })
+      .catch((e) => e)
+
+    expect(err).toBeInstanceOf(Error)
+    expect(saved).toHaveLength(0)
+    expect(urls).toHaveLength(0)
   })
 
   test('pasting a new key for the same profile replaces the old one and recovers a dead account', async () => {

@@ -59,6 +59,10 @@ export const KiroConfigSchema = z.object({
   idc_region: RegionSchema.optional(),
   idc_profile_arn: z.string().optional(),
 
+  // A long-lived Kiro API key (ksk_…); KIRO_API_KEY overrides it. Region comes
+  // from the key's profile ARN, not from here.
+  api_key: z.string().optional(),
+
   account_selection_strategy: AccountSelectionStrategySchema.default('lowest-usage'),
 
   default_region: RegionSchema.default('us-east-1'),
