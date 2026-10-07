@@ -19,7 +19,7 @@ export function resolveKiroModel(model: string): string {
  * which is not the same as the service having said no — and a plugin that
  * cannot tell those apart acts on an answer nobody gave.
  */
-const CATALOG_VERSION = 2
+const CATALOG_VERSION = 3
 const VERSION_KEY = '__catalogVersion'
 
 const CATALOG_TTL_MS = 30 * 60 * 1000
@@ -41,7 +41,8 @@ export interface ModelCapabilities {
   inputTypes?: string[]
   /** Effort levels the model accepts, in the order the service lists them. */
   efforts?: string[]
-  supportsThinking?: boolean
+  /** Wire value that turns thinking off, or undefined if the model has none. */
+  thinkingOffChannel?: 'disabled' | 'between_tools'
   /** Whether the model accepts an additionalModelRequestFields block at all. */
   supportsRequestFields?: boolean
   supportsCaching?: boolean
@@ -371,7 +372,12 @@ function readCapabilities(entry: any): ModelCapabilities {
   if (Array.isArray(efforts)) {
     caps.efforts = efforts.filter((e: unknown) => typeof e === 'string')
   }
-  if (schema?.thinking) caps.supportsThinking = true
+  // 'between_tools' is in the enum for sonnet-5.5, but the live endpoint
+  // 400s on it regardless — only 'disabled' is confirmed to work.
+  const thinkingTypes: unknown = schema?.thinking?.properties?.type?.enum
+  if (Array.isArray(thinkingTypes) && thinkingTypes.includes('disabled')) {
+    caps.thinkingOffChannel = 'disabled'
+  }
 
   return caps
 }

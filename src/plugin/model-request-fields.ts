@@ -16,8 +16,9 @@ export interface AdditionalModelRequestFields {
   /** GPT family reasoning channel; the service reads one or the other.
    *  GPT accepts `none` as its off switch, which Claude's enum does not. */
   reasoning?: { effort: Effort | 'none' }
-  /** Adaptive is the service default; disabled is the only real off switch. */
-  thinking?: { type: 'adaptive' | 'disabled' }
+  /** Adaptive is the default. 'between_tools' is in the enum but the
+   *  endpoint 400s on it, so this plugin never emits it. */
+  thinking?: { type: 'adaptive' | 'disabled' | 'between_tools' }
   max_tokens?: number
 }
 
@@ -52,8 +53,16 @@ export function buildModelRequestFields(
   if (thinkingDisabled) {
     // GPT has no thinking.type; its off is reasoning.effort = none. The Claude
     // disabled switch sent to GPT is a 400, and vice versa.
-    if (gpt) fields.reasoning = { effort: 'none' }
-    else fields.thinking = { type: 'disabled' }
+    if (gpt) {
+      fields.reasoning = { effort: 'none' }
+    } else {
+      // No confirmed channel: leave the block off instead of guessing a 400.
+      const channel = getCatalogCapabilities(kiroModel)?.thinkingOffChannel
+      if (channel) {
+        fields.thinking = { type: channel }
+        fields.output_config = { effort: 'high' } // the service caps off at high
+      }
+    }
   } else if (effort) {
     if (gpt) fields.reasoning = { effort }
     else fields.output_config = { effort }
