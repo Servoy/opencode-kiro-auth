@@ -100,7 +100,15 @@ describe('warnIfProviderWillNotRegister', () => {
 
   test('silent when there is no usable account to register anyway', () => {
     logs.length = 0
-    warnIfProviderWillNotRegister(false, false)
+    expect(warnIfProviderWillNotRegister(false, false)).toBe(false)
     expect(logs).toHaveLength(0)
+  })
+
+  test('reports the dead end so the host can prompt for a sign-in', () => {
+    // The return is what v2 turns into a `needs_auth` connection status; the
+    // log alone reached nobody.
+    expect(warnIfProviderWillNotRegister(true, false)).toBe(true)
+    expect(warnIfProviderWillNotRegister(true, true)).toBe(false)
+    expect(warnIfProviderWillNotRegister(false, false)).toBe(false)
   })
 })

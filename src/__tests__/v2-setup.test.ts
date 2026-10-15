@@ -40,7 +40,11 @@ function fakeCtx() {
         return reg
       },
       reload: async () => {},
-      connection: { active: async () => undefined, resolve: async () => undefined }
+      connection: {
+        active: async () => undefined,
+        resolve: async () => undefined,
+        status: async () => {}
+      }
     },
     session: {
       hook: async (name: string) => {

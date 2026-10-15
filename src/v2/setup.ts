@@ -79,7 +79,25 @@ export function createV2Setup(id: string) {
 
     const hasUsableAccount = accountManager.getCurrentOrNext() !== null
     const hostConnection = await ctx.integration.connection.active(id).catch(() => undefined)
-    warnIfProviderWillNotRegister(hasUsableAccount, !!hostConnection)
+    const willNotRegister = warnIfProviderWillNotRegister(hasUsableAccount, !!hostConnection)
+
+    // Tell the host, not just the log. A `needs_auth` status makes it render a
+    // sign-in prompt; without a connection to attach it to there is nothing to
+    // report, which is the state this branch already knows it is in.
+    if (willNotRegister) {
+      await ctx.integration.connection
+        .status({
+          integrationID: id,
+          connection: hostConnection,
+          status: {
+            status: 'needs_auth',
+            message:
+              'Kiro is signed in elsewhere on this machine, but this OpenCode store has no ' +
+              'credential for it. Sign in to Kiro here to use the Kiro provider.'
+          }
+        })
+        .catch(() => {})
+    }
 
     // Read the account's real context windows before registering models, so the
     // advertised limit is the catalog's from the first request. Best-effort: a
@@ -114,18 +132,26 @@ export function createV2Setup(id: string) {
 
     const bridge = createRequestBridge(requestHandler, toast)
 
-    registrations.push(await ctx.session.hook('http.request', () => {}))
+    // Scoped to this provider; unscoped, the host runs these for every provider and
+    // the response hook clones each body before rejecting the URL.
+    const onlyKiro = { providerID: id }
+
+    registrations.push(await ctx.session.hook('http.request', () => {}, onlyKiro))
     registrations.push(
-      await ctx.session.hook('http.response', async (event: V2SessionHttpResponse) => {
-        const url = event.request?.url ?? ''
-        if (!bridge.isKiroUrl(url)) return
-        const body = event.request.body ? await event.request.clone().text() : undefined
-        const headers: Record<string, string> = {}
-        event.request.headers.forEach((value, key) => {
-          headers[key] = value
-        })
-        event.response = await bridge.handleRequest(url, { body, headers })
-      })
+      await ctx.session.hook(
+        'http.response',
+        async (event: V2SessionHttpResponse) => {
+          const url = event.request?.url ?? ''
+          if (!bridge.isKiroUrl(url)) return
+          const body = event.request.body ? await event.request.clone().text() : undefined
+          const headers: Record<string, string> = {}
+          event.request.headers.forEach((value, key) => {
+            headers[key] = value
+          })
+          event.response = await bridge.handleRequest(url, { body, headers })
+        },
+        onlyKiro
+      )
     )
 
     // Live quota-in-model-name (v1 parity) is a follow-up: on v2 it must go

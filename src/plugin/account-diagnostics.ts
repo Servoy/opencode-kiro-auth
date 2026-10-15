@@ -41,19 +41,20 @@ export function logAccountDiagnostics(
  * Warn about the specific v2 dead end: a usable account exists in kiro.db, but
  * the host has no credential for the integration in this XDG home's opencode.db,
  * so it never registers the provider. The host shows nothing and later fails a
- * turn with an unrelated geographic error. Naming it here is the one signal that
- * points at the real fix — sign in (or import the credential) in this home.
+ * turn with an unrelated geographic error.
+ *
+ * Returns true in that case, which is what v2 turns into a `connection.status`.
  */
 export function warnIfProviderWillNotRegister(
   hasUsableAccount: boolean,
   hasHostConnection: boolean
-): void {
-  if (hasUsableAccount && !hasHostConnection) {
-    logger.warn(
-      `A usable Kiro account exists in ${getConfigDir()}/kiro.db, but this opencode store has ` +
-        `no credential for the Kiro integration, so the provider will not register. ` +
-        `Sign in to Kiro in this environment (or import the credential into its opencode store) — ` +
-        `the host otherwise reports an unrelated error such as "not available in your country".`
-    )
-  }
+): boolean {
+  if (!(hasUsableAccount && !hasHostConnection)) return false
+  logger.warn(
+    `A usable Kiro account exists in ${getConfigDir()}/kiro.db, but this opencode store has ` +
+      `no credential for the Kiro integration, so the provider will not register. ` +
+      `Sign in to Kiro in this environment (or import the credential into its opencode store) — ` +
+      `the host otherwise reports an unrelated error such as "not available in your country".`
+  )
+  return true
 }
