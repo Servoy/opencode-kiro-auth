@@ -25,12 +25,11 @@ export interface V2ProviderResult {
 }
 
 /**
- * Map a v1 registry entry to a v2 `Model.Info`. The two schemas disagree on
- * several field names, so this is an explicit translation rather than a spread:
- * v1 `modalities.{input,output}` become `capabilities.{input,output}` (with a
- * `tools` flag v2 requires), the v1 `variants` object becomes a v2 array of
- * `{ id, settings }`, and v2's mandatory `time`/`cost`/`status`/`enabled`
- * fields are supplied. Reasoning capability rides `capabilities.reasoning`.
+ * Map a v1 registry entry to a v2 `Model.Info`; the schemas disagree on field
+ * names, so this is a translation rather than a spread.
+ *
+ * Reasoning names its wire field via `compatibility`: `Model.Capabilities` is
+ * only `{tools, input, output}`, so a reasoning flag placed there is discarded.
  */
 function toV2Model(providerID: string, modelID: string, entry: V1RegistryModel): V2ModelInfo {
   const variants = entry.variants
@@ -40,6 +39,10 @@ function toV2Model(providerID: string, modelID: string, entry: V1RegistryModel):
       }))
     : []
 
+  // Kiro streams thinking under `reasoning_content`, not the OpenAI `reasoning`
+  // the host would otherwise assume from the compatible driver.
+  const compatibility = entry.reasoning === true ? { reasoningField: 'reasoning_content' } : {}
+
   return {
     id: modelID,
     modelID,
@@ -47,11 +50,10 @@ function toV2Model(providerID: string, modelID: string, entry: V1RegistryModel):
     name: entry.name,
     capabilities: {
       tools: true,
-      reasoning: entry.reasoning === true,
-      temperature: entry.temperature === true,
       input: entry.modalities.input,
       output: entry.modalities.output
     },
+    compatibility,
     variants,
     time: { released: 0 },
     cost: [],
@@ -85,6 +87,9 @@ export function buildV2Provider(
       name: 'Kiro',
       activation: 'auto',
       package: providerPackage,
+      // Ties the provider to the integration that signs in for it, so the host
+      // can attribute the credential rather than treating them as unrelated.
+      integrationID: providerID,
       settings: { baseURL }
     },
     models

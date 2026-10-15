@@ -13,23 +13,48 @@ export interface V2Registration {
 export interface V2ProviderInfo {
   id: string
   name: string
-  activation: string
+  activation: 'auto' | 'enabled' | 'disabled'
   package: string
+  /** Links this provider to the Kiro integration that supplies its credential. */
+  integrationID?: string
   settings?: Record<string, unknown>
   headers?: Record<string, string>
 }
 
+/** The three fields `Model.Capabilities` has; reasoning rides `compatibility`. */
 export interface V2ModelCapabilities {
   tools: boolean
-  reasoning?: boolean
-  temperature?: boolean
   input: Array<'text' | 'image' | 'pdf'>
   output: ['text']
+}
+
+/**
+ * How a model has to be talked to for reasoning and token ceilings: naming the
+ * wire field is what makes a model render thinking.
+ */
+export interface V2ModelCompatibility {
+  /** Wire field Kiro streams thinking under; see openai-converter.ts. */
+  reasoningField?: string
+  /** Every assistant message must carry the reasoning field, even when empty. */
+  requireReasoning?: boolean
+  /** Which key carries the output-token ceiling. */
+  maxTokensField?: 'max_completion_tokens' | 'max_tokens'
+  supportsEffortUpdates?: boolean
 }
 
 export interface V2ModelVariant {
   id: string
   settings?: Record<string, unknown>
+}
+
+/**
+ * One priced tier. Kiro bills credits rather than dollars, so the plugin emits
+ * an empty list; the shape is still declared so a future entry cannot drift.
+ */
+export interface V2ModelCost {
+  input: number
+  output: number
+  cache: { read: number; write: number }
 }
 
 export interface V2ModelInfo {
@@ -38,12 +63,13 @@ export interface V2ModelInfo {
   providerID: string
   name: string
   capabilities: V2ModelCapabilities
+  compatibility?: V2ModelCompatibility
   variants: V2ModelVariant[]
   time: { released: number }
-  cost: unknown[]
+  cost: V2ModelCost[]
   status: 'active' | 'alpha' | 'beta' | 'deprecated'
   enabled: boolean
-  limit: { context: number; output: number }
+  limit: { context: number; output: number; input?: number }
 }
 
 export interface V2ProviderEditor {
@@ -68,26 +94,6 @@ export interface V2ModelEditor {
 export interface V2ModelDomain {
   transform(callback: (editor: V2ModelEditor) => void): Promise<V2Registration>
   reload(): Promise<void>
-}
-
-export interface V2ToolExecuteContext {
-  signal: AbortSignal
-}
-
-export interface V2ToolDefinition {
-  name: string
-  description: string
-  input: unknown
-  options?: { codemode?: boolean; namespace?: string }
-  execute(input: unknown, context: V2ToolExecuteContext): Promise<{ content: string }>
-}
-
-export interface V2ToolEditor {
-  add(tool: V2ToolDefinition): void
-}
-
-export interface V2ToolDomain {
-  transform(callback: (editor: V2ToolEditor) => void): Promise<V2Registration>
 }
 
 export interface V2WebSearchResult {
@@ -186,7 +192,24 @@ export interface V2IntegrationDomain {
   connection: {
     active(integrationID: string): Promise<unknown | undefined>
     resolve(connection: unknown): Promise<unknown | undefined>
+    /**
+     * Report a connection problem, or `undefined` to clear it. Kiro keeps its own
+     * tokens in kiro.db, so the host cannot see one lapse — this is how we say so.
+     */
+    status(input: {
+      integrationID: string
+      connection: unknown
+      status: V2ConnectionStatus | undefined
+    }): Promise<void>
   }
+}
+
+/** What the host renders for a connection that needs the user to act. */
+export interface V2ConnectionStatus {
+  status: 'needs_auth'
+  message: string
+  /** Where to send them; omit to ask them to reconnect the integration instead. */
+  url?: string
 }
 
 export type V2SessionHookName = 'http.request' | 'http.response' | 'model.request'
@@ -217,10 +240,18 @@ export interface V2SessionDomain {
   ): Promise<V2Registration>
 }
 
+/**
+ * The v2 event envelope, as `packages/schema/src/event.ts` defines it.
+ *
+ * It carried a `properties` field that does not exist upstream; the real
+ * envelope is `{ id, type, created, data, location?, metadata? }`.
+ */
 export interface V2Event {
+  readonly id: string
   readonly type: string
-  readonly data?: unknown
-  readonly properties?: unknown
+  readonly created: number
+  readonly data: unknown
+  readonly metadata?: Record<string, unknown>
 }
 
 export interface V2EventDomain {
@@ -229,7 +260,8 @@ export interface V2EventDomain {
 
 export interface V2Location {
   directory: string
-  project: { id: string }
+  project: { id: string; directory?: string; canonical?: boolean }
+  workspaceID?: string
 }
 
 /** The narrowed v2 context this plugin binds to. */
@@ -238,7 +270,6 @@ export interface V2Context {
   options: Record<string, unknown>
   provider: V2ProviderDomain
   model: V2ModelDomain
-  tool: V2ToolDomain
   integration: V2IntegrationDomain
   session: V2SessionDomain
   event: V2EventDomain

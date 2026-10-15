@@ -3,6 +3,49 @@ import { describe, expect, test } from 'bun:test'
 import { buildV2Provider } from '../v2/models-bridge.js'
 
 describe('buildV2Provider', () => {
+  test('says nothing about reasoning in capabilities, which cannot carry it', () => {
+    // Model.Capabilities is exactly {tools, input, output} at 2.0.26. A key the
+    // schema does not define never reaches the host, so the whole reasoning
+    // story used to be dropped on the floor without a word.
+    const { models } = buildV2Provider('kiro', 'https://x/v1', '')
+    for (const m of models) {
+      expect(Object.keys(m.capabilities).sort()).toEqual(['input', 'output', 'tools'])
+    }
+  })
+
+  test('expresses reasoning as the compatibility the host actually reads', () => {
+    // Kiro streams its thinking as `reasoning_content` (openai-converter.ts), so
+    // that is the field name the host has to be told about.
+    const { models } = buildV2Provider('kiro', 'https://x/v1', '')
+    const thinking = models.find((m) => m.modelID === 'claude-opus-5-5')
+    const plain = models.find((m) => m.modelID === 'claude-haiku-4-5')
+
+    expect(thinking?.compatibility?.reasoningField).toBe('reasoning_content')
+    // A model that cannot reason declares nothing, rather than declaring it wrongly.
+    expect(plain?.compatibility?.reasoningField).toBeUndefined()
+  })
+
+  test('passes the real host constructor with reasoning declared', () => {
+    const { models } = buildV2Provider('kiro', 'https://x/v1', '')
+    const providerID = Provider.ID.make('kiro')
+    for (const m of models) {
+      const built = Model.Info.make({
+        id: Model.ID.make(m.id),
+        modelID: Model.ID.make(m.modelID),
+        providerID,
+        name: m.name,
+        capabilities: m.capabilities,
+        compatibility: m.compatibility,
+        variants: [],
+        time: m.time,
+        cost: [],
+        status: m.status,
+        enabled: m.enabled,
+        limit: m.limit
+      } as never)
+      expect(built.compatibility?.reasoningField).toBe(m.compatibility?.reasoningField)
+    }
+  })
   test('produces provider info with a package and baseURL', () => {
     const { info } = buildV2Provider('kiro', 'https://runtime.us-east-1.kiro.dev', '')
     expect(info.package).toContain('openai-compatible')
@@ -62,21 +105,21 @@ describe('buildV2Provider', () => {
     expect(built.id).toBe(providerID)
   })
 
-  test('reasoning models expose capabilities.reasoning and a variants array', () => {
+  test('reasoning models name the reasoning field and carry a variants array', () => {
     const { models } = buildV2Provider('kiro', 'https://x/v1', '')
     const sonnet = models.find((m) => m.id === 'claude-sonnet-4-5')
     expect(sonnet).toBeDefined()
-    expect(sonnet!.capabilities.reasoning).toBe(true)
+    expect(sonnet!.compatibility?.reasoningField).toBe('reasoning_content')
     expect(Array.isArray(sonnet!.variants)).toBe(true)
     expect(sonnet!.variants.some((v) => v.id === 'high')).toBe(true)
   })
 
-  test('non-reasoning models carry an empty variants array', () => {
+  test('non-reasoning models declare no reasoning field and carry no variants', () => {
     const { models } = buildV2Provider('kiro', 'https://x/v1', '')
-    const deepseek = models.find((m) => m.id === 'deepseek-3.2')
-    expect(deepseek).toBeDefined()
-    expect(deepseek!.capabilities.reasoning).toBe(false)
-    expect(deepseek!.variants).toEqual([])
+    const qwen = models.find((m) => m.id === 'qwen3-coder-next')
+    expect(qwen).toBeDefined()
+    expect(qwen!.compatibility?.reasoningField).toBeUndefined()
+    expect(qwen!.variants).toEqual([])
   })
 
   test('quota suffix is appended to model names when provided', () => {
