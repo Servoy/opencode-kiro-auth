@@ -12,11 +12,8 @@ describe('effort module', () => {
       expect(supportsEffort('claude-opus-4.8')).toBe(true)
       expect(supportsEffort('claude-opus-4.7')).toBe(true)
       expect(supportsEffort('claude-sonnet-4.6')).toBe(true)
-      expect(supportsEffort('claude-sonnet-4.6-1m')).toBe(true)
       expect(supportsEffort('claude-sonnet-5')).toBe(true)
-      expect(supportsEffort('claude-sonnet-5-1m')).toBe(true)
       expect(supportsEffort('claude-sonnet-5.5')).toBe(true)
-      expect(supportsEffort('claude-sonnet-5.5-1m')).toBe(true)
       expect(supportsEffort('claude-opus-5')).toBe(true)
       expect(supportsEffort('claude-opus-5.5')).toBe(true)
     })
@@ -34,9 +31,7 @@ describe('effort module', () => {
       expect(supportsXHighEffort('claude-opus-5')).toBe(true)
       expect(supportsXHighEffort('claude-opus-5.5')).toBe(true)
       expect(supportsXHighEffort('claude-sonnet-5')).toBe(true)
-      expect(supportsXHighEffort('claude-sonnet-5-1m')).toBe(true)
       expect(supportsXHighEffort('claude-sonnet-5.5')).toBe(true)
-      expect(supportsXHighEffort('claude-sonnet-5.5-1m')).toBe(true)
     })
 
     test('returns false for other models', () => {

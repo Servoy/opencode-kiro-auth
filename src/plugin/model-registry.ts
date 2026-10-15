@@ -52,7 +52,9 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   },
   'gpt-5.6-luna': {
     name: 'GPT-5.6 Luna',
-    rate: '1.1x',
+    // 0.6x up to 272K tokens of context, 1.2x past it. The tier price is the one
+    // shown, matching what Kiro lists.
+    rate: '0.6x',
     limit: CONTEXT_1M_128K_OUT,
     modalities: TEXT_ONLY
   },
@@ -135,7 +137,9 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     modalities: MULTIMODAL
   },
 
-  // Open weight models
+  // Open weight models. Rates and windows follow kiro.dev/docs/models rather than
+  // the catalog: that is per-account, and what one account is served says nothing
+  // about which models to offer everyone else.
   'deepseek-3.2': {
     name: 'DeepSeek 3.2',
     rate: '0.25x',

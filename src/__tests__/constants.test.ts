@@ -1,27 +1,15 @@
 import { describe, expect, test } from 'bun:test'
-import { isLongContextModel, normalizeRegion, SUPPORTED_MODELS } from '../constants.js'
+import { normalizeRegion, SUPPORTED_MODELS } from '../constants.js'
+import { MODEL_SPECS } from '../plugin/model-registry.js'
 
-describe('isLongContextModel', () => {
-  test('returns true for all 1m model variants', () => {
-    const expected1m = SUPPORTED_MODELS.filter((k) => k.includes('-1m'))
-    expect(expected1m.length).toBeGreaterThan(0)
-    for (const model of expected1m) {
-      expect(isLongContextModel(model)).toBe(true)
+describe('SUPPORTED_MODELS', () => {
+  test('offers the -1m slugs only as aliases, never as models of their own', () => {
+    // They resolve so a saved opencode.json keeps working, but nothing advertises
+    // them: Kiro serves one model per family and the 1M window is that model's.
+    expect(SUPPORTED_MODELS.filter((model) => model.includes('-1m')).length).toBeGreaterThan(0)
+    for (const id of Object.keys(MODEL_SPECS)) {
+      expect(id).not.toContain('-1m')
     }
-  })
-
-  test('returns false for standard context models', () => {
-    const standard = SUPPORTED_MODELS.filter((k) => !k.includes('-1m'))
-    expect(standard.length).toBeGreaterThan(0)
-    for (const model of standard) {
-      expect(isLongContextModel(model)).toBe(false)
-    }
-  })
-
-  test('returns false for unknown model strings', () => {
-    expect(isLongContextModel('unknown-model')).toBe(false)
-    expect(isLongContextModel('')).toBe(false)
-    expect(isLongContextModel('claude-sonnet-4-6')).toBe(false)
   })
 })
 

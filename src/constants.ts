@@ -62,27 +62,17 @@ export const MODEL_MAPPING: Record<string, string> = {
   'claude-sonnet-4': 'claude-sonnet-4',
   'claude-sonnet-4-5': 'claude-sonnet-4.5',
   'claude-sonnet-4-5-thinking': 'claude-sonnet-4.5',
-  'claude-sonnet-4-5-1m': 'claude-sonnet-4.5-1m',
-  'claude-sonnet-4-5-1m-thinking': 'claude-sonnet-4.5-1m',
   'claude-sonnet-4-6': 'claude-sonnet-4.6',
   'claude-sonnet-4-6-thinking': 'claude-sonnet-4.6',
-  'claude-sonnet-4-6-1m': 'claude-sonnet-4.6-1m',
-  'claude-sonnet-4-6-1m-thinking': 'claude-sonnet-4.6-1m',
   'claude-sonnet-5': 'claude-sonnet-5',
   'claude-sonnet-5-thinking': 'claude-sonnet-5',
-  'claude-sonnet-5-1m': 'claude-sonnet-5-1m',
-  'claude-sonnet-5-1m-thinking': 'claude-sonnet-5-1m',
   'claude-sonnet-5-5': 'claude-sonnet-5.5',
   'claude-sonnet-5-5-thinking': 'claude-sonnet-5.5',
-  'claude-sonnet-5-5-1m': 'claude-sonnet-5.5-1m',
-  'claude-sonnet-5-5-1m-thinking': 'claude-sonnet-5.5-1m',
   // Claude Opus
   'claude-opus-4-5': 'claude-opus-4.5',
   'claude-opus-4-5-thinking': 'claude-opus-4.5',
   'claude-opus-4-6': 'claude-opus-4.6',
   'claude-opus-4-6-thinking': 'claude-opus-4.6',
-  'claude-opus-4-6-1m': 'claude-opus-4.6-1m',
-  'claude-opus-4-6-1m-thinking': 'claude-opus-4.6-1m',
   'claude-opus-4-7': 'claude-opus-4.7',
   'claude-opus-4-7-thinking': 'claude-opus-4.7',
   'claude-opus-4-8': 'claude-opus-4.8',
@@ -91,6 +81,20 @@ export const MODEL_MAPPING: Record<string, string> = {
   'claude-opus-5-thinking': 'claude-opus-5',
   'claude-opus-5-5': 'claude-opus-5.5',
   'claude-opus-5-5-thinking': 'claude-opus-5.5',
+
+  // Retired `-1m` slugs, kept resolvable for saved configs. Kiro serves one model
+  // per family; the 1M window belongs to the base model. Sonnet 4.5 never gained
+  // one, so its two resolve to a 200K model.
+  'claude-sonnet-4-5-1m': 'claude-sonnet-4.5',
+  'claude-sonnet-4-5-1m-thinking': 'claude-sonnet-4.5',
+  'claude-sonnet-4-6-1m': 'claude-sonnet-4.6',
+  'claude-sonnet-4-6-1m-thinking': 'claude-sonnet-4.6',
+  'claude-sonnet-5-1m': 'claude-sonnet-5',
+  'claude-sonnet-5-1m-thinking': 'claude-sonnet-5',
+  'claude-sonnet-5-5-1m': 'claude-sonnet-5.5',
+  'claude-sonnet-5-5-1m-thinking': 'claude-sonnet-5.5',
+  'claude-opus-4-6-1m': 'claude-opus-4.6',
+  'claude-opus-4-6-1m-thinking': 'claude-opus-4.6',
   // OpenAI GPT (effort under reasoning.effort, no -thinking twin)
   'gpt-5.6-sol': 'gpt-5.6-sol',
   'gpt-5.6-terra': 'gpt-5.6-terra',
@@ -104,7 +108,12 @@ export const MODEL_MAPPING: Record<string, string> = {
   'minimax-m2.1': 'minimax-m2.1',
   'qwen3-coder-next': 'qwen3-coder-next',
   'kimi-k3': 'kimi-k3',
-  // Legacy / internal mappings kept for backwards compatibility
+  // Ids Kiro has since renamed away. Kept resolvable so an old saved config
+  // fails with a clear reason rather than "Unsupported model"; never advertised,
+  // because the inference endpoint answers every one of them with "Invalid model
+  // ID". DeepSeek 3.2 and GLM-5 are documented on kiro.dev but absent from the
+  // catalog this account is served, and answering "Invalid model ID" to a user
+  // who picked a listed model is worse than not offering it.
   'claude-3-7-sonnet': 'CLAUDE_3_7_SONNET_20250219_V1_0',
   'nova-swe': 'AGI_NOVA_SWE_V1_5',
   'gpt-oss-120b': 'OPENAI_GPT_OSS_120B_1_0',
@@ -113,12 +122,6 @@ export const MODEL_MAPPING: Record<string, string> = {
 }
 
 export const SUPPORTED_MODELS = Object.keys(MODEL_MAPPING)
-
-const LONG_CONTEXT_MODELS = new Set(Object.keys(MODEL_MAPPING).filter((k) => k.includes('-1m')))
-
-export function isLongContextModel(model: string): boolean {
-  return LONG_CONTEXT_MODELS.has(model)
-}
 
 export const KIRO_AUTH_SERVICE = {
   ENDPOINT: 'https://prod.{{region}}.auth.desktop.kiro.dev',
