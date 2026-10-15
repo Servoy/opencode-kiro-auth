@@ -103,9 +103,15 @@ export function createV2Setup(id: string) {
     // advertised limit is the catalog's from the first request. Best-effort: a
     // cold or unreachable catalog leaves the built-in windows in place, and the
     // reload below corrects them once the first request populates the catalog.
+    //
+    // A cold start reads its token straight off disk, which is exactly when it
+    // has lapsed, so discovery is offered the same health-preserving recovery the
+    // request path uses rather than being left to fail on its own.
     const account = accountManager.getCurrentOrNext()
     if (account) {
-      await refreshModelCatalog(accountManager.toAuthDetails(account)).catch(() => {})
+      await refreshModelCatalog(accountManager.toAuthDetails(account), () =>
+        requestHandler.recoverCatalogAuth(account)
+      ).catch(() => {})
     }
 
     const quota = ''
