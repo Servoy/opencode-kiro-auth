@@ -539,6 +539,29 @@ export class KiroDatabase {
     } catch {
       // best effort — cleanup must not throw during dispose
     }
+    this.reclaimWriteAheadLog()
+  }
+
+  /**
+   * Hand the write-ahead log back, if nothing else is reading it.
+   *
+   * TRUNCATE reclaims the file; PASSIVE only copies the pages and leaves it at
+   * its high-water mark. The busy wait is dropped for this statement so quitting
+   * cannot stall on a sibling that happens to be reading — the next project to
+   * finish gets the log instead.
+   */
+  private reclaimWriteAheadLog(): void {
+    try {
+      this.db.exec('PRAGMA busy_timeout = 0')
+      this.db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get()
+      this.db.exec('PRAGMA busy_timeout = 5000')
+    } catch {
+      try {
+        this.db.exec('PRAGMA busy_timeout = 5000')
+      } catch {
+        // nothing left to do — cleanup must not throw during dispose
+      }
+    }
   }
 
   getConversationId(

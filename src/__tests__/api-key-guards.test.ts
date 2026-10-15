@@ -296,16 +296,20 @@ describe('apikey recovery and re-auth', () => {
 
   test('catalog recovery gives up quietly for an apikey account', async () => {
     const { handler } = makeHandler([keyAccount()])
-    let forced = 0
+    let attempted = 0
     handler.tokenRefresher = {
       forceRefresh: async () => {
-        forced++
+        attempted++
+        return true
+      },
+      refreshPreservingAccountHealth: async () => {
+        attempted++
         return true
       }
     }
 
-    expect(await handler.recoverAuthForCatalog(keyAccount())).toBeUndefined()
-    expect(forced).toBe(0)
+    expect(await handler.recoverCatalogAuth(keyAccount())).toBeUndefined()
+    expect(attempted).toBe(0)
   })
 
   test('reauth with only apikey accounts never starts the IdC flow', async () => {

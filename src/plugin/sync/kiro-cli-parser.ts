@@ -1,10 +1,20 @@
 import { createHash } from 'node:crypto'
-import { homedir, platform } from 'node:os'
+import { homedir, platform, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+/**
+ * Where the Kiro CLI keeps its own database.
+ *
+ * Honours `KIROCLI_DB_PATH`, and resolves inside the tmpdir under test like
+ * every other path here — it reads credentials, so a test reaching it would
+ * otherwise load a real account.
+ */
 export function getCliDbPath(): string {
   const override = process.env.KIROCLI_DB_PATH
   if (override) return override
+  if (process.env.NODE_ENV === 'test') {
+    return join(tmpdir(), `kiro-plugin-test-cli-${process.pid}`, 'data.sqlite3')
+  }
   const p = platform()
   if (p === 'win32')
     return join(

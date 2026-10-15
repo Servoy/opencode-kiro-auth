@@ -28,6 +28,37 @@ let dir: string
 let dbPath: string
 let db: KiroDatabase
 
+describe('KiroDatabase: write-ahead log', () => {
+  // The wal file is scanned by every reader on every open, and this database is
+  // shared by every project on the machine. No pragma can bound it while another
+  // project is reading — a checkpoint cannot complete — so the log is reclaimed
+  // when a project is finished with it instead. Left unreclaimed it had grown to
+  // three megabytes of pages for a two-hundred-kilobyte database, which every new
+  // project then paid to read.
+  test('reclaims the log when a project is done writing', () => {
+    const { Database } = require('bun:sqlite')
+    const reader = new Database(dbPath)
+    // An open read transaction is what blocks a checkpoint; without another
+    // project reading, the writer alone always checkpoints and the log never
+    // grows. This is the condition that left three megabytes of pages behind for
+    // a two-hundred-kilobyte database, every new project then reading on open.
+    reader.exec('BEGIN')
+    reader.prepare('SELECT COUNT(*) FROM accounts').get()
+
+    for (let i = 0; i < 6; i++) {
+      db.setModelCatalog(`key-${i}`, { blob: 'x'.repeat(900_000) }, Date.now(), 60_000)
+    }
+    expect(statSync(`${dbPath}-wal`).size).toBeGreaterThan(1024 * 1024)
+
+    reader.exec('ROLLBACK')
+    reader.close()
+    db.close()
+
+    expect(statSync(`${dbPath}-wal`).size).toBeLessThan(1024 * 1024)
+    db = new KiroDatabase(dbPath)
+  })
+})
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'kiro-test-'))
   dbPath = join(dir, 'test.db')

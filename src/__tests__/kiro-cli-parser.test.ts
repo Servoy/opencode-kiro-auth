@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { homedir, tmpdir } from 'node:os'
 import {
   findClientCredsRecursive,
   getCliDbPath,
@@ -10,6 +11,15 @@ import {
 // ── getCliDbPath ──────────────────────────────────────────────────────────────
 
 describe('getCliDbPath', () => {
+  test('resolves inside tmpdir under test, never the real Kiro CLI database', () => {
+    delete process.env.KIROCLI_DB_PATH
+
+    const resolved = getCliDbPath()
+
+    expect(resolved.startsWith(tmpdir())).toBe(true)
+    expect(resolved).not.toContain(homedir() + '/Library')
+  })
+
   test('respects KIROCLI_DB_PATH override', () => {
     process.env.KIROCLI_DB_PATH = '/custom/path.db'
     expect(getCliDbPath()).toBe('/custom/path.db')
