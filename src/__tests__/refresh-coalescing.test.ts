@@ -149,4 +149,37 @@ describe('token refresh coalescing', () => {
     await refresher.refreshIfNeeded(account, staleAuth, () => {})
     expect(refreshCalls).toBe(2)
   })
+
+  test('two sessions rejected by the same stale token fire ONE network refresh', async () => {
+    refreshCalls = 0
+    const { refresher, account, auth } = createRefresher()
+
+    // Both sessions hold the same token and both get a 403 within milliseconds
+    // of each other — the shape seen in the logs, where one account produced two
+    // OIDC exchanges 13ms apart. Refreshing twice spends a second rotating
+    // refresh token on one the first call already consumed.
+    const outcomes = await Promise.all([
+      refresher.forceRefresh(account, auth),
+      refresher.forceRefresh(account, auth)
+    ])
+
+    expect(refreshCalls).toBe(1)
+    expect(outcomes).toEqual([true, true])
+  })
+
+  test('a forced refresh joins one already running instead of racing it', async () => {
+    refreshCalls = 0
+    const { refresher, account, auth } = createRefresher()
+
+    // Expiry and a bearer-403 are independent triggers on the same token, so
+    // they can overlap. They must still exchange it once.
+    const [expiryOutcome, forcedOutcome] = await Promise.all([
+      refresher.refreshIfNeeded(account, auth, () => {}),
+      refresher.forceRefresh(account, auth)
+    ])
+
+    expect(refreshCalls).toBe(1)
+    expect(expiryOutcome.shouldContinue).toBe(false)
+    expect(forcedOutcome).toBe(true)
+  })
 })

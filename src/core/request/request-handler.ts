@@ -400,7 +400,7 @@ export class RequestHandler {
       // should wait on it. Cached, so it runs at most once every five minutes.
       // If discovery hits a stale token it forces a refresh once — the same
       // recovery the request below does — instead of logging a failure.
-      void refreshModelCatalog(auth, () => this.recoverAuthForCatalog(acc))
+      void refreshModelCatalog(auth, () => this.recoverCatalogAuth(acc))
 
       const tAuthed = Date.now()
       const sdkPrep = this.prepareSdkRequest(
@@ -523,10 +523,12 @@ export class RequestHandler {
               this.accountManager.toAuthDetails(acc)
             )
             if (!refreshed) {
+              // The guard stays armed. Re-arming it here let the loop re-post
+              // the entire conversation — once per iteration, up to
+              // max_request_iterations — for a token now known to be dead.
               logger.warn(
                 `bearer-403 refresh failed, rotating/reauth convId=${sdkPrep.conversationId}`
               )
-              bearerRetried = false
             }
             continue
           }
@@ -820,10 +822,16 @@ export class RequestHandler {
    * retry with — or undefined when the refresh could not produce a new token,
    * so the catalog stops rather than repeats the same rejected call.
    */
-  private async recoverAuthForCatalog(acc: ManagedAccount): Promise<KiroAuthDetails | undefined> {
-    // A catalog failure says nothing about the key's chat access; don't kill the account for it.
+  /**
+   * Recover a lapsed token for catalog discovery, or undefined when it cannot.
+   *
+   * Never touches account health: discovery is not the request path, so however
+   * badly it fails it must leave a working account alone. An API key has nothing to
+   * refresh, which stops the catalog repeating a call already known to be refused.
+   */
+  async recoverCatalogAuth(acc: ManagedAccount): Promise<KiroAuthDetails | undefined> {
     if (acc.authMethod === 'apikey') return undefined
-    const refreshed = await this.tokenRefresher.forceRefresh(
+    const refreshed = await this.tokenRefresher.refreshPreservingAccountHealth(
       acc,
       this.accountManager.toAuthDetails(acc)
     )

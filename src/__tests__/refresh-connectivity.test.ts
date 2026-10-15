@@ -15,6 +15,17 @@ mock.module('../plugin/logger.js', () => ({
   logApiResponse: () => {}
 }))
 
+// forceRefresh runs the same token exchange, so the transport is stubbed here
+// too: a test must never reach the network, and the failure it injects is the
+// thing under test rather than a side effect.
+let refreshTransportFailure: Error | null = null
+mock.module('../plugin/token.js', () => ({
+  refreshAccessToken: async (auth: any) => {
+    if (refreshTransportFailure) throw refreshTransportFailure
+    return { ...auth, access: 'fresh-access-token', expires: Date.now() + 3_600_000 }
+  }
+}))
+
 const { TokenRefresher } = await import('../core/auth/token-refresher.js')
 
 function createRefresher() {
@@ -59,8 +70,56 @@ function createRefresher() {
   }
 
   const refresher = new TokenRefresher(config, accountManager, async () => {}, repository)
-  return { refresher, account, marked }
+  return { refresher, account, marked, toAuthDetails: accountManager.toAuthDetails }
 }
+
+describe('forcing a refresh after a bearer 403', () => {
+  test('a transport failure leaves the account healthy', async () => {
+    // forceRefresh runs when Kiro has already rejected the token, so the one
+    // thing it must not do is fail on a dropped connection and take the account
+    // down with it. A laptop that sleeps mid-request loses the network, not its
+    // credentials.
+    const { refresher, account, marked, toAuthDetails } = createRefresher()
+    refreshTransportFailure = new Error('fetch failed')
+
+    const refreshed = await refresher.forceRefresh(account, toAuthDetails(account))
+
+    expect(refreshed).toBe(false)
+    expect(marked).toEqual([])
+    refreshTransportFailure = null
+  })
+
+  test('a rejected credential does take the account down', async () => {
+    // The other half: an access token Kiro refuses to exchange is a real
+    // credential failure, and leaving it healthy would retry a dead token.
+    const { refresher, account, marked, toAuthDetails } = createRefresher()
+    refreshTransportFailure = new Error('Invalid refresh token provided')
+
+    const refreshed = await refresher.forceRefresh(account, toAuthDetails(account))
+
+    expect(refreshed).toBe(false)
+    expect(marked.length).toBe(1)
+    expect(marked[0]).toContain('Invalid refresh token')
+    refreshTransportFailure = null
+  })
+
+  test('a background recovery refresh leaves account health alone even on a dead credential', async () => {
+    // Context-window discovery runs beside the request, not as part of it. It
+    // answers nothing about whether the key can still chat, so however badly it
+    // fails it must not disable an account that is mid-conversation.
+    const { refresher, account, marked, toAuthDetails } = createRefresher()
+    refreshTransportFailure = new Error('Invalid refresh token provided')
+
+    const refreshed = await refresher.refreshPreservingAccountHealth(
+      account,
+      toAuthDetails(account)
+    )
+
+    expect(refreshed).toBe(false)
+    expect(marked).toEqual([])
+    refreshTransportFailure = null
+  })
+})
 
 describe('losing connectivity mid-session', () => {
   test('a transport failure stays retryable instead of killing the request', async () => {

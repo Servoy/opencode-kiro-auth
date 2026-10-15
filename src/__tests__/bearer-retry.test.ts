@@ -121,6 +121,7 @@ function createHarness() {
 
   const handler: any = new RequestHandler(accountManager, config, repository)
   let forceRefreshCalls = 0
+  let healthPreservingCalls = 0
 
   handler.accountSelector = {
     selectHealthyAccount: async () => account
@@ -130,6 +131,11 @@ function createHarness() {
     forceRefresh: async () => {
       forceRefreshCalls++
       account.accessToken = `fresh-access-token-${forceRefreshCalls}`
+      return true
+    },
+    refreshPreservingAccountHealth: async () => {
+      healthPreservingCalls++
+      account.accessToken = `fresh-access-token-${healthPreservingCalls}`
       return true
     }
   }
@@ -148,7 +154,8 @@ function createHarness() {
   return {
     handler,
     account,
-    getForceRefreshCalls: () => forceRefreshCalls
+    getForceRefreshCalls: () => forceRefreshCalls,
+    getHealthPreservingCalls: () => healthPreservingCalls
   }
 }
 
@@ -177,6 +184,24 @@ describe('RequestHandler SDK error recovery', () => {
     expect(sendCalls).toBe(2)
     expect(getForceRefreshCalls()).toBe(1)
     expect(apiResponseLogCalls).toBe(2)
+  })
+
+  test('a refresh that cannot produce a token does not re-post the payload until the budget runs out', async () => {
+    sdkErrorMessage = 'The bearer token included in the request is invalid'
+    sdkErrorName = 'ForbiddenException'
+    sdkHttpStatus = 403
+    const { handler } = createHarness()
+
+    // Fails without condemning the account, so the loop keeps choosing it. Each
+    // pass re-arms the one-shot guard and uploads the whole conversation again —
+    // up to max_request_iterations of it — for a token already known dead.
+    handler.tokenRefresher.forceRefresh = async () => false
+    handler.triggerReauth = async () => false
+
+    await request(handler)
+
+    // One forced refresh, one retry, then the reason reaches the user.
+    expect(sendCalls).toBe(2)
   })
 
   test('does not retry with the same token when refresh cannot produce a new one', async () => {
@@ -289,7 +314,7 @@ describe('RequestHandler catalog recovery wiring', () => {
     sdkErrorMessage = 'The bearer token included in the request is invalid'
     sdkErrorName = 'ForbiddenException'
     sdkHttpStatus = 403
-    const { handler, account, getForceRefreshCalls } = createHarness()
+    const { handler, account, getHealthPreservingCalls } = createHarness()
 
     await request(handler)
 
@@ -298,26 +323,45 @@ describe('RequestHandler catalog recovery wiring', () => {
     expect(catalogCalls).toBeGreaterThanOrEqual(1)
     expect(typeof catalogRecover).toBe('function')
 
-    // A stale-token discovery calls it: it forces a refresh and hands back the
-    // account's fresh auth so the catalog can retry.
-    const refreshesBefore = getForceRefreshCalls()
+    // A stale-token discovery calls it: it refreshes and hands back the account's
+    // fresh auth so the catalog can retry.
+    const refreshesBefore = getHealthPreservingCalls()
     const recovered = await catalogRecover!()
-    expect(getForceRefreshCalls()).toBe(refreshesBefore + 1)
+    expect(getHealthPreservingCalls()).toBe(refreshesBefore + 1)
     expect(recovered?.access).toBe(account.accessToken)
     expect(recovered?.access).toContain('fresh-access-token')
   })
 
-  test('recovery returns undefined when the forced refresh yields no new token', async () => {
+  test('recovery never reaches for the refresh that can disable the account', async () => {
+    sdkErrorMessage = 'The bearer token included in the request is invalid'
+    sdkErrorName = 'ForbiddenException'
+    sdkHttpStatus = 403
+    const { handler, getForceRefreshCalls, getHealthPreservingCalls } = createHarness()
+
+    await request(handler)
+    await catalogRecover!()
+
+    // Discovery has no authority over whether the key can still chat. Only the
+    // request path may condemn an account, so the two counters must not move
+    // together — a recovery routed through forceRefresh would take the account
+    // down on a failure that says nothing about its access.
+    expect(getForceRefreshCalls()).toBe(1)
+    expect(getHealthPreservingCalls()).toBe(1)
+  })
+
+  test('recovery returns undefined when the refresh yields no new token', async () => {
     sdkErrorMessage = 'The bearer token included in the request is invalid'
     sdkErrorName = 'ForbiddenException'
     sdkHttpStatus = 403
     const { handler } = createHarness()
     handler.tokenRefresher.forceRefresh = async () => false
+    handler.tokenRefresher.refreshPreservingAccountHealth = async () => false
 
-    // forceRefresh never marks the account unhealthy here, so this exhausts the
-    // retry budget rather than hitting the reauth path — a throw, as before.
-    await expect(request(handler)).rejects.toThrow()
+    await request(handler)
 
+    // The request terminates rather than looping, which is covered above; what
+    // matters here is that a recovery with nothing to give reports nothing, so
+    // the catalog stops instead of repeating a call it knows is refused.
     expect(typeof catalogRecover).toBe('function')
     expect(await catalogRecover!()).toBeUndefined()
   })

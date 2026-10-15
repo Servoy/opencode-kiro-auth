@@ -17,6 +17,18 @@ interface TokenRefresherConfig {
 
 type RefreshOutcome = { account: ManagedAccount; shouldContinue: boolean }
 
+/**
+ * What one attempt to obtain a newer access token produced.
+ *
+ * `refreshed` is the only success. `unchanged` and `rejected` mean the token is
+ * unusable, `offline` that nobody knows — the caller's business.
+ */
+type RefreshExchange =
+  | { outcome: 'refreshed' }
+  | { outcome: 'unchanged' }
+  | { outcome: 'offline'; message: string }
+  | { outcome: 'rejected'; reason: string }
+
 export class TokenRefresher {
   /**
    * One in-flight refresh per account id, shared across every session in this
@@ -33,6 +45,25 @@ export class TokenRefresher {
     private repository: AccountRepository
   ) {}
 
+  /**
+   * Join a refresh already running for this account rather than starting a
+   * second. The map entry is cleared once the refresh settles, so the next
+   * genuine expiry starts a fresh one instead of resolving from a stale hit.
+   */
+  private coalesceRefresh(
+    account: ManagedAccount,
+    refresh: () => Promise<RefreshOutcome>
+  ): Promise<RefreshOutcome> {
+    const existing = TokenRefresher.inFlightByAccount.get(account.id)
+    if (existing) return existing
+
+    const inFlight = refresh().finally(() => {
+      TokenRefresher.inFlightByAccount.delete(account.id)
+    })
+    TokenRefresher.inFlightByAccount.set(account.id, inFlight)
+    return inFlight
+  }
+
   async refreshIfNeeded(
     account: ManagedAccount,
     auth: KiroAuthDetails,
@@ -42,17 +73,7 @@ export class TokenRefresher {
       return { account, shouldContinue: false }
     }
 
-    // Join an in-flight refresh for this account instead of starting a second.
-    // The map entry is cleared when the refresh settles (below), so the next
-    // genuine expiry starts a fresh one rather than resolving from a stale hit.
-    const existing = TokenRefresher.inFlightByAccount.get(account.id)
-    if (existing) return existing
-
-    const refresh = this.doRefresh(account, auth, showToast).finally(() => {
-      TokenRefresher.inFlightByAccount.delete(account.id)
-    })
-    TokenRefresher.inFlightByAccount.set(account.id, refresh)
-    return refresh
+    return this.coalesceRefresh(account, () => this.doRefresh(account, auth, showToast))
   }
 
   private async doRefresh(
@@ -60,17 +81,15 @@ export class TokenRefresher {
     auth: KiroAuthDetails,
     showToast: ToastFunction
   ): Promise<RefreshOutcome> {
-    // Retry transient failures (network blips, brief AWS SSO unavailability)
-    // before escalating to handleRefreshError. Permanent auth failures skip
-    // the retry — they're never going to succeed via refresh.
+    // Transient failures (network blips, brief SSO unavailability) are retried;
+    // permanent auth failures skip straight to handleRefreshError.
     const maxAttempts = 3
     let lastError: any
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const newAuth = await refreshAccessToken(auth)
         // updateFromAuth already persists the row; a second repository.save()
-        // was a duplicate full-table write under the same lock. Keep only the
-        // cache-invalidation so findAll no longer serves the pre-refresh token.
+        // duplicates a full-table write under the same lock.
         await this.accountManager.updateFromAuth(account, newAuth)
         this.repository.invalidateCache()
         return { account, shouldContinue: false }
@@ -100,6 +119,58 @@ export class TokenRefresher {
       return false
     }
 
+    const outcome = await this.coalesceRefresh(account, async () => {
+      const exchange = await this.exchangeRefreshToken(account, auth)
+      await this.disableAccountIfRejected(account, exchange)
+      return { account, shouldContinue: exchange.outcome !== 'refreshed' }
+    })
+    return !outcome.shouldContinue
+  }
+
+  /**
+   * Trade the account's access token for a fresh one without touching its health.
+   *
+   * For callers with no authority over the credential — context-window discovery
+   * runs beside a request, not as part of one — so a failure there cannot sign a
+   * working user out mid-conversation.
+   */
+  async refreshPreservingAccountHealth(
+    account: ManagedAccount,
+    auth: KiroAuthDetails
+  ): Promise<boolean> {
+    const outcome = await this.coalesceRefresh(account, async () => {
+      const exchange = await this.exchangeRefreshToken(account, auth)
+      return { account, shouldContinue: exchange.outcome !== 'refreshed' }
+    })
+    return !outcome.shouldContinue
+  }
+
+  /**
+   * Disable the account when the exchange proved its credential dead.
+   *
+   * A transport failure or an offline moment proves nothing, so it leaves the
+   * account alone — only an unchanged or explicitly rejected token does.
+   */
+  private async disableAccountIfRejected(
+    account: ManagedAccount,
+    exchange: RefreshExchange
+  ): Promise<void> {
+    if (exchange.outcome === 'unchanged') {
+      await this.markRefreshFailed(account, 'unauthorized: refresh returned unchanged token')
+    } else if (exchange.outcome === 'rejected') {
+      await this.markRefreshFailed(account, exchange.reason)
+    }
+  }
+
+  /**
+   * Get a newer access token, reporting what happened rather than what to do
+   * about it: marking the account unhealthy is the caller's policy, not this
+   * method's. Every caller wants the same trade, only the consequence differs.
+   */
+  private async exchangeRefreshToken(
+    account: ManagedAccount,
+    auth: KiroAuthDetails
+  ): Promise<RefreshExchange> {
     const previousToken = account.accessToken
 
     if (this.config.auto_sync_kiro_cli) {
@@ -113,7 +184,7 @@ export class TokenRefresher {
     if (synced && synced.accessToken && synced.accessToken !== previousToken) {
       await this.accountManager.updateFromAuth(account, this.accountManager.toAuthDetails(synced))
       logger.warn('Force refresh: recovered newer token from CLI sync')
-      return true
+      return { outcome: 'refreshed' }
     }
 
     try {
@@ -122,17 +193,25 @@ export class TokenRefresher {
 
       if (account.accessToken === previousToken) {
         logger.warn('Force refresh: OIDC returned an unchanged access token')
-        await this.markRefreshFailed(account, 'unauthorized: refresh returned unchanged token')
-        return false
+        return { outcome: 'unchanged' }
       }
 
       logger.warn('Force refresh: token refreshed via OIDC')
-      return true
+      return { outcome: 'refreshed' }
     } catch (e: any) {
       const message = e instanceof Error ? e.message : String(e)
+      // A dropped connection says nothing about the credentials. Reporting it as
+      // a rejection would turn a laptop that slept mid-request into a forced
+      // sign-in, so a transport failure stays its own outcome.
+      if (isTransientNetworkError(message) || isTransientNetworkError(e?.code)) {
+        logger.warn('Force refresh: no connectivity, token left as it was', {
+          email: account.email,
+          message
+        })
+        return { outcome: 'offline', message }
+      }
       logger.warn('Force refresh failed after bearer-403', { message })
-      await this.markRefreshFailed(account, e?.code || message)
-      return false
+      return { outcome: 'rejected', reason: e?.code || message }
     }
   }
 
