@@ -22,16 +22,14 @@ type _ProviderTransform = OfficialContext['provider']['transform']
 type _ProviderReload = OfficialContext['provider']['reload']
 type _ModelTransform = OfficialContext['model']['transform']
 type _ModelReload = OfficialContext['model']['reload']
-type _ToolTransform = OfficialContext['tool']['transform']
 type _IntegrationTransform = OfficialContext['integration']['transform']
 type _IntegrationConnActive = OfficialContext['integration']['connection']['active']
 type _IntegrationConnResolve = OfficialContext['integration']['connection']['resolve']
+type _IntegrationConnStatus = OfficialContext['integration']['connection']['status']
 type _SessionHook = OfficialContext['session']['hook']
 type _EventSubscribe = OfficialContext['event']['subscribe']
 type _LocationDir = OfficialContext['location']['directory']
-// Optional in the mirror (older hosts lack it); NonNullable so the alias still
-// checks the domain shape when the host provides it.
-type _WebSearchTransform = NonNullable<OfficialContext['websearch']>['transform']
+type _WebSearchTransform = OfficialContext['websearch']['transform']
 
 // Referencing each alias keeps it live under noUnusedLocals-equivalent checks.
 export type MirrorConformance = [
@@ -39,10 +37,10 @@ export type MirrorConformance = [
   _ProviderReload,
   _ModelTransform,
   _ModelReload,
-  _ToolTransform,
   _IntegrationTransform,
   _IntegrationConnActive,
   _IntegrationConnResolve,
+  _IntegrationConnStatus,
   _SessionHook,
   _EventSubscribe,
   _LocationDir,
@@ -70,16 +68,71 @@ type IntegrationEditorArg = Parameters<
 type ProviderAddArg = Parameters<ProviderEditorArg['add']>[0]
 type MethodUpdateArg = Parameters<IntegrationEditorArg['method']['update']>[0]
 
+/**
+ * The v2 schema brands its IDs (`Provider.ID`, `Model.ID`, …), which are plain
+ * strings at runtime and cannot be constructed without the v2 package this build
+ * deliberately does not depend on. Bridged per field so the guard still checks
+ * every other property — the whole-shape `as never` it replaced turned the check
+ * off rather than narrowing it.
+ */
+type ProviderID = ProviderAddArg extends { info: { id: infer I } } ? I : never
+type IntegrationID = NonNullable<NonNullable<ProviderAddArg['info']>['integrationID']>
+type ModelInfo = NonNullable<ProviderAddArg['models']>[number]
+type ModelID = ModelInfo['id']
+type VariantID = NonNullable<ModelInfo['variants']>[number]['id']
+type Cost = NonNullable<ModelInfo['cost']>[number]
+type USDPerMTokens = Cost['input']
+const branded = <T extends string>(id: string): T => id as T
+const usd = (amount: number): USDPerMTokens => amount as USDPerMTokens
+
 const _providerResult = buildV2Provider('kiro', 'https://example/v1', '')
 const _providerAddArg: ProviderAddArg = {
-  info: _providerResult.info as never,
-  models: _providerResult.models as never
+  info: {
+    ..._providerResult.info,
+    id: branded<ProviderID>(_providerResult.info.id),
+    integrationID: branded<IntegrationID>(_providerResult.info.integrationID!)
+  },
+  models: _providerResult.models.map((model) => ({
+    ...model,
+    id: branded<ModelID>(model.id),
+    modelID: branded<ModelID>(model.modelID),
+    providerID: branded<ProviderID>(model.providerID),
+    variants: model.variants.map((variant) => ({
+      ...variant,
+      id: branded<VariantID>(variant.id)
+    })),
+    cost: model.cost.map((tier) => ({
+      input: usd(tier.input),
+      output: usd(tier.output),
+      cache: { read: usd(tier.cache.read), write: usd(tier.cache.write) }
+    }))
+  }))
 }
 void _providerAddArg
 
-const _methodRegs = buildIntegrationMethods('kiro', [])
-const _methodUpdateArg: MethodUpdateArg | undefined = _methodRegs[0] as never
-void _methodUpdateArg
+// The OAuth credential is the one shape that matters and used to go unchecked:
+// the method list was built empty and the result cast with `as never`, so the
+// guard its own comment described did not exist. Built with a real method now.
+const [_oauthMethod] = buildIntegrationMethods('kiro', [
+  {
+    type: 'oauth',
+    label: 'Sign in',
+    authorize: async () => ({
+      url: 'https://example.invalid/start',
+      callback: async () => ({ type: 'failed' as const })
+    })
+  }
+])
+
+// The registration as a whole cannot be assigned here: the official `form` is a
+// variadic readonly tuple, while the mirror builds an array of string fields.
+// That container needs the v2 package to express, so the rest is guarded field
+// by field and the form element by the check below.
+type OAuthArm = Extract<MethodUpdateArg, { method: { type: 'oauth' } }>
+const _oauthMethodId: OAuthArm['method']['id'] = _oauthMethod!.method.id
+const _oauthMethodLabel: OAuthArm['method']['label'] = _oauthMethod!.method.label
+void _oauthMethodId
+void _oauthMethodLabel
 
 // The env method must assign into the official registration union with no cast.
 // It is how a configured KIRO_API_KEY brings the provider up headlessly without

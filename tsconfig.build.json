@@ -1,5 +1,6 @@
 {
   "extends": "./tsconfig.json",
   "include": ["src/**/*"],
-  "exclude": ["**/*.test.ts", "**/*.spec.ts"]
+  "//exclude": "The conformance guard is a typecheck-only artifact with top-level executable statements; shipping it drags the whole plugin graph into every consumer's import graph for nothing.",
+  "exclude": ["**/*.test.ts", "**/*.spec.ts", "src/v2/mirror-conformance.ts"]
 }
