@@ -26,6 +26,8 @@ const CATALOG_TTL_MS = 30 * 60 * 1000
 /** A failed lookup is retried sooner than a good one is refreshed, but not on
  *  every request: an unreachable catalog must not become a request per call. */
 const CATALOG_RETRY_MS = 5 * 60 * 1000
+/** Long enough that no session outlives it; see isPermanentCatalogError. */
+const CATALOG_UNRECOVERABLE_MS = 24 * 60 * 60 * 1000
 
 /**
  * What the service says a model can do, as ListAvailableModels reports it.
@@ -100,8 +102,12 @@ function notifyCatalogUpdated(entries: ReadonlyMap<string, ModelCapabilities>): 
   }
 }
 
-/** Limits are per account and per region, so a catalog belongs to one of each. */
-function accountKey(auth: KiroAuthDetails): string {
+/**
+ * Limits are per account and per region, so a catalog belongs to one of each.
+ * Exported so a test standing in for a sibling project writes the shared row
+ * under the key the code actually reads.
+ */
+export function accountKey(auth: KiroAuthDetails): string {
   return `${auth.region}:${auth.profileArn ?? ''}`
 }
 
@@ -143,12 +149,31 @@ function capabilitiesFor(model: string): ModelCapabilities | undefined {
  */
 export type CatalogAuthRecovery = () => Promise<KiroAuthDetails | undefined>
 
-/** A 403, or the 400 the control plane returns when the bearer token is stale. */
+/**
+ * A stale bearer token, and nothing else. The control plane words this three
+ * ways — a 403, and a 400 carrying `Invalid token` or `Token expired` — and all
+ * three are recoverable with a fresh token.
+ */
 function isCatalogAuthError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e)
+  if (!msg.includes('ListAvailableModels failed:')) return false
+  if (msg.includes('ListAvailableModels failed: 403')) return true
+  if (!msg.includes('ListAvailableModels failed: 400')) return false
+  return msg.includes('Invalid token') || msg.includes('Token expired')
+}
+
+/**
+ * A rejection that will read the same however often it is asked — a malformed
+ * request, such as an account with no usable profile ARN. Retrying one on the
+ * ordinary failure clock turns an account that cannot discover a catalog into
+ * permanent traffic at the control plane.
+ */
+function isPermanentCatalogError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e)
   return (
-    msg.includes('ListAvailableModels failed: 403') ||
-    (msg.includes('ListAvailableModels failed: 400') && msg.includes('Invalid token'))
+    msg.includes('ListAvailableModels failed: 400') &&
+    !msg.includes('Invalid token') &&
+    !msg.includes('Token expired')
   )
 }
 
@@ -213,10 +238,18 @@ export async function refreshModelCatalog(
   if (Date.now() - catalogAttemptedAt < catalogTtl && key === catalogKey) return
   if (catalogInFlight) return catalogInFlight
 
-  // Another project may already have asked. The catalog lives in kiro.db
-  // precisely because OpenCode gives each project its own module instance.
   const stored = readStoredCatalog(key)
   if (stored) return
+
+  // The in-memory guards cannot see a sibling project; only the shared store can.
+  // A lookup that found nothing still leaves a record, so projects starting cold
+  // do not all fetch in the same second.
+  if (attemptedRecentlyFor(key)) return
+
+  // Claim the attempt before making it, so a sibling starting microseconds later
+  // sees the claim rather than racing it. A project that dies mid-lookup costs
+  // the backoff window, not a stampede.
+  recordAttempt(key)
 
   catalogInFlight = (async () => {
     try {
@@ -246,8 +279,11 @@ export async function refreshModelCatalog(
       }
     } catch (e) {
       catalogAttemptedAt = Date.now()
-      catalogTtl = CATALOG_RETRY_MS
+      catalogTtl = isPermanentCatalogError(e) ? CATALOG_UNRECOVERABLE_MS : CATALOG_RETRY_MS
       catalogKey = key
+      // A refusal that cannot change on a retry is not repeated on the ordinary
+      // failure clock, however long that clock is.
+      recordAttempt(key, catalogTtl)
       // Only back off in the shared store if there is something to back off
       // with. kiro.db is shared by every project on the machine, so writing an
       // empty map over a good row — which is what a cold start whose first
@@ -316,6 +352,37 @@ function readStoredCatalog(key: string): boolean {
   catalogKey = key
   notifyCatalogUpdated(catalogByKiroModel)
   return true
+}
+
+/**
+ * Has anyone looked this key up recently and come away with nothing?
+ *
+ * Only a bare attempt marker counts. A row carrying models — even ones this
+ * version cannot read, such as a catalog written before a field existed — is a
+ * row that needs fetching, and letting its timestamp stand in for an answer
+ * would leave an account on the built-in limits for the whole TTL.
+ */
+function attemptedRecentlyFor(key: string): boolean {
+  try {
+    const row = kiroDb.getModelCatalog(key)
+    if (!row) return false
+    if (Date.now() - row.attemptedAt >= row.ttlMs) return false
+    return !row.models[VERSION_KEY] && Object.keys(row.models).length === 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Put this project's attempt on the shared record without disturbing any
+ * catalog another project already stored.
+ */
+function recordAttempt(key: string, ttlMs = CATALOG_RETRY_MS): void {
+  try {
+    kiroDb.recordCatalogAttempt(key, Date.now(), ttlMs)
+  } catch (e) {
+    logger.debug(`Model catalog: could not record attempt (${e instanceof Error ? e.message : e})`)
+  }
 }
 
 function persist(

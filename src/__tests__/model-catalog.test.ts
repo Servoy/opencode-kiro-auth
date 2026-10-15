@@ -16,6 +16,8 @@ const catalogModule = await import('../plugin/models.js')
 const { getCatalogContextLimit, refreshModelCatalog, resetModelCatalog } = catalogModule
 const { getModelContextLimit, buildModelRegistry, MODEL_SPECS } =
   await import('../plugin/model-registry.js')
+const { accountKey } = catalogModule
+const accountKeyFor = (details: unknown) => accountKey(details as never)
 
 const auth: any = { region: 'eu-central-1', access: 'token' }
 const originalFetch = globalThis.fetch
@@ -790,6 +792,25 @@ describe('a catalog fetched on a stale token', () => {
     expect(recoverCalls).toBe(1)
   })
 
+  test('400 Token expired is treated as a stale token and retried', async () => {
+    // The control plane sends this wording as readily as "Invalid token", and
+    // both mean the same thing: the token lapsed. Matching only one of them left
+    // the other with no recovery path at all.
+    const { calls, recoverCalls } = await run(
+      () =>
+        new Response(
+          JSON.stringify({
+            __type: 'com.amazon.kiro.controlplane#AccessDeniedException',
+            message: 'Token expired'
+          }),
+          { status: 400 }
+        ),
+      async () => ({ ...AUTH, access: 'fresh' })
+    )
+    expect(calls).toBe(2)
+    expect(recoverCalls).toBe(1)
+  })
+
   test('does not retry when there is no recovery path', async () => {
     const { calls } = await run(() => new Response('', { status: 403 }))
     expect(calls).toBe(1)
@@ -811,6 +832,72 @@ describe('a catalog fetched on a stale token', () => {
     )
     expect(calls).toBe(1)
     expect(recoverCalls).toBe(0)
+  })
+
+  test('a request the control plane always refuses is not looked up again', async () => {
+    const { refreshModelCatalog, resetMemoryOnly } = await import('../plugin/models.js')
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    resetMemoryOnly()
+
+    let calls = 0
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response(
+        JSON.stringify({
+          __type: 'com.amazon.kiro.controlplane#ValidationException',
+          message: 'Invalid profileArn.'
+        }),
+        { status: 400 }
+      )
+    }) as unknown as typeof fetch
+
+    try {
+      await refreshModelCatalog(AUTH)
+
+      // A fresh process, as another project on the same machine would be, and
+      // with the ordinary failure window already elapsed. The request is
+      // malformed rather than the moment unlucky, so the answer cannot change:
+      // retrying on the usual five-minute clock is what turned one unusable
+      // account into permanent traffic at the control plane.
+      const key = accountKeyFor(AUTH)
+      const recorded = kiroDb.getModelCatalog(key)!
+      kiroDb.setModelCatalog(key, recorded.models, Date.now() - 6 * 60 * 1000, recorded.ttlMs)
+
+      resetMemoryOnly()
+      await refreshModelCatalog(AUTH)
+    } finally {
+      globalThis.fetch = original
+    }
+
+    expect(calls).toBe(1)
+  })
+
+  test('a lookup another project already made is not repeated', async () => {
+    const { refreshModelCatalog, resetMemoryOnly } = await import('../plugin/models.js')
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    resetMemoryOnly()
+
+    let calls = 0
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response(JSON.stringify(CATALOG), { status: 200 })
+    }) as unknown as typeof fetch
+
+    try {
+      // What a sibling project leaves behind when it tries and gets nothing:
+      // an attempt on record, no catalog to show for it. Each project runs its
+      // own module instance, so without this shared marker every one of them
+      // fetches in the same second — the burst seen across six projects.
+      kiroDb.setModelCatalog(accountKeyFor(AUTH), {}, Date.now(), 5 * 60 * 1000)
+
+      await refreshModelCatalog(AUTH)
+    } finally {
+      globalThis.fetch = original
+    }
+
+    expect(calls).toBe(0)
   })
 })
 

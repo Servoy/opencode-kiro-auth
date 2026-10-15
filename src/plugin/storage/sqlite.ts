@@ -628,6 +628,25 @@ export class KiroDatabase {
       .run(key, JSON.stringify(models), attemptedAt, ttlMs)
   }
 
+  /**
+   * Note a lookup without disturbing the catalog already stored under the key.
+   *
+   * Every project on the machine loads its own module instance against this one
+   * file, so an in-memory guard cannot see a sibling's attempt. A lookup that
+   * found nothing still has to be recorded, or the next project cannot tell it
+   * apart from one that never ran and fetches at the same moment.
+   */
+  recordCatalogAttempt(key: string, attemptedAt: number, ttlMs: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO model_catalog (key, models, attempted_at, ttl_ms) VALUES (?, '{}', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           attempted_at = excluded.attempted_at,
+           ttl_ms = excluded.ttl_ms`
+      )
+      .run(key, attemptedAt, ttlMs)
+  }
+
   /** Test-only: forget the stored catalog so the next lookup refetches. */
   deleteModelCatalog(): void {
     this.db.prepare('DELETE FROM model_catalog').run()
