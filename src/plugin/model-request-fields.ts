@@ -62,6 +62,29 @@ export class RequestFieldsBuilder {
   }
 }
 
+/**
+ * Whether this model can be told not to reason, or undefined when nobody knows.
+ *
+ * `thinking: {type: "disabled"}` genuinely stops reasoning, so a schema with no
+ * disable value cannot be switched off at all — Opus 5.5 offers `["adaptive"]`
+ * alone. Undefined means the catalog was never read, which is not the same as no.
+ *
+ * Read from the request-fields profile rather than the model name: the profile
+ * already resolves the off channel from the catalog schema (or the built-in
+ * lists while it is cold), so `offChannel` defined means a confirmed way to
+ * switch off, and a model that takes no block at all has nothing to switch off.
+ */
+export function canDisableThinking(kiroModel: string): boolean | undefined {
+  const caps = getCatalogCapabilities(kiroModel)
+  const profile = RequestFieldsProfile.forModel(kiroModel)
+  // A model with no reasoning block has nothing running to switch off.
+  if (!profile.acceptsBlock) return true
+  // No catalog read yet: the built-in profile stands in, but it cannot prove a
+  // model's schema lacks an off channel, so say nothing rather than guess no.
+  if (!caps) return profile.offChannel !== undefined ? true : undefined
+  return profile.offChannel !== undefined
+}
+
 /** Build the block for one request, or undefined when nothing needs saying. */
 export function buildModelRequestFields(
   kiroModel: string,
@@ -74,23 +97,4 @@ export function buildModelRequestFields(
     thinkingDisabled,
     maxTokens
   )
-}
-
-/**
- * A cache checkpoint for the tools list, or null when caching is off.
- *
- * The service advertises prompt caching per model — `supportsPromptCaching`,
- * with a minimum prompt size and a checkpoint budget — and `cachePoint` sits
- * beside `toolSpecification` in the tool union, so a checkpoint is appended to
- * the tools rather than placed in the message.
- *
- * Unverified on the wire, which is why this is opt-in. The Kiro CLI never
- * sends one, not even on a prompt well past the minimum, and every response it
- * gets back reports no cached tokens at all — so there is no working example
- * to copy, and a wrong shape fails the whole request.
- */
-export function buildToolCachePoint(kiroModel: string, enabled: boolean): unknown | null {
-  if (!enabled) return null
-  if (getCatalogCapabilities(kiroModel)?.supportsCaching === false) return null
-  return { cachePoint: { type: 'default' } }
 }

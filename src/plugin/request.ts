@@ -26,7 +26,7 @@ import {
   type KiroImage
 } from './image-handler.js'
 import * as logger from './logger.js'
-import { buildModelRequestFields } from './model-request-fields.js'
+import { buildModelRequestFields, canDisableThinking } from './model-request-fields.js'
 import { resolveKiroModel } from './models.js'
 import { getEffectiveEffort } from './request-fields-profile.js'
 import { resolveKiroEndpoint } from './sdk-client.js'
@@ -686,6 +686,26 @@ function isEmptyAssistantTurn(entry: any): boolean {
   return typeof content !== 'string' || content.trim().length === 0
 }
 
+/** Models already reported as unswitchable, so the warning is not repeated per request. */
+const reportedUnswitchableThinking = new Set<string>()
+
+/**
+ * Say so when the user asked for no reasoning on a model that cannot stop.
+ *
+ * Opus 5.5's schema offers `adaptive` and nothing else, so the setting is
+ * dropped and the model reasons anyway — the user pays for reasoning they
+ * explicitly turned off and has no other sign of it. Once per model: the answer
+ * cannot change, and a line per request would bury everything else in the log.
+ */
+function warnIfThinkingCannotBeDisabled(kiroModel: string, thinkingDisabled: boolean): void {
+  if (!thinkingDisabled || canDisableThinking(kiroModel) !== false) return
+  if (reportedUnswitchableThinking.has(kiroModel)) return
+  reportedUnswitchableThinking.add(kiroModel)
+  logger.warn(
+    `Kiro cannot turn thinking off for ${kiroModel}: its schema offers no way to stop reasoning, so this request will reason anyway`
+  )
+}
+
 export function transformToSdkRequest(
   body: any,
   model: string,
@@ -716,6 +736,7 @@ export function transformToSdkRequest(
   // Resolve effort level based on config and model capabilities
   const effort = thinkingDisabled ? undefined : getEffectiveEffort(resolved, think, requestedEffort)
   const modelRequestFields = buildModelRequestFields(resolved, effort, thinkingDisabled, maxTokens)
+  warnIfThinkingCannotBeDisabled(resolved, thinkingDisabled)
 
   const region = extractRegionFromArn(auth.profileArn) ?? auth.region
   // resolveKiroEndpoint returns the full URL including /generateAssistantResponse.

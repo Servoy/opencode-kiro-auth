@@ -304,13 +304,15 @@ describe('capabilities the catalog reports', () => {
     expect(caps?.thinkingOffChannel).toBeUndefined()
   })
 
-  test('reads prompt caching, which the service does support', async () => {
-    // Kiro CLI sends no cache fields on a small request and KiroStudio
-    // fabricates the numbers, but the catalog states the support outright.
+  test('ignores the prompt-caching block, which this plugin cannot act on', async () => {
+    // The catalog advertises supportsPromptCaching and a checkpoint budget, and
+    // the numbers look plausible. Kiro does not return cached-token counts for
+    // anything this plugin sends, so a checkpoint would be paid for and never
+    // reported. Reading them into the capabilities only invited someone to wire
+    // them back up on the strength of the flag alone.
     const caps = (await loadCatalog([CATALOG_ENTRY]))('claude-sonnet-4-6')
-    expect(caps?.supportsCaching).toBe(true)
-    expect(caps?.minCacheTokens).toBe(1024)
-    expect(caps?.maxCacheCheckpoints).toBe(4)
+    expect(caps).toBeDefined()
+    expect(Object.keys(caps!).filter((field) => /cach/i.test(field))).toEqual([])
   })
 
   test('lowercases the input modalities', async () => {
@@ -535,7 +537,7 @@ describe('the advertised context window follows the catalog', () => {
     })
     await refreshModelCatalog(auth)
     const registry = buildModelRegistry() as Record<string, { limit: { context: number } }>
-    expect(registry['deepseek-3.2']!.limit.context).toBe(MODEL_SPECS['deepseek-3.2']!.limit.context)
+    expect(registry['minimax-m2.5']!.limit.context).toBe(MODEL_SPECS['minimax-m2.5']!.limit.context)
   })
   test('with no catalog read the registry falls back to the built-in window', () => {
     const registry = buildModelRegistry() as Record<string, { limit: { context: number } }>

@@ -151,10 +151,25 @@ function logIncomingRequest(body: any, init: any): void {
 
   logger.debug(
     `[IN] messages=${body?.messages?.length ?? 0}(${roles}) tools=${body?.tools?.length ?? 0}` +
-      ` systemChars=${typeof body?.system === 'string' ? body.system.length : 0}` +
+      ` systemChars=${systemPromptLength(body?.system)}` +
       ` rest=${JSON.stringify(rest)}` +
       ` headers=${JSON.stringify(init?.headers ?? null)}`
   )
+}
+
+/**
+ * Characters of system prompt, whichever shape it arrived in.
+ *
+ * OpenCode sends `system` as an array of text blocks, so counting only the bare
+ * string form reported zero on every request that had one.
+ */
+export function systemPromptLength(system: unknown): number {
+  if (typeof system === 'string') return system.length
+  if (!Array.isArray(system)) return 0
+  return system.reduce((total: number, block: any) => {
+    const text = block?.text
+    return total + (typeof text === 'string' ? text.length : 0)
+  }, 0)
 }
 
 /**

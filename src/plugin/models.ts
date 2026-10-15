@@ -53,10 +53,6 @@ export interface ModelCapabilities {
   acceptsMaxTokens?: boolean
   /** The schema's max_tokens maximum, when it states one. */
   maxTokensCeiling?: number
-  supportsCaching?: boolean
-  /** Smallest prompt worth a cache checkpoint, and how many fit in a request. */
-  minCacheTokens?: number
-  maxCacheCheckpoints?: number
 }
 
 let catalogByKiroModel: Map<string, ModelCapabilities> | null = null
@@ -421,17 +417,6 @@ function readCapabilities(entry: any): ModelCapabilities {
     caps.inputTypes = entry.supportedInputTypes
       .filter((t: unknown) => typeof t === 'string')
       .map((t: string) => t.toLowerCase())
-  }
-
-  const caching = entry?.promptCaching
-  if (caching && typeof caching.supportsPromptCaching === 'boolean') {
-    caps.supportsCaching = caching.supportsPromptCaching
-    if (typeof caching.minimumTokensPerCacheCheckpoint === 'number') {
-      caps.minCacheTokens = caching.minimumTokensPerCacheCheckpoint
-    }
-    if (typeof caching.maximumCacheCheckpointsPerRequest === 'number') {
-      caps.maxCacheCheckpoints = caching.maximumCacheCheckpointsPerRequest
-    }
   }
 
   // Set either way, never left undefined: a model that advertises no schema
