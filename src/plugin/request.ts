@@ -17,7 +17,6 @@ import {
   deduplicateToolResults
 } from '../infrastructure/transformers/tool-transformer.js'
 import { convertDocumentsToKiroFormat, extractAllDocuments } from './document-handler.js'
-import { getEffectiveEffort } from './effort.js'
 import { imageCache } from './image-cache.js'
 import {
   MAX_KIRO_IMAGES,
@@ -29,6 +28,7 @@ import {
 import * as logger from './logger.js'
 import { buildModelRequestFields } from './model-request-fields.js'
 import { resolveKiroModel } from './models.js'
+import { getEffectiveEffort } from './request-fields-profile.js'
 import { resolveKiroEndpoint } from './sdk-client.js'
 import { kiroDb } from './storage/sqlite.js'
 import type {

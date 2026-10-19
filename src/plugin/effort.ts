@@ -71,37 +71,3 @@ export function supportsEffort(kiroModel: string): boolean {
 export function supportsXHighEffort(kiroModel: string): boolean {
   return XHIGH_CAPABLE_MODELS.has(kiroModel)
 }
-
-/**
- * Resolve effort level for a given model.
- * - Returns undefined if model doesn't support effort
- * - Clamps xhigh to max for models that don't support it
- */
-export function resolveEffort(kiroModel: string, requested: Effort): Effort | undefined {
-  if (!supportsEffort(kiroModel)) {
-    return undefined
-  }
-
-  // xhigh is only supported on the models in XHIGH_CAPABLE_MODELS
-  if (requested === 'xhigh' && !supportsXHighEffort(kiroModel)) {
-    return 'max'
-  }
-
-  return requested
-}
-
-/**
- * The effort level a request should carry, or undefined to let Kiro decide.
- *
- * Undefined is not "no thinking" — the service then applies its own default,
- * which its catalog reports as high. Only thinking.type = disabled turns it off.
- */
-export function getEffectiveEffort(
-  kiroModel: string,
-  thinking: boolean,
-  requested?: Effort
-): Effort | undefined {
-  if (!supportsEffort(kiroModel)) return undefined
-  if (requested) return resolveEffort(kiroModel, requested)
-  return thinking ? 'medium' : undefined
-}

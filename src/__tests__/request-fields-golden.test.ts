@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { getEffectiveEffort } from '../plugin/effort.js'
 import { buildModelRegistry } from '../plugin/model-registry.js'
 import { buildModelRequestFields } from '../plugin/model-request-fields.js'
 import { refreshModelCatalog, resetModelCatalog, resolveKiroModel } from '../plugin/models.js'
+import { getEffectiveEffort } from '../plugin/request-fields-profile.js'
 
 /**
  * Characterization of the request fields and variants shipped in 2.7.0.

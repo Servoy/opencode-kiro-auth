@@ -192,3 +192,70 @@ describe('the quota shown in a model name', () => {
     }
   })
 })
+
+describe('a registry built with a catalog', () => {
+  async function withCatalog(entries: unknown[], run: () => void): Promise<void> {
+    const { refreshModelCatalog, resetModelCatalog } = await import('../plugin/models.js')
+    resetModelCatalog()
+    const original = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ models: entries }), { status: 200 })) as unknown as typeof fetch
+    try {
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+      run()
+    } finally {
+      globalThis.fetch = original
+      resetModelCatalog()
+    }
+  }
+
+  const HAIKU_WITH_DIAL = {
+    modelId: 'claude-haiku-4.5',
+    tokenLimits: { maxInputTokens: 200000 },
+    additionalModelRequestFieldsSchema: {
+      properties: { output_config: { properties: { effort: { enum: ['low', 'high'] } } } },
+      additionalProperties: false
+    }
+  }
+  const LUNA = {
+    modelId: 'gpt-5.6-luna',
+    tokenLimits: { maxInputTokens: 922000 },
+    additionalModelRequestFieldsSchema: {
+      properties: {
+        reasoning: { properties: { effort: { enum: ['none', 'low', 'medium', 'high', 'max'] } } }
+      },
+      additionalProperties: false
+    }
+  }
+  const OPUS_WITHOUT_SCHEMA = {
+    modelId: 'claude-opus-4.5',
+    tokenLimits: { maxInputTokens: 200000 }
+  }
+
+  test('a model gains its dial when the catalog arrives', async () => {
+    await withCatalog([HAIKU_WITH_DIAL], () => {
+      const current = buildModelRegistry() as Record<string, any>
+      expect(Object.keys(current['claude-haiku-4-5'].variants)).toEqual(['low', 'high'])
+    })
+  })
+
+  test('a reasoning schema without an off value offers no off', async () => {
+    await withCatalog([LUNA], () => {
+      const current = buildModelRegistry() as Record<string, any>
+      expect(Object.keys(current['gpt-5.6-luna'].variants)).not.toContain('off')
+    })
+  })
+
+  test('a model the catalog lists without a schema has no dial', async () => {
+    await withCatalog([OPUS_WITHOUT_SCHEMA], () => {
+      const current = buildModelRegistry() as Record<string, any>
+      expect(current['claude-opus-4-5'].variants).toBeUndefined()
+    })
+  })
+})

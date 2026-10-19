@@ -1,7 +1,7 @@
 import type { Effort } from './config/schema.js'
-import { EFFORT_LEVELS, supportsEffort, supportsXHighEffort } from './effort.js'
 import { EFFORT_OFF } from './model-request-fields.js'
 import { getCatalogCapabilities, getCatalogContextLimit, resolveKiroModel } from './models.js'
+import { RequestFieldsProfile } from './request-fields-profile.js'
 
 type Modalities = {
   input: Array<'text' | 'image' | 'pdf'>
@@ -200,25 +200,6 @@ export function getModelContextLimit(model: string): number {
 }
 
 /**
- * The effort levels a model offers.
- *
- * The catalog is the authority — it names them per model in the schema it
- * advertises, and it disagrees with the built-in lists: opus-4.5 and sonnet-4
- * carry no schema at all, so offering them a dial advertises something the
- * service will reject. The built-in lists stand in only until the catalog has
- * been read, since the registry is built before the first request.
- */
-function effortLevelsFor(kiroModel: string): readonly Effort[] | null {
-  const advertised = getCatalogCapabilities(kiroModel)?.efforts
-  if (advertised) {
-    const known = EFFORT_LEVELS.filter((level) => advertised.includes(level))
-    return known.length > 0 ? known : null
-  }
-  if (!supportsEffort(kiroModel)) return null
-  return EFFORT_LEVELS.filter((level) => level !== 'xhigh' || supportsXHighEffort(kiroModel))
-}
-
-/**
  * Variants for a model's dial, `off` first.
  *
  * Choosing no variant is not off: the service then applies its own default,
@@ -227,19 +208,12 @@ function effortLevelsFor(kiroModel: string): readonly Effort[] | null {
  */
 function buildVariants(
   levels: readonly Effort[],
-  offChannel: 'disabled' | 'between_tools' | undefined
+  offChannel: 'disabled' | undefined
 ): Record<string, unknown> {
   const variants: Record<string, unknown> = {}
   if (offChannel) variants[EFFORT_OFF] = { reasoningEffort: EFFORT_OFF }
   for (const level of levels) variants[level] = { reasoningEffort: level }
   return variants
-}
-
-/** Only the catalog knows; cold or unreachable means no off variant. */
-function thinkingOffChannel(kiroModel: string): 'disabled' | undefined {
-  return getCatalogCapabilities(kiroModel)?.thinkingOffChannel === 'disabled'
-    ? 'disabled'
-    : undefined
 }
 
 /**
@@ -280,7 +254,7 @@ export function buildModelRegistry(nameSuffix = ''): Record<string, unknown> {
     // Effort capability is keyed on the resolved Kiro model ID, not the
     // OpenCode-facing one (e.g. claude-opus-5 vs claude-opus-4-6).
     const kiroModel = resolveKiroModel(modelID)
-    const levels = effortLevelsFor(kiroModel)
+    const profile = RequestFieldsProfile.forModel(kiroModel)
 
     const base: Record<string, unknown> = {
       name: `${spec.name} (${spec.rate})${suffix}`,
@@ -298,10 +272,11 @@ export function buildModelRegistry(nameSuffix = ''): Record<string, unknown> {
     // A model with an effort dial reasons as soon as a variant is picked, so it
     // has to declare the capability — without `reasoning` and `interleaved`
     // OpenCode drops every chunk and the thinking block never renders.
-    if (levels) {
+    if (profile.hasDial()) {
       base.reasoning = true
       base.interleaved = { field: 'reasoning_content' }
-      base.variants = buildVariants(levels, thinkingOffChannel(kiroModel))
+      const off = getCatalogCapabilities(kiroModel)?.thinkingOffChannel === 'disabled'
+      base.variants = buildVariants(profile.efforts, off ? 'disabled' : undefined)
     }
     models[modelID] = base
   }

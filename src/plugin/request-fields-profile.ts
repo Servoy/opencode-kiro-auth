@@ -5,6 +5,9 @@ import { getCatalogCapabilities, type ModelCapabilities } from './models.js'
 export type EffortChannel = 'output_config' | 'reasoning'
 export type OffChannel = 'disabled' | 'none'
 
+/** Effort a thinking request falls back to when it names none. */
+const DEFAULT_THINKING_EFFORT: Effort = 'medium'
+
 /**
  * What one model's additionalModelRequestFields accepts.
  *
@@ -75,4 +78,25 @@ export class RequestFieldsProfile {
     const below = this.efforts.filter((level) => EFFORT_LEVELS.indexOf(level) < wanted)
     return below.length > 0 ? below[below.length - 1]! : this.efforts[0]!
   }
+}
+
+/**
+ * The effort a request should carry, or undefined to let Kiro decide.
+ *
+ * Undefined is not "no thinking": the service then applies its own default.
+ * Only the off channel the model names actually stops it.
+ */
+export function getEffectiveEffort(
+  kiroModel: string,
+  thinking: boolean,
+  requested?: Effort
+): Effort | undefined {
+  const profile = RequestFieldsProfile.forModel(kiroModel)
+  if (!profile.hasDial()) return undefined
+  if (requested) return profile.resolveEffort(requested)
+  return thinking ? profile.resolveEffort(DEFAULT_THINKING_EFFORT) : undefined
+}
+
+export function resolveEffort(kiroModel: string, requested: Effort): Effort | undefined {
+  return RequestFieldsProfile.forModel(kiroModel).resolveEffort(requested)
 }
