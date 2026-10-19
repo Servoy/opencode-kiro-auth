@@ -19,7 +19,7 @@ export function resolveKiroModel(model: string): string {
  * which is not the same as the service having said no — and a plugin that
  * cannot tell those apart acts on an answer nobody gave.
  */
-const CATALOG_VERSION = 3
+const CATALOG_VERSION = 4
 const VERSION_KEY = '__catalogVersion'
 
 const CATALOG_TTL_MS = 30 * 60 * 1000
@@ -41,10 +41,16 @@ export interface ModelCapabilities {
   inputTypes?: string[]
   /** Effort levels the model accepts, in the order the service lists them. */
   efforts?: string[]
+  /** Where the schema takes effort: Claude's output_config or the reasoning block. */
+  effortChannel?: 'output_config' | 'reasoning'
   /** Wire value that turns thinking off, or undefined if the model has none. */
-  thinkingOffChannel?: 'disabled' | 'between_tools'
+  thinkingOffChannel?: 'disabled' | 'none'
   /** Whether the model accepts an additionalModelRequestFields block at all. */
   supportsRequestFields?: boolean
+  /** Whether the schema lists max_tokens; with additionalProperties false, an unlisted key is a 400. */
+  acceptsMaxTokens?: boolean
+  /** The schema's max_tokens maximum, when it states one. */
+  maxTokensCeiling?: number
   supportsCaching?: boolean
   /** Smallest prompt worth a cache checkpoint, and how many fit in a request. */
   minCacheTokens?: number
@@ -367,16 +373,25 @@ function readCapabilities(entry: any): ModelCapabilities {
   caps.supportsRequestFields = !!entry?.additionalModelRequestFieldsSchema
 
   const schema = entry?.additionalModelRequestFieldsSchema?.properties
-  const efforts =
-    schema?.output_config?.properties?.effort?.enum ?? schema?.reasoning?.properties?.effort?.enum
+  const claudeEfforts = schema?.output_config?.properties?.effort?.enum
+  const reasoningEfforts = schema?.reasoning?.properties?.effort?.enum
+  const efforts = claudeEfforts ?? reasoningEfforts
   if (Array.isArray(efforts)) {
     caps.efforts = efforts.filter((e: unknown) => typeof e === 'string')
+    caps.effortChannel = claudeEfforts ? 'output_config' : 'reasoning'
   }
+
+  caps.acceptsMaxTokens = !!schema?.max_tokens
+  const maxTokens = schema?.max_tokens?.maximum
+  if (typeof maxTokens === 'number' && maxTokens > 0) caps.maxTokensCeiling = maxTokens
+
   // 'between_tools' is in the enum for sonnet-5.5, but the live endpoint
   // 400s on it regardless — only 'disabled' is confirmed to work.
   const thinkingTypes: unknown = schema?.thinking?.properties?.type?.enum
   if (Array.isArray(thinkingTypes) && thinkingTypes.includes('disabled')) {
     caps.thinkingOffChannel = 'disabled'
+  } else if (Array.isArray(reasoningEfforts) && reasoningEfforts.includes('none')) {
+    caps.thinkingOffChannel = 'none'
   }
 
   return caps

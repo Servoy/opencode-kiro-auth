@@ -236,8 +236,10 @@ function buildVariants(
 }
 
 /** Only the catalog knows; cold or unreachable means no off variant. */
-function thinkingOffChannel(kiroModel: string): 'disabled' | 'between_tools' | undefined {
-  return getCatalogCapabilities(kiroModel)?.thinkingOffChannel
+function thinkingOffChannel(kiroModel: string): 'disabled' | undefined {
+  return getCatalogCapabilities(kiroModel)?.thinkingOffChannel === 'disabled'
+    ? 'disabled'
+    : undefined
 }
 
 /**

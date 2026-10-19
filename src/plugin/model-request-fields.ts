@@ -58,7 +58,7 @@ export function buildModelRequestFields(
     } else {
       // No confirmed channel: leave the block off instead of guessing a 400.
       const channel = getCatalogCapabilities(kiroModel)?.thinkingOffChannel
-      if (channel) {
+      if (channel === 'disabled') {
         fields.thinking = { type: channel }
         fields.output_config = { effort: 'high' } // the service caps off at high
       }
