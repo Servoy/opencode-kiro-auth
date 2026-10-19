@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import { EFFORT_LEVELS, isEffort, supportsEffort, supportsXHighEffort } from '../plugin/effort.js'
-import { getEffectiveEffort, resolveEffort } from '../plugin/request-fields-profile.js'
+import { getEffectiveEffort, RequestFieldsProfile } from '../plugin/request-fields-profile.js'
+import { withCatalog } from './helpers/catalog.js'
+
+const resolveEffort = (model: string, requested: any) =>
+  RequestFieldsProfile.forModel(model).resolveEffort(requested)
 
 describe('effort module', () => {
   describe('supportsEffort', () => {
@@ -105,44 +109,21 @@ describe('reading an effort that OpenCode sends back', () => {
 })
 
 describe('effort read from the catalog', () => {
-  test('uses the levels the schema names', async () => {
-    const { refreshModelCatalog, resetModelCatalog } = await import('../plugin/models.js')
-    resetModelCatalog()
-    const original = globalThis.fetch
-    globalThis.fetch = (async () =>
-      new Response(
-        JSON.stringify({
-          models: [
-            {
-              modelId: 'kimi-k3',
-              additionalModelRequestFieldsSchema: {
-                properties: {
-                  reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } }
-                },
-                additionalProperties: false
-              }
-            }
-          ]
-        }),
-        { status: 200 }
-      )) as unknown as typeof fetch
-    try {
-      await refreshModelCatalog({
-        access: 'a',
-        refresh: 'r',
-        expires: 0,
-        authMethod: 'idc',
-        region: 'eu-central-1'
-      } as any)
+  const KIMI = {
+    modelId: 'kimi-k3',
+    additionalModelRequestFieldsSchema: {
+      properties: { reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } } },
+      additionalProperties: false
+    }
+  }
 
+  test('uses the levels the schema names', async () => {
+    await withCatalog([KIMI], () => {
       expect(getEffectiveEffort('kimi-k3', true, 'low')).toBe('low')
       expect(getEffectiveEffort('kimi-k3', true, 'medium')).toBe('low')
       expect(getEffectiveEffort('kimi-k3', true, 'xhigh')).toBe('high')
       expect(getEffectiveEffort('kimi-k3', true)).toBe('low')
       expect(getEffectiveEffort('kimi-k3', false)).toBeUndefined()
-    } finally {
-      globalThis.fetch = original
-      resetModelCatalog()
-    }
+    })
   })
 })

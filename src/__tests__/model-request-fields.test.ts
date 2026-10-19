@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { buildModelRequestFields, EFFORT_OFF } from '../plugin/model-request-fields.js'
+import { withCatalog } from './helpers/catalog.js'
 
 describe('the additionalModelRequestFields block', () => {
   test('says nothing when there is nothing to say', () => {
@@ -121,27 +122,6 @@ describe('off with a catalog-confirmed channel', () => {
 })
 
 describe('the block is built from the model profile', () => {
-  async function withCatalog(entries: unknown[], run: () => void): Promise<void> {
-    const { refreshModelCatalog, resetModelCatalog } = await import('../plugin/models.js')
-    resetModelCatalog()
-    const original = globalThis.fetch
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ models: entries }), { status: 200 })) as unknown as typeof fetch
-    try {
-      await refreshModelCatalog({
-        access: 'a',
-        refresh: 'r',
-        expires: 0,
-        authMethod: 'idc',
-        region: 'eu-central-1'
-      } as any)
-      run()
-    } finally {
-      globalThis.fetch = original
-      resetModelCatalog()
-    }
-  }
-
   const LUNA = {
     modelId: 'gpt-5.6-luna',
     tokenLimits: { maxOutputTokens: 128000 },

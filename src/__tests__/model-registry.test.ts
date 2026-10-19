@@ -4,6 +4,7 @@ import type { Effort } from '../plugin/config/schema.js'
 import { THINKING_BUDGETS } from '../plugin/effort.js'
 import { buildModelRegistry } from '../plugin/model-registry.js'
 import { resolveKiroModel } from '../plugin/models.js'
+import { withCatalog } from './helpers/catalog.js'
 
 const registry = buildModelRegistry() as Record<string, any>
 
@@ -200,27 +201,6 @@ describe('the quota shown in a model name', () => {
 })
 
 describe('a registry built with a catalog', () => {
-  async function withCatalog(entries: unknown[], run: () => void): Promise<void> {
-    const { refreshModelCatalog, resetModelCatalog } = await import('../plugin/models.js')
-    resetModelCatalog()
-    const original = globalThis.fetch
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ models: entries }), { status: 200 })) as unknown as typeof fetch
-    try {
-      await refreshModelCatalog({
-        access: 'a',
-        refresh: 'r',
-        expires: 0,
-        authMethod: 'idc',
-        region: 'eu-central-1'
-      } as any)
-      run()
-    } finally {
-      globalThis.fetch = original
-      resetModelCatalog()
-    }
-  }
-
   const HAIKU_WITH_DIAL = {
     modelId: 'claude-haiku-4.5',
     tokenLimits: { maxInputTokens: 200000 },
@@ -267,43 +247,20 @@ describe('a registry built with a catalog', () => {
 })
 
 describe('Kimi K3 with a catalog', () => {
-  test('has a low, high and max dial', async () => {
-    const { refreshModelCatalog, resetModelCatalog } = await import('../plugin/models.js')
-    resetModelCatalog()
-    const original = globalThis.fetch
-    globalThis.fetch = (async () =>
-      new Response(
-        JSON.stringify({
-          models: [
-            {
-              modelId: 'kimi-k3',
-              tokenLimits: { maxInputTokens: 1000000, maxOutputTokens: 131072 },
-              additionalModelRequestFieldsSchema: {
-                properties: {
-                  reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } }
-                },
-                additionalProperties: false
-              }
-            }
-          ]
-        }),
-        { status: 200 }
-      )) as unknown as typeof fetch
-    try {
-      await refreshModelCatalog({
-        access: 'a',
-        refresh: 'r',
-        expires: 0,
-        authMethod: 'idc',
-        region: 'eu-central-1'
-      } as any)
-      const current = buildModelRegistry() as Record<string, any>
+  const KIMI = {
+    modelId: 'kimi-k3',
+    tokenLimits: { maxInputTokens: 1000000, maxOutputTokens: 131072 },
+    additionalModelRequestFieldsSchema: {
+      properties: { reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } } },
+      additionalProperties: false
+    }
+  }
 
+  test('has a low, high and max dial', async () => {
+    await withCatalog([KIMI], () => {
+      const current = buildModelRegistry() as Record<string, any>
       expect(Object.keys(current['kimi-k3'].variants)).toEqual(['low', 'high', 'max'])
       expect(current['kimi-k3'].reasoning).toBe(true)
-    } finally {
-      globalThis.fetch = original
-      resetModelCatalog()
-    }
+    })
   })
 })

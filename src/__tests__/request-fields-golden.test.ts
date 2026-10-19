@@ -3,15 +3,14 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildModelRegistry } from '../plugin/model-registry.js'
 import { buildModelRequestFields } from '../plugin/model-request-fields.js'
-import { refreshModelCatalog, resetModelCatalog, resolveKiroModel } from '../plugin/models.js'
+import { resetModelCatalog, resolveKiroModel } from '../plugin/models.js'
 import { getEffectiveEffort } from '../plugin/request-fields-profile.js'
+import { withCatalog } from './helpers/catalog.js'
 
 /** The request fields and variants shipped in 2.7.0, pinned before the refactor. */
 const FIXTURE = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures', 'kiro-catalog.json'), 'utf8')
 )
-
-const AUTH = { access: 'a', refresh: 'r', expires: 0, authMethod: 'idc', region: 'us-east-1' }
 
 function blockFor(
   kiroModel: string,
@@ -21,20 +20,6 @@ function blockFor(
 ) {
   const effective = off ? undefined : getEffectiveEffort(kiroModel, !!effort, effort as any)
   return buildModelRequestFields(kiroModel, effective, off, maxTokens)
-}
-
-async function withCatalog(run: () => void): Promise<void> {
-  resetModelCatalog()
-  const original = globalThis.fetch
-  globalThis.fetch = (async () =>
-    new Response(JSON.stringify(FIXTURE), { status: 200 })) as unknown as typeof fetch
-  try {
-    await refreshModelCatalog(AUTH as any)
-    run()
-  } finally {
-    globalThis.fetch = original
-    resetModelCatalog()
-  }
 }
 
 function assertVariants(expected: Record<string, string[]>): void {
@@ -360,10 +345,10 @@ describe('request fields today, no catalog', () => {
 
 describe('request fields today, with the account catalog', () => {
   test('variants follow the catalog schema and nothing else', async () => {
-    await withCatalog(() => assertVariants(EXPECTED_VARIANTS_WITHCATALOG))
+    await withCatalog(FIXTURE.models, () => assertVariants(EXPECTED_VARIANTS_WITHCATALOG))
   })
 
   test('blocks are unchanged except the max_tokens the reasoning schemas reject', async () => {
-    await withCatalog(() => assertBlocks(EXPECTED_BLOCKS_WITHCATALOG))
+    await withCatalog(FIXTURE.models, () => assertBlocks(EXPECTED_BLOCKS_WITHCATALOG))
   })
 })

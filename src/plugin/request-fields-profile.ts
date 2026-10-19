@@ -88,7 +88,3 @@ export function getEffectiveEffort(
   if (requested) return profile.resolveEffort(requested)
   return thinking ? profile.resolveEffort(DEFAULT_THINKING_EFFORT) : undefined
 }
-
-export function resolveEffort(kiroModel: string, requested: Effort): Effort | undefined {
-  return RequestFieldsProfile.forModel(kiroModel).resolveEffort(requested)
-}

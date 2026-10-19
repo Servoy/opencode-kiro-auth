@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import type { ModelCapabilities } from '../plugin/models.js'
 import { resetModelCatalog } from '../plugin/models.js'
 import { RequestFieldsProfile } from '../plugin/request-fields-profile.js'
+import { withCatalog } from './helpers/catalog.js'
 
 function caps(overrides: Partial<ModelCapabilities> = {}): ModelCapabilities {
   return { supportsRequestFields: true, ...overrides }
@@ -117,35 +118,16 @@ describe('the catalog profile', () => {
 })
 
 describe('picking the source', () => {
-  test('uses the catalog when it knows the model and the built-in lists otherwise', async () => {
-    const original = globalThis.fetch
-    globalThis.fetch = (async () =>
-      new Response(
-        JSON.stringify({
-          models: [
-            {
-              modelId: 'claude-sonnet-5',
-              additionalModelRequestFieldsSchema: {
-                properties: {
-                  output_config: { properties: { effort: { enum: ['low', 'high'] } } }
-                },
-                additionalProperties: false
-              }
-            }
-          ]
-        }),
-        { status: 200 }
-      )) as unknown as typeof fetch
-    try {
-      const { refreshModelCatalog } = await import('../plugin/models.js')
-      await refreshModelCatalog({
-        access: 'a',
-        refresh: 'r',
-        expires: 0,
-        authMethod: 'idc',
-        region: 'eu-central-1'
-      } as any)
+  const SONNET = {
+    modelId: 'claude-sonnet-5',
+    additionalModelRequestFieldsSchema: {
+      properties: { output_config: { properties: { effort: { enum: ['low', 'high'] } } } },
+      additionalProperties: false
+    }
+  }
 
+  test('uses the catalog when it knows the model and the built-in lists otherwise', async () => {
+    await withCatalog([SONNET], () => {
       expect(RequestFieldsProfile.forModel('claude-sonnet-5').efforts).toEqual(['low', 'high'])
       expect(RequestFieldsProfile.forModel('claude-sonnet-4.6').efforts).toEqual([
         'low',
@@ -153,8 +135,6 @@ describe('picking the source', () => {
         'high',
         'max'
       ])
-    } finally {
-      globalThis.fetch = original
-    }
+    })
   })
 })
