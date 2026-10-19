@@ -23,8 +23,6 @@ interface ModelSpec {
   rate: string
   limit: { context: number; output: number }
   modalities: Modalities
-  /** Emit a companion `-thinking` entry; the effort ladder itself comes from the model's profile. */
-  thinking?: boolean
 }
 
 /**
@@ -44,22 +42,19 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     name: 'GPT-5.6 Sol',
     rate: '4.4x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: TEXT_ONLY,
-    thinking: true
+    modalities: TEXT_ONLY
   },
   'gpt-5.6-terra': {
     name: 'GPT-5.6 Terra',
     rate: '2.2x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: TEXT_ONLY,
-    thinking: true
+    modalities: TEXT_ONLY
   },
   'gpt-5.6-luna': {
     name: 'GPT-5.6 Luna',
     rate: '1.1x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: TEXT_ONLY,
-    thinking: true
+    modalities: TEXT_ONLY
   },
 
   // Claude Sonnet
@@ -73,29 +68,25 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     name: 'Claude Sonnet 4.5',
     rate: '1.3x',
     limit: CONTEXT_200K,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-sonnet-4-6': {
     name: 'Claude Sonnet 4.6',
     rate: '1.3x',
     limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-sonnet-5': {
     name: 'Claude Sonnet 5',
     rate: '1.3x',
     limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-sonnet-5-5': {
     name: 'Claude Sonnet 5.5',
     rate: '1.3x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
 
   // Claude Haiku
@@ -111,43 +102,37 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     name: 'Claude Opus 4.5',
     rate: '2.2x',
     limit: CONTEXT_200K,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-opus-4-6': {
     name: 'Claude Opus 4.6',
     rate: '2.2x',
     limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-opus-4-7': {
     name: 'Claude Opus 4.7',
     rate: '2.2x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-opus-4-8': {
     name: 'Claude Opus 4.8',
     rate: '2.2x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-opus-5': {
     name: 'Claude Opus 5',
     rate: '2.2x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-opus-5-5': {
     name: 'Claude Opus 5.5',
     rate: '2.0x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
 
   // Open weight models
