@@ -7,7 +7,7 @@ import { resetModelCatalog, resolveKiroModel } from '../plugin/models.js'
 import { getEffectiveEffort } from '../plugin/request-fields-profile.js'
 import { withCatalog } from './helpers/catalog.js'
 
-/** The request fields and variants shipped in 2.7.0, pinned before the refactor. */
+/** Request fields and variants per model, with and without the account catalog. */
 const FIXTURE = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures', 'kiro-catalog.json'), 'utf8')
 )
@@ -333,22 +333,22 @@ const EXPECTED_BLOCKS_WITHCATALOG: Record<string, string | undefined> = {
   'kimi-k3|default|off|4096': undefined
 }
 
-describe('request fields today, no catalog', () => {
+describe('request fields without a catalog', () => {
   test('every registry model keeps its variants', () => {
     assertVariants(EXPECTED_VARIANTS_NOCATALOG)
   })
 
-  test('every registry model gets the block it got before the refactor', () => {
+  test('every registry model gets the block the built-in lists give it', () => {
     assertBlocks(EXPECTED_BLOCKS_NOCATALOG)
   })
 })
 
-describe('request fields today, with the account catalog', () => {
+describe('request fields with the account catalog', () => {
   test('variants follow the catalog schema and nothing else', async () => {
     await withCatalog(FIXTURE.models, () => assertVariants(EXPECTED_VARIANTS_WITHCATALOG))
   })
 
-  test('blocks are unchanged except the max_tokens the reasoning schemas reject', async () => {
+  test('blocks follow the catalog schema, dropping max_tokens where it is not allowed', async () => {
     await withCatalog(FIXTURE.models, () => assertBlocks(EXPECTED_BLOCKS_WITHCATALOG))
   })
 })

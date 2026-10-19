@@ -23,21 +23,17 @@ interface ModelSpec {
   rate: string
   limit: { context: number; output: number }
   modalities: Modalities
-  /**
-   * Emit a companion `-thinking` entry. Only set for Claude models that accept
-   * `output_config.effort`; the effort ladder is derived from the model's own
-   * capabilities in effort.ts.
-   */
+  /** Emit a companion `-thinking` entry; the effort ladder itself comes from the model's profile. */
   thinking?: boolean
 }
 
 /**
  * Models Kiro exposes, keyed by the OpenCode-facing model ID.
  *
- * Includes Kiro's GPT-5.6 tiers: they carry effort under `reasoning.effort`
- * rather than `output_config.effort` and take `none` as their off switch, both
- * handled in model-request-fields.ts. They have no `-thinking` twin and no 1M
- * variant to spell out — the single entry's 1M window is their only size.
+ * Includes Kiro's GPT-5.6 tiers: their channel and off switch come from the
+ * catalog schema, or from the built-in lists while it is cold. They have no
+ * `-thinking` twin and no 1M variant to spell out — the single entry's 1M
+ * window is their only size.
  */
 export const MODEL_SPECS: Record<string, ModelSpec> = {
   auto: { name: 'Auto', rate: '1.0x', limit: CONTEXT_1M, modalities: MULTIMODAL },
@@ -213,12 +209,9 @@ export function getModelContextLimit(model: string): number {
  * which the catalog reports as `high`. Off has to be asked for, and it rides
  * on the same dial so it reads as the bottom of one scale.
  */
-function buildVariants(
-  levels: readonly Effort[],
-  offChannel: 'disabled' | undefined
-): Record<string, unknown> {
+function buildVariants(levels: readonly Effort[], withOff: boolean): Record<string, unknown> {
   const variants: Record<string, unknown> = {}
-  if (offChannel) variants[EFFORT_OFF] = { reasoningEffort: EFFORT_OFF }
+  if (withOff) variants[EFFORT_OFF] = { reasoningEffort: EFFORT_OFF }
   for (const level of levels) variants[level] = { reasoningEffort: level }
   return variants
 }
@@ -282,10 +275,7 @@ export function buildModelRegistry(nameSuffix = ''): Record<string, unknown> {
     if (profile.hasDial()) {
       base.reasoning = true
       base.interleaved = { field: 'reasoning_content' }
-      base.variants = buildVariants(
-        profile.efforts,
-        profile.offChannel === 'disabled' ? 'disabled' : undefined
-      )
+      base.variants = buildVariants(profile.efforts, profile.offChannel === 'disabled')
     }
     models[modelID] = base
   }

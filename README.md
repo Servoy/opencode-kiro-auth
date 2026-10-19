@@ -29,9 +29,9 @@ both OpenCode v1 and v2 hosts from the same build.
 - **Native Thinking Mode**: Streams Kiro's native reasoning to OpenCode's
   thinking block, with the reasoning flags declared on every thinking model, so
   it renders without any model configuration.
-- **Reasoning Dial**: Every model that has one carries `off` through `max` as
-  OpenCode variants, set per model or per agent. Each model's catalog schema
-  names its channel (`output_config.effort` or `reasoning.effort`) and its levels.
+- **Reasoning Dial**: Every model that has one carries its levels as OpenCode
+  variants, set per model or per agent. Each model's catalog schema names its
+  channel (`output_config.effort` or `reasoning.effort`) and the levels it takes.
 - **Automated Recovery**: Exponential backoff for rate limits and automated token
   refresh.
 
@@ -111,7 +111,8 @@ variant is not the same thing — the service then applies its own default, whic
 its catalog reports as `high`.
 
 The levels a model offers are the ones its catalog entry lists, so `xhigh` appears
-only where it is listed and Kimi K3 offers `low`, `high` and `max`. The channel
+only where it is listed and Kimi K3 offers `low`, `high` and `max` once the catalog
+has been read. The channel
 comes from the same schema: `output_config.effort` or `reasoning.effort`. Once the
 catalog is read, a level a model lacks is sent as the nearest one below it, and
 `max_tokens` goes only to models whose schema accepts it.

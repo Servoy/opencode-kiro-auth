@@ -373,12 +373,12 @@ function readCapabilities(entry: any): ModelCapabilities {
   caps.supportsRequestFields = !!entry?.additionalModelRequestFieldsSchema
 
   const schema = entry?.additionalModelRequestFieldsSchema?.properties
-  const claudeEfforts = schema?.output_config?.properties?.effort?.enum
+  const outputConfigEfforts = schema?.output_config?.properties?.effort?.enum
   const reasoningEfforts = schema?.reasoning?.properties?.effort?.enum
-  const efforts = claudeEfforts ?? reasoningEfforts
+  const efforts = outputConfigEfforts ?? reasoningEfforts
   if (Array.isArray(efforts)) {
     caps.efforts = efforts.filter((e: unknown) => typeof e === 'string')
-    caps.effortChannel = claudeEfforts ? 'output_config' : 'reasoning'
+    caps.effortChannel = outputConfigEfforts ? 'output_config' : 'reasoning'
   }
 
   caps.acceptsMaxTokens = !!schema?.max_tokens

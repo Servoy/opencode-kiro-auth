@@ -34,12 +34,7 @@ export class RequestFieldsBuilder {
     // A model without a schema rejects the block outright: a 400 before a token.
     if (!this.profile.acceptsBlock) return undefined
 
-    const fields: AdditionalModelRequestFields = {}
-    if (thinkingDisabled) {
-      Object.assign(fields, this.offFields())
-    } else if (effort) {
-      Object.assign(fields, this.effortFields(effort))
-    }
+    const fields = thinkingDisabled ? this.offFields() : effort ? this.effortFields(effort) : {}
 
     if (maxTokens !== undefined && this.profile.maxTokensCeiling !== undefined) {
       fields.max_tokens = Math.min(maxTokens, this.profile.maxTokensCeiling)
