@@ -813,3 +813,91 @@ describe('a catalog fetched on a stale token', () => {
     expect(recoverCalls).toBe(0)
   })
 })
+
+describe('a catalog read back from disk', () => {
+  test('rebuilds the same capabilities the fetch produced', async () => {
+    const { refreshModelCatalog, resetMemoryOnly, getCatalogCapabilities } =
+      await import('../plugin/models.js')
+
+    const entries = [
+      {
+        modelId: 'kimi-k3',
+        additionalModelRequestFieldsSchema: {
+          properties: { reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } } },
+          additionalProperties: false
+        }
+      },
+      {
+        modelId: 'gpt-5.6-luna',
+        additionalModelRequestFieldsSchema: {
+          properties: {
+            reasoning: { properties: { effort: { enum: ['none', 'low', 'max'] } } }
+          },
+          additionalProperties: false
+        }
+      },
+      {
+        modelId: 'claude-sonnet-5',
+        additionalModelRequestFieldsSchema: {
+          properties: {
+            output_config: { properties: { effort: { enum: ['low', 'max'] } } },
+            thinking: { properties: { type: { enum: ['adaptive', 'disabled'] } } },
+            max_tokens: { type: 'integer', maximum: 128000 }
+          },
+          additionalProperties: false
+        }
+      },
+      {
+        modelId: 'no-maximum',
+        additionalModelRequestFieldsSchema: {
+          properties: {
+            output_config: { properties: { effort: { enum: ['low'] } } },
+            max_tokens: { type: 'integer' }
+          },
+          additionalProperties: false
+        }
+      }
+    ]
+    const ids = entries.map((entry) => entry.modelId)
+    const original = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ models: entries }), { status: 200 })) as unknown as typeof fetch
+    try {
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+      const fetched = ids.map((id) => getCatalogCapabilities(id))
+
+      resetMemoryOnly()
+      globalThis.fetch = (async () => {
+        throw new Error('network is down; the stored catalog must answer')
+      }) as unknown as typeof fetch
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+
+      expect(ids.map((id) => getCatalogCapabilities(id))).toEqual(fetched)
+      expect(fetched[0]).toMatchObject({ effortChannel: 'reasoning', acceptsMaxTokens: false })
+      expect(fetched[0]?.thinkingOffChannel).toBeUndefined()
+      expect(fetched[1]).toMatchObject({ effortChannel: 'reasoning', thinkingOffChannel: 'none' })
+      expect(fetched[2]).toMatchObject({
+        effortChannel: 'output_config',
+        thinkingOffChannel: 'disabled',
+        acceptsMaxTokens: true,
+        maxTokensCeiling: 128000
+      })
+      expect(fetched[3]).toMatchObject({ acceptsMaxTokens: true })
+      expect(fetched[3]?.maxTokensCeiling).toBeUndefined()
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+})

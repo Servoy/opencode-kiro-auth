@@ -8,13 +8,7 @@ export type OffChannel = 'disabled' | 'none'
 /** Effort a thinking request falls back to when it names none. */
 const DEFAULT_THINKING_EFFORT: Effort = 'medium'
 
-/**
- * What one model's additionalModelRequestFields accepts.
- *
- * The catalog schema is the authority once it has been read. The built-in
- * lists are the fallback for a cold or unreachable catalog, where they keep
- * the behaviour the plugin had before it read the schema.
- */
+/** What a model's request fields accept, from its catalog schema or the built-in lists. */
 export class RequestFieldsProfile {
   private constructor(
     readonly channel: EffortChannel,
@@ -37,7 +31,10 @@ export class RequestFieldsProfile {
     const advertised = caps.efforts ?? []
     const efforts = EFFORT_LEVELS.filter((level) => advertised.includes(level))
     const ceiling = caps.acceptsMaxTokens
-      ? Math.min(caps.maxTokensCeiling ?? Infinity, caps.maxOutputTokens ?? Infinity)
+      ? Math.min(
+          caps.maxTokensCeiling ?? Number.POSITIVE_INFINITY,
+          caps.maxOutputTokens ?? Number.POSITIVE_INFINITY
+        )
       : undefined
     return new RequestFieldsProfile(
       caps.effortChannel ?? 'output_config',
@@ -59,7 +56,7 @@ export class RequestFieldsProfile {
       efforts,
       gpt ? 'none' : undefined,
       true,
-      Infinity,
+      Number.POSITIVE_INFINITY,
       true
     )
   }
@@ -80,12 +77,7 @@ export class RequestFieldsProfile {
   }
 }
 
-/**
- * The effort a request should carry, or undefined to let Kiro decide.
- *
- * Undefined is not "no thinking": the service then applies its own default.
- * Only the off channel the model names actually stops it.
- */
+/** The effort a request should carry; undefined lets Kiro apply its own default. */
 export function getEffectiveEffort(
   kiroModel: string,
   thinking: boolean,

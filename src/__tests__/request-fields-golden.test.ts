@@ -6,13 +6,7 @@ import { buildModelRequestFields } from '../plugin/model-request-fields.js'
 import { refreshModelCatalog, resetModelCatalog, resolveKiroModel } from '../plugin/models.js'
 import { getEffectiveEffort } from '../plugin/request-fields-profile.js'
 
-/**
- * Characterization of the request fields and variants shipped in 2.7.0.
- *
- * Written before the catalog-driven refactor and kept as the compatibility
- * lock: the tables were produced by the old code and must not move except
- * where a test below says they may.
- */
+/** The request fields and variants shipped in 2.7.0, pinned before the refactor. */
 const FIXTURE = JSON.parse(
   readFileSync(join(import.meta.dir, 'fixtures', 'kiro-catalog.json'), 'utf8')
 )

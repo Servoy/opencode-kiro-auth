@@ -112,9 +112,9 @@ its catalog reports as `high`.
 
 The levels a model offers are the ones its catalog entry lists, so `xhigh` appears
 only where it is listed and Kimi K3 offers `low`, `high` and `max`. The channel
-comes from the same schema: `output_config.effort` or `reasoning.effort`. A level
-a model lacks is sent as the nearest one below it. `max_tokens` goes only to
-models whose schema accepts it.
+comes from the same schema: `output_config.effort` or `reasoning.effort`. Once the
+catalog is read, a level a model lacks is sent as the nearest one below it, and
+`max_tokens` goes only to models whose schema accepts it.
 
 Kimi K3 is experimental, available only in Kiro's US geography, and is a
 [Kiro Excluded Model](https://kiro.dev/docs/models/available-models/#kiro-excluded-models).

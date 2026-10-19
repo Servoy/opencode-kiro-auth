@@ -138,6 +138,7 @@ describe('effort read from the catalog', () => {
       expect(getEffectiveEffort('kimi-k3', true, 'low')).toBe('low')
       expect(getEffectiveEffort('kimi-k3', true, 'medium')).toBe('low')
       expect(getEffectiveEffort('kimi-k3', true, 'xhigh')).toBe('high')
+      expect(getEffectiveEffort('kimi-k3', true)).toBe('low')
       expect(getEffectiveEffort('kimi-k3', false)).toBeUndefined()
     } finally {
       globalThis.fetch = original

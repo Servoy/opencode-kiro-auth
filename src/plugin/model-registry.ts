@@ -282,8 +282,10 @@ export function buildModelRegistry(nameSuffix = ''): Record<string, unknown> {
     if (profile.hasDial()) {
       base.reasoning = true
       base.interleaved = { field: 'reasoning_content' }
-      const off = getCatalogCapabilities(kiroModel)?.thinkingOffChannel === 'disabled'
-      base.variants = buildVariants(profile.efforts, off ? 'disabled' : undefined)
+      base.variants = buildVariants(
+        profile.efforts,
+        profile.offChannel === 'disabled' ? 'disabled' : undefined
+      )
     }
     models[modelID] = base
   }

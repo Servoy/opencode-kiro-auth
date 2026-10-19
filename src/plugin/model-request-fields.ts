@@ -22,13 +22,7 @@ export interface AdditionalModelRequestFields {
   max_tokens?: number
 }
 
-/**
- * Builds one request's block from what the model's profile accepts.
- *
- * Leaving the block off is not the same as turning thinking off: with no
- * effort the service applies its own default. Only the off channel the model
- * actually names stops it.
- */
+/** Builds one request's block from what the model's profile accepts. */
 export class RequestFieldsBuilder {
   constructor(private readonly profile: RequestFieldsProfile) {}
 
@@ -37,8 +31,7 @@ export class RequestFieldsBuilder {
     thinkingDisabled: boolean,
     maxTokens?: number
   ): AdditionalModelRequestFields | undefined {
-    // A model whose schema the catalog says is missing rejects the block
-    // outright: a 400 before a single token.
+    // A model without a schema rejects the block outright: a 400 before a token.
     if (!this.profile.acceptsBlock) return undefined
 
     const fields: AdditionalModelRequestFields = {}

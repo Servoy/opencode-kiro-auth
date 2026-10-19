@@ -194,6 +194,25 @@ describe('the block is built from the model profile', () => {
     })
   })
 
+  test('max_tokens is capped by the schema when it is lower than the model', async () => {
+    const tight = {
+      ...SONNET,
+      additionalModelRequestFieldsSchema: {
+        properties: {
+          ...SONNET.additionalModelRequestFieldsSchema.properties,
+          max_tokens: { type: 'integer', minimum: 1024, maximum: 32000 }
+        },
+        additionalProperties: false
+      }
+    }
+    await withCatalog([tight], () => {
+      expect(buildModelRequestFields('claude-sonnet-5', 'low', false, 50000)).toEqual({
+        output_config: { effort: 'low' },
+        max_tokens: 32000
+      })
+    })
+  })
+
   test('off on a reasoning schema without none sends no block', async () => {
     await withCatalog([KIMI], () => {
       expect(buildModelRequestFields('kimi-k3', undefined, true, 4096)).toBeUndefined()
