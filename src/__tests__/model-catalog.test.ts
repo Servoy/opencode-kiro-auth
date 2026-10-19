@@ -487,7 +487,10 @@ describe('models that reject additionalModelRequestFields', () => {
     modelId: 'claude-sonnet-4.6',
     tokenLimits: { maxOutputTokens: 64000 },
     additionalModelRequestFieldsSchema: {
-      properties: { output_config: { properties: { effort: { enum: ['low', 'high'] } } } }
+      properties: {
+        output_config: { properties: { effort: { enum: ['low', 'high'] } } },
+        max_tokens: { type: 'integer', minimum: 1024, maximum: 128000 }
+      }
     }
   }
   const WITHOUT_SCHEMA = { modelId: 'claude-haiku-4.5', tokenLimits: { maxOutputTokens: 64000 } }

@@ -119,3 +119,107 @@ describe('off with a catalog-confirmed channel', () => {
     })
   })
 })
+
+describe('the block is built from the model profile', () => {
+  async function withCatalog(entries: unknown[], run: () => void): Promise<void> {
+    const { refreshModelCatalog, resetModelCatalog } = await import('../plugin/models.js')
+    resetModelCatalog()
+    const original = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ models: entries }), { status: 200 })) as unknown as typeof fetch
+    try {
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+      run()
+    } finally {
+      globalThis.fetch = original
+      resetModelCatalog()
+    }
+  }
+
+  const LUNA = {
+    modelId: 'gpt-5.6-luna',
+    tokenLimits: { maxOutputTokens: 128000 },
+    additionalModelRequestFieldsSchema: {
+      properties: {
+        reasoning: { properties: { effort: { enum: ['none', 'low', 'medium', 'high', 'max'] } } }
+      },
+      additionalProperties: false
+    }
+  }
+  const KIMI = {
+    modelId: 'kimi-k3',
+    tokenLimits: { maxOutputTokens: 131072 },
+    additionalModelRequestFieldsSchema: {
+      properties: { reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } } },
+      additionalProperties: false
+    }
+  }
+  const SONNET = {
+    modelId: 'claude-sonnet-5',
+    tokenLimits: { maxOutputTokens: 64000 },
+    additionalModelRequestFieldsSchema: {
+      properties: {
+        output_config: { properties: { effort: { enum: ['low', 'medium', 'high', 'max'] } } },
+        thinking: { properties: { type: { enum: ['adaptive', 'disabled'] } } },
+        max_tokens: { type: 'integer', minimum: 1024, maximum: 128000 }
+      },
+      additionalProperties: false
+    }
+  }
+  const HAIKU = { modelId: 'claude-haiku-4.5', tokenLimits: { maxOutputTokens: 64000 } }
+
+  test('a reasoning schema never receives max_tokens', async () => {
+    await withCatalog([LUNA, KIMI], () => {
+      expect(buildModelRequestFields('gpt-5.6-luna', 'low', false, 4096)).toEqual({
+        reasoning: { effort: 'low' }
+      })
+      expect(buildModelRequestFields('kimi-k3', 'low', false, 4096)).toEqual({
+        reasoning: { effort: 'low' }
+      })
+    })
+  })
+
+  test('max_tokens is capped by the schema and the model', async () => {
+    await withCatalog([SONNET], () => {
+      expect(buildModelRequestFields('claude-sonnet-5', 'low', false, 200000)).toEqual({
+        output_config: { effort: 'low' },
+        max_tokens: 64000
+      })
+    })
+  })
+
+  test('off on a reasoning schema without none sends no block', async () => {
+    await withCatalog([KIMI], () => {
+      expect(buildModelRequestFields('kimi-k3', undefined, true, 4096)).toBeUndefined()
+    })
+  })
+
+  test('off on GPT still sends reasoning none', async () => {
+    await withCatalog([LUNA], () => {
+      expect(buildModelRequestFields('gpt-5.6-luna', 'max', true)).toEqual({
+        reasoning: { effort: 'none' }
+      })
+    })
+    expect(buildModelRequestFields('gpt-5.6-sol', 'max', true)).toEqual({
+      reasoning: { effort: 'none' }
+    })
+  })
+
+  test('a model the catalog lists without a schema gets no block', async () => {
+    await withCatalog([HAIKU], () => {
+      expect(buildModelRequestFields('claude-haiku-4.5', undefined, false, 4096)).toBeUndefined()
+    })
+  })
+
+  test('an unknown model keeps receiving the block', () => {
+    expect(buildModelRequestFields('some-future-model', undefined, false, 4096)).toEqual({
+      max_tokens: 4096
+    })
+  })
+})
