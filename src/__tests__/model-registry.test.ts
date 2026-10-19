@@ -137,6 +137,12 @@ describe('model registry', () => {
     })
   })
 
+  test('advertises Kimi K3 as an open-weight model', () => {
+    expect(registry['kimi-k3'].name).toBe('Kimi K3 (2.4x)')
+    expect(registry['kimi-k3'].limit).toEqual({ context: 1000000, output: 131072 })
+    expect(registry['kimi-k3'].modalities.input).toEqual(['text', 'image'])
+  })
+
   test('carries limit and modalities', () => {
     expect(registry['claude-opus-5'].limit).toEqual({ context: 1000000, output: 128000 })
     expect(registry['claude-opus-5'].modalities).toBeDefined()
@@ -257,5 +263,47 @@ describe('a registry built with a catalog', () => {
       const current = buildModelRegistry() as Record<string, any>
       expect(current['claude-opus-4-5'].variants).toBeUndefined()
     })
+  })
+})
+
+describe('Kimi K3 with a catalog', () => {
+  test('has a low, high and max dial', async () => {
+    const { refreshModelCatalog, resetModelCatalog } = await import('../plugin/models.js')
+    resetModelCatalog()
+    const original = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          models: [
+            {
+              modelId: 'kimi-k3',
+              tokenLimits: { maxInputTokens: 1000000, maxOutputTokens: 131072 },
+              additionalModelRequestFieldsSchema: {
+                properties: {
+                  reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } }
+                },
+                additionalProperties: false
+              }
+            }
+          ]
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+    try {
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+      const current = buildModelRegistry() as Record<string, any>
+
+      expect(Object.keys(current['kimi-k3'].variants)).toEqual(['low', 'high', 'max'])
+      expect(current['kimi-k3'].reasoning).toBe(true)
+    } finally {
+      globalThis.fetch = original
+      resetModelCatalog()
+    }
   })
 })

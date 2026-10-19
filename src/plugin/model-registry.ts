@@ -179,6 +179,13 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     rate: '0.05x',
     limit: { context: 256000, output: 64000 },
     modalities: TEXT_ONLY
+  },
+  // Experimental, US geography only, and a Kiro Excluded Model (no AWS output indemnity).
+  'kimi-k3': {
+    name: 'Kimi K3',
+    rate: '2.4x',
+    limit: { context: 1000000, output: 131072 },
+    modalities: TEXT_IMAGE
   }
 }
 

@@ -217,6 +217,14 @@ describe('the block is built from the model profile', () => {
     })
   })
 
+  test('Kimi K3 low sends reasoning low and nothing else', async () => {
+    await withCatalog([KIMI], () => {
+      expect(buildModelRequestFields('kimi-k3', 'low', false, 4096)).toEqual({
+        reasoning: { effort: 'low' }
+      })
+    })
+  })
+
   test('an unknown model keeps receiving the block', () => {
     expect(buildModelRequestFields('some-future-model', undefined, false, 4096)).toEqual({
       max_tokens: 4096

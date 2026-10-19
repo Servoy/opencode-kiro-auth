@@ -97,7 +97,8 @@ const EXPECTED_VARIANTS_NOCATALOG: Record<string, string[]> = {
   'glm-5': [],
   'minimax-m2.5': [],
   'minimax-m2.1': [],
-  'qwen3-coder-next': []
+  'qwen3-coder-next': [],
+  'kimi-k3': []
 }
 
 const EXPECTED_BLOCKS_NOCATALOG: Record<string, string | undefined> = {
@@ -205,7 +206,12 @@ const EXPECTED_BLOCKS_NOCATALOG: Record<string, string | undefined> = {
   'qwen3-coder-next|low|on|none': undefined,
   'qwen3-coder-next|max|on|none': undefined,
   'qwen3-coder-next|xhigh|on|4096': '{"max_tokens":4096}',
-  'qwen3-coder-next|default|off|4096': '{"max_tokens":4096}'
+  'qwen3-coder-next|default|off|4096': '{"max_tokens":4096}',
+  'kimi-k3|default|on|none': undefined,
+  'kimi-k3|low|on|none': undefined,
+  'kimi-k3|max|on|none': undefined,
+  'kimi-k3|xhigh|on|4096': '{"max_tokens":4096}',
+  'kimi-k3|default|off|4096': '{"max_tokens":4096}'
 }
 
 const EXPECTED_VARIANTS_WITHCATALOG: Record<string, string[]> = {
@@ -229,7 +235,8 @@ const EXPECTED_VARIANTS_WITHCATALOG: Record<string, string[]> = {
   'glm-5': [],
   'minimax-m2.5': [],
   'minimax-m2.1': [],
-  'qwen3-coder-next': []
+  'qwen3-coder-next': [],
+  'kimi-k3': ['low', 'high', 'max']
 }
 
 const EXPECTED_BLOCKS_WITHCATALOG: Record<string, string | undefined> = {
@@ -339,7 +346,12 @@ const EXPECTED_BLOCKS_WITHCATALOG: Record<string, string | undefined> = {
   'qwen3-coder-next|low|on|none': undefined,
   'qwen3-coder-next|max|on|none': undefined,
   'qwen3-coder-next|xhigh|on|4096': '{"max_tokens":4096}',
-  'qwen3-coder-next|default|off|4096': '{"max_tokens":4096}'
+  'qwen3-coder-next|default|off|4096': '{"max_tokens":4096}',
+  'kimi-k3|default|on|none': undefined,
+  'kimi-k3|low|on|none': '{"reasoning":{"effort":"low"}}',
+  'kimi-k3|max|on|none': '{"reasoning":{"effort":"max"}}',
+  'kimi-k3|xhigh|on|4096': '{"reasoning":{"effort":"high"}}',
+  'kimi-k3|default|off|4096': undefined
 }
 
 describe('request fields today, no catalog', () => {
