@@ -51,9 +51,12 @@ describe('parseEventStream', () => {
   test('parses context usage into token counts', () => {
     const raw = '{"content":"hi"}{"contextUsagePercentage":50}'
     const result = parseEventStream(raw, 'CLAUDE_SONNET_4_5')
-    // With a known context window, inputTokens should be set
-    expect(result.outputTokens).toBeDefined()
-    expect(result.inputTokens).toBeDefined()
+    // Deterministic: output is the estimate for "hi" (1 token), and input is
+    // 50% of Sonnet 4.5's 200k window minus that one output token. Asserting the
+    // exact figures catches a broken percentage calc or window lookup; the old
+    // toBeDefined() stayed green even if the arithmetic was wrong.
+    expect(result.outputTokens).toBe(1)
+    expect(result.inputTokens).toBe(99999)
   })
 
   test('returns end_turn when no tool calls', () => {

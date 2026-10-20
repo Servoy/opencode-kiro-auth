@@ -63,18 +63,19 @@ describe('normalizeExpiresAt', () => {
   })
 
   test('seconds timestamp is converted to ms', () => {
-    const sec = 1700000000 // < 10_000_000_000
-    expect(normalizeExpiresAt(sec)).toBe(sec * 1000)
+    // Literal expected, not `sec * 1000`: pin the value independently so a
+    // broken seconds-to-ms conversion cannot drift in lockstep with the test.
+    expect(normalizeExpiresAt(1700000000)).toBe(1700000000000)
   })
 
   test('ISO date string is converted to ms', () => {
-    const iso = '2024-01-01T00:00:00.000Z'
-    const expected = new Date(iso).getTime()
-    expect(normalizeExpiresAt(iso)).toBe(expected)
+    // 2024-01-01T00:00:00.000Z is exactly this epoch-ms; hard-coded so the test
+    // does not recompute it with the same new Date().getTime() the code uses.
+    expect(normalizeExpiresAt('2024-01-01T00:00:00.000Z')).toBe(1704067200000)
   })
 
   test('numeric string is converted', () => {
-    expect(normalizeExpiresAt('1700000000')).toBe(1700000000 * 1000)
+    expect(normalizeExpiresAt('1700000000')).toBe(1700000000000)
   })
 
   test('returns 0 for invalid input', () => {

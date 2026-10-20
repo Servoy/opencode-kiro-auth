@@ -85,8 +85,20 @@ describe('transformKiroStream: thinking tags', () => {
       '{"content":"```\\n<thinking>not thinking</thinking>\\n```"}'
     ])
     const events = await collect(transformKiroStream(response, MODEL, CONV))
-    const thinkingEvents = events.filter((e) => e.choices?.[0]?.delta?.thinking)
-    expect(thinkingEvents.length).toBe(0)
+    // Thinking is surfaced as reasoning_content, never a `thinking` delta, so
+    // that was the field to assert empty on; filtering `delta.thinking` matched
+    // nothing whether or not the code block was mistaken for a thinking block.
+    const reasoning = events
+      .filter((e) => typeof e.choices?.[0]?.delta?.reasoning_content === 'string')
+      .map((e) => e.choices[0].delta.reasoning_content)
+      .join('')
+    const text = events
+      .filter((e) => typeof e.choices?.[0]?.delta?.content === 'string')
+      .map((e) => e.choices[0].delta.content)
+      .join('')
+    // The fenced tag must stay verbatim in the text, with nothing routed to reasoning.
+    expect(reasoning).toBe('')
+    expect(text).toContain('<thinking>not thinking</thinking>')
   })
 })
 

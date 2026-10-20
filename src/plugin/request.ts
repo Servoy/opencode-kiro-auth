@@ -48,6 +48,23 @@ import type {
 const CARRY_FORWARD_TURN_WINDOW = 6
 
 /**
+ * The cache/store key for a conversation: a session id alone when the host
+ * gives one, else the workspace plus the first user message's text.
+ *
+ * Exported so a test can seed `imageCache`/`kiroDb` under the exact key the
+ * runtime writes, rather than restating this sha256 in the test and drifting
+ * from it. The single source of truth for how a conversation is identified.
+ */
+export function conversationFingerprint(
+  workspace: string,
+  firstUserContent: string,
+  hasSessionId: boolean
+): string {
+  const identity = hasSessionId ? workspace : workspace + '\0' + (firstUserContent || '_empty_')
+  return crypto.createHash('sha256').update(identity).digest('hex').slice(0, 32)
+}
+
+/**
  * Look up or mint a stable convId for this conversation.
  *
  * A host session is one conversation, so when the host gives us a session id
@@ -62,8 +79,7 @@ function deriveConversationIds(
   firstUserContent: string,
   hasSessionId: boolean
 ): { convId: string; agentContinuationId: string; fingerprint: string } {
-  const identity = hasSessionId ? workspace : workspace + '\0' + (firstUserContent || '_empty_')
-  const fingerprint = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 32)
+  const fingerprint = conversationFingerprint(workspace, firstUserContent, hasSessionId)
 
   const existing = kiroDb.getConversationId(workspace, fingerprint)
   if (existing) {

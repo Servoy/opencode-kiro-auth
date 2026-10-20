@@ -49,7 +49,7 @@ import {
   deduplicateToolCallsByContent
 } from '../infrastructure/transformers/tool-transformer.js'
 import { imageCache } from '../plugin/image-cache.js'
-import { transformToSdkRequest } from '../plugin/request.js'
+import { conversationFingerprint, transformToSdkRequest } from '../plugin/request.js'
 import type { KiroAuthDetails } from '../plugin/types.js'
 
 const auth: KiroAuthDetails = {
@@ -841,12 +841,9 @@ describe('fingerprint stability across image-strip', () => {
 
 describe('image carry-forward: no images on tool-result turns', () => {
   function seedCache(workspace: string, firstUserText: string, lastSeenMessageCount = 0) {
-    const crypto = require('crypto')
-    const fingerprint = crypto
-      .createHash('sha256')
-      .update(workspace + '\0' + firstUserText)
-      .digest('hex')
-      .slice(0, 32)
+    // Key through the real production function, not a copy of its sha256: these
+    // turns carry no session id, so the fingerprint is workspace + first text.
+    const fingerprint = conversationFingerprint(workspace, firstUserText, false)
     imageCache.set(
       workspace,
       fingerprint,
