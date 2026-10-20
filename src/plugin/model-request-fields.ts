@@ -1,5 +1,6 @@
 import type { Effort } from './config/schema.js'
 import { getCatalogCapabilities } from './models.js'
+import { RequestFieldsProfile } from './request-fields-profile.js'
 
 /** The dial position that actually stops the model reasoning. */
 export const EFFORT_OFF = 'off' as const
@@ -11,10 +12,9 @@ export const EFFORT_OFF = 'off' as const
  * is what the Kiro CLI puts on the wire, and the service reads it literally.
  */
 export interface AdditionalModelRequestFields {
-  /** Claude family reasoning channel. */
+  /** Effort channel for models whose schema has output_config. */
   output_config?: { effort: Effort }
-  /** GPT family reasoning channel; the service reads one or the other.
-   *  GPT accepts `none` as its off switch, which Claude's enum does not. */
+  /** Effort channel for models whose schema has reasoning; `none` only where the enum lists it. */
   reasoning?: { effort: Effort | 'none' }
   /** Adaptive is the default. 'between_tools' is in the enum but the
    *  endpoint 400s on it, so this plugin never emits it. */
@@ -22,58 +22,58 @@ export interface AdditionalModelRequestFields {
   max_tokens?: number
 }
 
-/** GPT models take their effort under `reasoning`, every other family under
- *  `output_config`. Sending both is not accepted. */
-function isGptFamily(kiroModel: string): boolean {
-  return /^(gpt|openai)/i.test(kiroModel)
+/** Builds one request's block from what the model's profile accepts. */
+export class RequestFieldsBuilder {
+  constructor(private readonly profile: RequestFieldsProfile) {}
+
+  build(
+    effort: Effort | undefined,
+    thinkingDisabled: boolean,
+    maxTokens?: number
+  ): AdditionalModelRequestFields | undefined {
+    // A model without a schema rejects the block outright: a 400 before a token.
+    if (!this.profile.acceptsBlock) return undefined
+
+    const fields = thinkingDisabled ? this.offFields() : effort ? this.effortFields(effort) : {}
+
+    if (maxTokens !== undefined && this.profile.maxTokensCeiling !== undefined) {
+      fields.max_tokens = Math.min(maxTokens, this.profile.maxTokensCeiling)
+    }
+
+    return Object.keys(fields).length > 0 ? fields : undefined
+  }
+
+  private offFields(): AdditionalModelRequestFields {
+    if (this.profile.channel === 'output_config' && this.profile.offChannel === 'disabled') {
+      return { thinking: { type: 'disabled' }, output_config: { effort: 'high' } }
+    }
+    if (this.profile.channel === 'reasoning' && this.profile.offChannel === 'none') {
+      return { reasoning: { effort: 'none' } }
+    }
+    // No confirmed off channel: leave the block off instead of guessing a 400.
+    return {}
+  }
+
+  private effortFields(effort: Effort): AdditionalModelRequestFields {
+    // The service reads one channel or the other, never both.
+    return this.profile.channel === 'reasoning'
+      ? { reasoning: { effort } }
+      : { output_config: { effort } }
+  }
 }
 
-/**
- * Build the block for one request, or undefined when nothing needs saying.
- *
- * Leaving the block off is not the same as turning thinking off: with no
- * effort the service applies its own default, which the catalog reports as
- * `high`. Only `thinking.type = disabled` actually stops it.
- */
+/** Build the block for one request, or undefined when nothing needs saying. */
 export function buildModelRequestFields(
   kiroModel: string,
   effort: Effort | undefined,
   thinkingDisabled: boolean,
   maxTokens?: number
 ): AdditionalModelRequestFields | undefined {
-  // Models without a reasoning schema reject the block outright — "is not
-  // supported for this model", a 400 before a single token. Compared against
-  // false rather than truthiness so a catalog that could not be read leaves
-  // every model alone instead of silently stripping the block from all of them.
-  if (getCatalogCapabilities(kiroModel)?.supportsRequestFields === false) return undefined
-
-  const fields: AdditionalModelRequestFields = {}
-  const gpt = isGptFamily(kiroModel)
-
-  if (thinkingDisabled) {
-    // GPT has no thinking.type; its off is reasoning.effort = none. The Claude
-    // disabled switch sent to GPT is a 400, and vice versa.
-    if (gpt) {
-      fields.reasoning = { effort: 'none' }
-    } else {
-      // No confirmed channel: leave the block off instead of guessing a 400.
-      const channel = getCatalogCapabilities(kiroModel)?.thinkingOffChannel
-      if (channel) {
-        fields.thinking = { type: channel }
-        fields.output_config = { effort: 'high' } // the service caps off at high
-      }
-    }
-  } else if (effort) {
-    if (gpt) fields.reasoning = { effort }
-    else fields.output_config = { effort }
-  }
-
-  if (maxTokens !== undefined) {
-    const ceiling = getCatalogCapabilities(kiroModel)?.maxOutputTokens
-    fields.max_tokens = ceiling ? Math.min(maxTokens, ceiling) : maxTokens
-  }
-
-  return Object.keys(fields).length > 0 ? fields : undefined
+  return new RequestFieldsBuilder(RequestFieldsProfile.forModel(kiroModel)).build(
+    effort,
+    thinkingDisabled,
+    maxTokens
+  )
 }
 
 /**

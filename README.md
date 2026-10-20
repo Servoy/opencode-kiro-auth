@@ -6,7 +6,7 @@
 
 OpenCode plugin for AWS Kiro (CodeWhisperer). It exposes every model Kiro
 serves — Claude Opus, Sonnet and Haiku, OpenAI's GPT-5.6 tiers, and the open-weight
-models (DeepSeek, GLM, MiniMax, Qwen) — each with its own reasoning dial. Works on
+models (DeepSeek, GLM, Kimi, MiniMax, Qwen) — each with its own reasoning dial. Works on
 both OpenCode v1 and v2 hosts from the same build.
 
 ## Features
@@ -29,9 +29,9 @@ both OpenCode v1 and v2 hosts from the same build.
 - **Native Thinking Mode**: Streams Kiro's native reasoning to OpenCode's
   thinking block, with the reasoning flags declared on every thinking model, so
   it renders without any model configuration.
-- **Reasoning Dial**: Every model that has one carries `off` through `max` as
-  OpenCode variants, set per model or per agent. Claude reads
-  `output_config.effort`, GPT reads `reasoning.effort`.
+- **Reasoning Dial**: Every model that has one carries its levels as OpenCode
+  variants, set per model or per agent. Each model's catalog schema names its
+  channel (`output_config.effort` or `reasoning.effort`) and the levels it takes.
 - **Automated Recovery**: Exponential backoff for rate limits and automated token
   refresh.
 
@@ -110,9 +110,15 @@ top-level `reasoning_effort` and the plugin passes that level on as it is.
 variant is not the same thing — the service then applies its own default, which
 its catalog reports as `high`.
 
-`xhigh` appears only on models whose catalog entry lists it; the rest offer four
-levels. The Claude family reads `output_config.effort` and the GPT family reads
-`reasoning.effort`, so each gets the channel it understands.
+The levels a model offers are the ones its catalog entry lists, so `xhigh` appears
+only where it is listed and Kimi K3 offers `low`, `high` and `max` once the catalog
+has been read. The channel
+comes from the same schema: `output_config.effort` or `reasoning.effort`. Once the
+catalog is read, a level a model lacks is sent as the nearest one below it, and
+`max_tokens` goes only to models whose schema accepts it.
+
+Kimi K3 is experimental, available only in Kiro's US geography, and is a
+[Kiro Excluded Model](https://kiro.dev/docs/models/available-models/#kiro-excluded-models).
 
 Temperature and top_p do nothing: CodeWhisperer has no such fields, and the
 plugin says so, so OpenCode stops offering them.

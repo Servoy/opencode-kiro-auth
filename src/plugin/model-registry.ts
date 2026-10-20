@@ -1,7 +1,7 @@
 import type { Effort } from './config/schema.js'
-import { EFFORT_LEVELS, supportsEffort, supportsXHighEffort } from './effort.js'
 import { EFFORT_OFF } from './model-request-fields.js'
 import { getCatalogCapabilities, getCatalogContextLimit, resolveKiroModel } from './models.js'
+import { RequestFieldsProfile } from './request-fields-profile.js'
 
 type Modalities = {
   input: Array<'text' | 'image' | 'pdf'>
@@ -23,21 +23,15 @@ interface ModelSpec {
   rate: string
   limit: { context: number; output: number }
   modalities: Modalities
-  /**
-   * Emit a companion `-thinking` entry. Only set for Claude models that accept
-   * `output_config.effort`; the effort ladder is derived from the model's own
-   * capabilities in effort.ts.
-   */
-  thinking?: boolean
 }
 
 /**
  * Models Kiro exposes, keyed by the OpenCode-facing model ID.
  *
- * Includes Kiro's GPT-5.6 tiers: they carry effort under `reasoning.effort`
- * rather than `output_config.effort` and take `none` as their off switch, both
- * handled in model-request-fields.ts. They have no `-thinking` twin and no 1M
- * variant to spell out — the single entry's 1M window is their only size.
+ * Includes Kiro's GPT-5.6 tiers: their channel and off switch come from the
+ * catalog schema, or from the built-in lists while it is cold. They have no
+ * `-thinking` twin and no 1M variant to spell out — the single entry's 1M
+ * window is their only size.
  */
 export const MODEL_SPECS: Record<string, ModelSpec> = {
   auto: { name: 'Auto', rate: '1.0x', limit: CONTEXT_1M, modalities: MULTIMODAL },
@@ -48,22 +42,19 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     name: 'GPT-5.6 Sol',
     rate: '4.4x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: TEXT_ONLY,
-    thinking: true
+    modalities: TEXT_ONLY
   },
   'gpt-5.6-terra': {
     name: 'GPT-5.6 Terra',
     rate: '2.2x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: TEXT_ONLY,
-    thinking: true
+    modalities: TEXT_ONLY
   },
   'gpt-5.6-luna': {
     name: 'GPT-5.6 Luna',
     rate: '1.1x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: TEXT_ONLY,
-    thinking: true
+    modalities: TEXT_ONLY
   },
 
   // Claude Sonnet
@@ -77,29 +68,25 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     name: 'Claude Sonnet 4.5',
     rate: '1.3x',
     limit: CONTEXT_200K,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-sonnet-4-6': {
     name: 'Claude Sonnet 4.6',
     rate: '1.3x',
     limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-sonnet-5': {
     name: 'Claude Sonnet 5',
     rate: '1.3x',
     limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-sonnet-5-5': {
     name: 'Claude Sonnet 5.5',
     rate: '1.3x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
 
   // Claude Haiku
@@ -115,43 +102,37 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     name: 'Claude Opus 4.5',
     rate: '2.2x',
     limit: CONTEXT_200K,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-opus-4-6': {
     name: 'Claude Opus 4.6',
     rate: '2.2x',
     limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-opus-4-7': {
     name: 'Claude Opus 4.7',
     rate: '2.2x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-opus-4-8': {
     name: 'Claude Opus 4.8',
     rate: '2.2x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-opus-5': {
     name: 'Claude Opus 5',
     rate: '2.2x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
   'claude-opus-5-5': {
     name: 'Claude Opus 5.5',
     rate: '2.0x',
     limit: CONTEXT_1M_128K_OUT,
-    modalities: MULTIMODAL,
-    thinking: true
+    modalities: MULTIMODAL
   },
 
   // Open weight models
@@ -179,6 +160,13 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     rate: '0.05x',
     limit: { context: 256000, output: 64000 },
     modalities: TEXT_ONLY
+  },
+  // Experimental, US geography only, and a Kiro Excluded Model (no AWS output indemnity).
+  'kimi-k3': {
+    name: 'Kimi K3',
+    rate: '2.4x',
+    limit: { context: 1000000, output: 131072 },
+    modalities: TEXT_IMAGE
   }
 }
 
@@ -200,44 +188,17 @@ export function getModelContextLimit(model: string): number {
 }
 
 /**
- * The effort levels a model offers.
- *
- * The catalog is the authority — it names them per model in the schema it
- * advertises, and it disagrees with the built-in lists: opus-4.5 and sonnet-4
- * carry no schema at all, so offering them a dial advertises something the
- * service will reject. The built-in lists stand in only until the catalog has
- * been read, since the registry is built before the first request.
- */
-function effortLevelsFor(kiroModel: string): readonly Effort[] | null {
-  const advertised = getCatalogCapabilities(kiroModel)?.efforts
-  if (advertised) {
-    const known = EFFORT_LEVELS.filter((level) => advertised.includes(level))
-    return known.length > 0 ? known : null
-  }
-  if (!supportsEffort(kiroModel)) return null
-  return EFFORT_LEVELS.filter((level) => level !== 'xhigh' || supportsXHighEffort(kiroModel))
-}
-
-/**
  * Variants for a model's dial, `off` first.
  *
  * Choosing no variant is not off: the service then applies its own default,
  * which the catalog reports as `high`. Off has to be asked for, and it rides
  * on the same dial so it reads as the bottom of one scale.
  */
-function buildVariants(
-  levels: readonly Effort[],
-  offChannel: 'disabled' | 'between_tools' | undefined
-): Record<string, unknown> {
+function buildVariants(levels: readonly Effort[], withOff: boolean): Record<string, unknown> {
   const variants: Record<string, unknown> = {}
-  if (offChannel) variants[EFFORT_OFF] = { reasoningEffort: EFFORT_OFF }
+  if (withOff) variants[EFFORT_OFF] = { reasoningEffort: EFFORT_OFF }
   for (const level of levels) variants[level] = { reasoningEffort: level }
   return variants
-}
-
-/** Only the catalog knows; cold or unreachable means no off variant. */
-function thinkingOffChannel(kiroModel: string): 'disabled' | 'between_tools' | undefined {
-  return getCatalogCapabilities(kiroModel)?.thinkingOffChannel
 }
 
 /**
@@ -278,7 +239,7 @@ export function buildModelRegistry(nameSuffix = ''): Record<string, unknown> {
     // Effort capability is keyed on the resolved Kiro model ID, not the
     // OpenCode-facing one (e.g. claude-opus-5 vs claude-opus-4-6).
     const kiroModel = resolveKiroModel(modelID)
-    const levels = effortLevelsFor(kiroModel)
+    const profile = RequestFieldsProfile.forModel(kiroModel)
 
     const base: Record<string, unknown> = {
       name: `${spec.name} (${spec.rate})${suffix}`,
@@ -296,10 +257,10 @@ export function buildModelRegistry(nameSuffix = ''): Record<string, unknown> {
     // A model with an effort dial reasons as soon as a variant is picked, so it
     // has to declare the capability — without `reasoning` and `interleaved`
     // OpenCode drops every chunk and the thinking block never renders.
-    if (levels) {
+    if (profile.hasDial()) {
       base.reasoning = true
       base.interleaved = { field: 'reasoning_content' }
-      base.variants = buildVariants(levels, thinkingOffChannel(kiroModel))
+      base.variants = buildVariants(profile.efforts, profile.offChannel === 'disabled')
     }
     models[modelID] = base
   }

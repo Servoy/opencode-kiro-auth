@@ -1,12 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import {
-  EFFORT_LEVELS,
-  getEffectiveEffort,
-  isEffort,
-  resolveEffort,
-  supportsEffort,
-  supportsXHighEffort
-} from '../plugin/effort.js'
+import { EFFORT_LEVELS, isEffort, supportsEffort, supportsXHighEffort } from '../plugin/effort.js'
+import { getEffectiveEffort, RequestFieldsProfile } from '../plugin/request-fields-profile.js'
+import { withCatalog } from './helpers/catalog.js'
+
+const resolveEffort = (model: string, requested: any) =>
+  RequestFieldsProfile.forModel(model).resolveEffort(requested)
 
 describe('effort module', () => {
   describe('supportsEffort', () => {
@@ -107,5 +105,25 @@ describe('reading an effort that OpenCode sends back', () => {
     for (const value of ['', 'none', 'HIGH', 'extreme', undefined, null, 3]) {
       expect(isEffort(value)).toBe(false)
     }
+  })
+})
+
+describe('effort read from the catalog', () => {
+  const KIMI = {
+    modelId: 'kimi-k3',
+    additionalModelRequestFieldsSchema: {
+      properties: { reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } } },
+      additionalProperties: false
+    }
+  }
+
+  test('uses the levels the schema names', async () => {
+    await withCatalog([KIMI], () => {
+      expect(getEffectiveEffort('kimi-k3', true, 'low')).toBe('low')
+      expect(getEffectiveEffort('kimi-k3', true, 'medium')).toBe('low')
+      expect(getEffectiveEffort('kimi-k3', true, 'xhigh')).toBe('high')
+      expect(getEffectiveEffort('kimi-k3', true)).toBe('low')
+      expect(getEffectiveEffort('kimi-k3', false)).toBeUndefined()
+    })
   })
 })

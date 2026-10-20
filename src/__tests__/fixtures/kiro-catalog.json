@@ -1,0 +1,348 @@
+{
+  "defaultModel": {
+    "modelId": "auto"
+  },
+  "models": [
+    {
+      "modelId": "claude-opus-5.5",
+      "tokenLimits": {
+        "maxInputTokens": 1000000,
+        "maxOutputTokens": 128000
+      },
+      "supportedInputTypes": [
+        "TEXT",
+        "IMAGE"
+      ],
+      "promptCaching": {
+        "supportsPromptCaching": true
+      },
+      "additionalModelRequestFieldsSchema": {
+        "type": "object",
+        "properties": {
+          "thinking": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "adaptive"
+                ]
+              },
+              "display": {
+                "type": "string",
+                "enum": [
+                  "summarized",
+                  "omitted"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "output_config": {
+            "type": "object",
+            "properties": {
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              }
+            }
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 128000
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "modelId": "claude-sonnet-5.5",
+      "tokenLimits": {
+        "maxInputTokens": 1000000,
+        "maxOutputTokens": 128000
+      },
+      "supportedInputTypes": [
+        "TEXT",
+        "IMAGE"
+      ],
+      "promptCaching": {
+        "supportsPromptCaching": true
+      },
+      "additionalModelRequestFieldsSchema": {
+        "type": "object",
+        "properties": {
+          "thinking": {
+            "additionalProperties": false,
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "adaptive",
+                  "between_tools"
+                ]
+              },
+              "display": {
+                "type": "string",
+                "enum": [
+                  "summarized",
+                  "omitted"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "output_config": {
+            "type": "object",
+            "properties": {
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "high"
+              }
+            }
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 128000
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "modelId": "claude-opus-5",
+      "tokenLimits": {
+        "maxInputTokens": 1000000,
+        "maxOutputTokens": 128000
+      },
+      "supportedInputTypes": [
+        "TEXT",
+        "IMAGE"
+      ],
+      "promptCaching": {
+        "supportsPromptCaching": true
+      },
+      "additionalModelRequestFieldsSchema": {
+        "type": "object",
+        "properties": {
+          "thinking": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "adaptive",
+                  "disabled"
+                ]
+              },
+              "display": {
+                "type": "string",
+                "enum": [
+                  "summarized",
+                  "omitted"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "output_config": {
+            "type": "object",
+            "properties": {
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "high"
+              }
+            }
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 128000
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "modelId": "claude-sonnet-5",
+      "tokenLimits": {
+        "maxInputTokens": 1000000,
+        "maxOutputTokens": 64000
+      },
+      "supportedInputTypes": [
+        "TEXT",
+        "IMAGE"
+      ],
+      "promptCaching": {
+        "supportsPromptCaching": true
+      },
+      "additionalModelRequestFieldsSchema": {
+        "type": "object",
+        "properties": {
+          "thinking": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "adaptive",
+                  "disabled"
+                ]
+              },
+              "display": {
+                "type": "string",
+                "enum": [
+                  "summarized",
+                  "omitted"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "output_config": {
+            "type": "object",
+            "properties": {
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "high"
+              }
+            }
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 128000
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "modelId": "gpt-5.6-luna",
+      "tokenLimits": {
+        "maxInputTokens": 922000,
+        "maxOutputTokens": 128000
+      },
+      "supportedInputTypes": [
+        "TEXT",
+        "IMAGE"
+      ],
+      "promptCaching": {
+        "supportsPromptCaching": true
+      },
+      "additionalModelRequestFieldsSchema": {
+        "type": "object",
+        "properties": {
+          "reasoning": {
+            "type": "object",
+            "properties": {
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "high"
+              }
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "modelId": "claude-haiku-4.5",
+      "tokenLimits": {
+        "maxInputTokens": 200000,
+        "maxOutputTokens": 64000
+      },
+      "supportedInputTypes": [
+        "TEXT",
+        "IMAGE"
+      ],
+      "promptCaching": {
+        "maximumCacheCheckpointsPerRequest": 4,
+        "minimumTokensPerCacheCheckpoint": 4096,
+        "supportsPromptCaching": true
+      },
+      "additionalModelRequestFieldsSchema": null
+    },
+    {
+      "modelId": "kimi-k3",
+      "tokenLimits": {
+        "maxInputTokens": 1000000,
+        "maxOutputTokens": 131072
+      },
+      "supportedInputTypes": [
+        "TEXT",
+        "IMAGE"
+      ],
+      "promptCaching": {
+        "supportsPromptCaching": true
+      },
+      "additionalModelRequestFieldsSchema": {
+        "type": "object",
+        "properties": {
+          "reasoning": {
+            "type": "object",
+            "properties": {
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "high",
+                  "max"
+                ],
+                "default": "max"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

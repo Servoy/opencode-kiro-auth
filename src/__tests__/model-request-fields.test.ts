@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { buildModelRequestFields, EFFORT_OFF } from '../plugin/model-request-fields.js'
+import { withCatalog } from './helpers/catalog.js'
 
 describe('the additionalModelRequestFields block', () => {
   test('says nothing when there is nothing to say', () => {
@@ -116,6 +117,116 @@ describe('off with a catalog-confirmed channel', () => {
   test('no off value in the enum emits no block at all', async () => {
     await withChannel('claude-opus-5.5', ['adaptive'], () => {
       expect(buildModelRequestFields('claude-opus-5.5', 'max', true)).toBeUndefined()
+    })
+  })
+})
+
+describe('the block is built from the model profile', () => {
+  const LUNA = {
+    modelId: 'gpt-5.6-luna',
+    tokenLimits: { maxOutputTokens: 128000 },
+    additionalModelRequestFieldsSchema: {
+      properties: {
+        reasoning: { properties: { effort: { enum: ['none', 'low', 'medium', 'high', 'max'] } } }
+      },
+      additionalProperties: false
+    }
+  }
+  const KIMI = {
+    modelId: 'kimi-k3',
+    tokenLimits: { maxOutputTokens: 131072 },
+    additionalModelRequestFieldsSchema: {
+      properties: { reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } } },
+      additionalProperties: false
+    }
+  }
+  const SONNET = {
+    modelId: 'claude-sonnet-5',
+    tokenLimits: { maxOutputTokens: 64000 },
+    additionalModelRequestFieldsSchema: {
+      properties: {
+        output_config: { properties: { effort: { enum: ['low', 'medium', 'high', 'max'] } } },
+        thinking: { properties: { type: { enum: ['adaptive', 'disabled'] } } },
+        max_tokens: { type: 'integer', minimum: 1024, maximum: 128000 }
+      },
+      additionalProperties: false
+    }
+  }
+  const HAIKU = { modelId: 'claude-haiku-4.5', tokenLimits: { maxOutputTokens: 64000 } }
+
+  test('a reasoning schema never receives max_tokens', async () => {
+    await withCatalog([LUNA, KIMI], () => {
+      expect(buildModelRequestFields('gpt-5.6-luna', 'low', false, 4096)).toEqual({
+        reasoning: { effort: 'low' }
+      })
+      expect(buildModelRequestFields('kimi-k3', 'low', false, 4096)).toEqual({
+        reasoning: { effort: 'low' }
+      })
+    })
+  })
+
+  test('max_tokens is capped by the schema and the model', async () => {
+    await withCatalog([SONNET], () => {
+      expect(buildModelRequestFields('claude-sonnet-5', 'low', false, 200000)).toEqual({
+        output_config: { effort: 'low' },
+        max_tokens: 64000
+      })
+    })
+  })
+
+  test('max_tokens is capped by the schema when it is lower than the model', async () => {
+    const tight = {
+      ...SONNET,
+      additionalModelRequestFieldsSchema: {
+        properties: {
+          ...SONNET.additionalModelRequestFieldsSchema.properties,
+          max_tokens: { type: 'integer', minimum: 1024, maximum: 32000 }
+        },
+        additionalProperties: false
+      }
+    }
+    await withCatalog([tight], () => {
+      expect(buildModelRequestFields('claude-sonnet-5', 'low', false, 50000)).toEqual({
+        output_config: { effort: 'low' },
+        max_tokens: 32000
+      })
+    })
+  })
+
+  test('off on a reasoning schema without none sends no block', async () => {
+    await withCatalog([KIMI], () => {
+      expect(buildModelRequestFields('kimi-k3', undefined, true, 4096)).toBeUndefined()
+    })
+  })
+
+  test('off on GPT still sends reasoning none', async () => {
+    await withCatalog([LUNA], () => {
+      expect(buildModelRequestFields('gpt-5.6-luna', 'max', true)).toEqual({
+        reasoning: { effort: 'none' }
+      })
+    })
+    expect(buildModelRequestFields('gpt-5.6-sol', 'max', true)).toEqual({
+      reasoning: { effort: 'none' }
+    })
+  })
+
+  test('a model the catalog lists without a schema gets no block', async () => {
+    await withCatalog([HAIKU], () => {
+      expect(buildModelRequestFields('claude-haiku-4.5', undefined, false, 4096)).toBeUndefined()
+    })
+  })
+
+  test('Kimi K3 low sends reasoning low and nothing else', async () => {
+    await withCatalog([KIMI], () => {
+      expect(buildModelRequestFields('kimi-k3', 'low', false, 4096)).toEqual({
+        reasoning: { effort: 'low' }
+      })
+    })
+  })
+
+  test('an unknown model keeps receiving the block', () => {
+    expect(buildModelRequestFields('some-future-model', undefined, false, 4096)).toEqual({
+      max_tokens: 4096
     })
   })
 })

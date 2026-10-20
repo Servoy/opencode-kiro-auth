@@ -4,6 +4,7 @@ import type { Effort } from '../plugin/config/schema.js'
 import { THINKING_BUDGETS } from '../plugin/effort.js'
 import { buildModelRegistry } from '../plugin/model-registry.js'
 import { resolveKiroModel } from '../plugin/models.js'
+import { withCatalog } from './helpers/catalog.js'
 
 const registry = buildModelRegistry() as Record<string, any>
 
@@ -137,6 +138,12 @@ describe('model registry', () => {
     })
   })
 
+  test('advertises Kimi K3 as an open-weight model', () => {
+    expect(registry['kimi-k3'].name).toBe('Kimi K3 (2.4x)')
+    expect(registry['kimi-k3'].limit).toEqual({ context: 1000000, output: 131072 })
+    expect(registry['kimi-k3'].modalities.input).toEqual(['text', 'image'])
+  })
+
   test('carries limit and modalities', () => {
     expect(registry['claude-opus-5'].limit).toEqual({ context: 1000000, output: 128000 })
     expect(registry['claude-opus-5'].modalities).toBeDefined()
@@ -190,5 +197,70 @@ describe('the quota shown in a model name', () => {
     for (const model of Object.values(models)) {
       expect(model.name.match(/· 13%/g)).toHaveLength(1)
     }
+  })
+})
+
+describe('a registry built with a catalog', () => {
+  const HAIKU_WITH_DIAL = {
+    modelId: 'claude-haiku-4.5',
+    tokenLimits: { maxInputTokens: 200000 },
+    additionalModelRequestFieldsSchema: {
+      properties: { output_config: { properties: { effort: { enum: ['low', 'high'] } } } },
+      additionalProperties: false
+    }
+  }
+  const LUNA = {
+    modelId: 'gpt-5.6-luna',
+    tokenLimits: { maxInputTokens: 922000 },
+    additionalModelRequestFieldsSchema: {
+      properties: {
+        reasoning: { properties: { effort: { enum: ['none', 'low', 'medium', 'high', 'max'] } } }
+      },
+      additionalProperties: false
+    }
+  }
+  const OPUS_WITHOUT_SCHEMA = {
+    modelId: 'claude-opus-4.5',
+    tokenLimits: { maxInputTokens: 200000 }
+  }
+
+  test('a model gains its dial when the catalog arrives', async () => {
+    await withCatalog([HAIKU_WITH_DIAL], () => {
+      const current = buildModelRegistry() as Record<string, any>
+      expect(Object.keys(current['claude-haiku-4-5'].variants)).toEqual(['low', 'high'])
+    })
+  })
+
+  test('a reasoning schema without an off value offers no off', async () => {
+    await withCatalog([LUNA], () => {
+      const current = buildModelRegistry() as Record<string, any>
+      expect(Object.keys(current['gpt-5.6-luna'].variants)).not.toContain('off')
+    })
+  })
+
+  test('a model the catalog lists without a schema has no dial', async () => {
+    await withCatalog([OPUS_WITHOUT_SCHEMA], () => {
+      const current = buildModelRegistry() as Record<string, any>
+      expect(current['claude-opus-4-5'].variants).toBeUndefined()
+    })
+  })
+})
+
+describe('Kimi K3 with a catalog', () => {
+  const KIMI = {
+    modelId: 'kimi-k3',
+    tokenLimits: { maxInputTokens: 1000000, maxOutputTokens: 131072 },
+    additionalModelRequestFieldsSchema: {
+      properties: { reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } } },
+      additionalProperties: false
+    }
+  }
+
+  test('has a low, high and max dial', async () => {
+    await withCatalog([KIMI], () => {
+      const current = buildModelRegistry() as Record<string, any>
+      expect(Object.keys(current['kimi-k3'].variants)).toEqual(['low', 'high', 'max'])
+      expect(current['kimi-k3'].reasoning).toBe(true)
+    })
   })
 })

@@ -324,6 +324,139 @@ describe('capabilities the catalog reports', () => {
     )('claude-opus-4-5')
     expect(caps?.efforts).toBeUndefined()
   })
+
+  test('reads the reasoning channel and its levels', async () => {
+    const caps = (
+      await loadCatalog([
+        {
+          modelId: 'kimi-k3',
+          additionalModelRequestFieldsSchema: {
+            properties: { reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } } },
+            additionalProperties: false
+          }
+        }
+      ])
+    )('kimi-k3')
+
+    expect(caps?.effortChannel).toBe('reasoning')
+    expect(caps?.efforts).toEqual(['low', 'high', 'max'])
+    expect(caps?.acceptsMaxTokens).toBe(false)
+    expect(caps?.maxTokensCeiling).toBeUndefined()
+  })
+
+  test('reads the output_config channel', async () => {
+    const caps = (await loadCatalog([CATALOG_ENTRY]))('claude-sonnet-4-6')
+
+    expect(caps?.effortChannel).toBe('output_config')
+    expect(caps?.acceptsMaxTokens).toBe(false)
+  })
+
+  test('reads the max_tokens maximum when the schema states one', async () => {
+    const caps = (
+      await loadCatalog([
+        {
+          modelId: 'claude-sonnet-5',
+          additionalModelRequestFieldsSchema: {
+            properties: {
+              output_config: { properties: { effort: { enum: ['low', 'high'] } } },
+              max_tokens: { type: 'integer', minimum: 1024, maximum: 128000 }
+            },
+            additionalProperties: false
+          }
+        }
+      ])
+    )('claude-sonnet-5')
+
+    expect(caps?.acceptsMaxTokens).toBe(true)
+    expect(caps?.maxTokensCeiling).toBe(128000)
+  })
+
+  test('reads none as the off value of a reasoning schema', async () => {
+    const luna = {
+      modelId: 'gpt-5.6-luna',
+      additionalModelRequestFieldsSchema: {
+        properties: {
+          reasoning: { properties: { effort: { enum: ['none', 'low', 'medium', 'high', 'max'] } } }
+        },
+        additionalProperties: false
+      }
+    }
+    const kimi = {
+      modelId: 'kimi-k3',
+      additionalModelRequestFieldsSchema: {
+        properties: { reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } } },
+        additionalProperties: false
+      }
+    }
+    const load = await loadCatalog([luna, kimi])
+
+    expect(load('gpt-5.6-luna')?.thinkingOffChannel).toBe('none')
+    expect(load('kimi-k3')?.thinkingOffChannel).toBeUndefined()
+  })
+
+  test('keeps disabled as the off value of a Claude schema', async () => {
+    const caps = (await loadCatalog([CATALOG_ENTRY]))('claude-sonnet-4-6')
+    expect(caps?.thinkingOffChannel).toBe('disabled')
+  })
+
+  test('prefers output_config when a schema carries both channels', async () => {
+    const caps = (
+      await loadCatalog([
+        {
+          modelId: 'both',
+          additionalModelRequestFieldsSchema: {
+            properties: {
+              output_config: { properties: { effort: { enum: ['low', 'high'] } } },
+              reasoning: { properties: { effort: { enum: ['low', 'max'] } } }
+            },
+            additionalProperties: false
+          }
+        }
+      ])
+    )('both')
+
+    expect(caps?.effortChannel).toBe('output_config')
+    expect(caps?.efforts).toEqual(['low', 'high'])
+  })
+
+  test('a schema with neither channel reports no channel and no levels', async () => {
+    const caps = (
+      await loadCatalog([
+        {
+          modelId: 'limits-only',
+          additionalModelRequestFieldsSchema: {
+            properties: { max_tokens: { type: 'integer', maximum: 4096 } },
+            additionalProperties: false
+          }
+        }
+      ])
+    )('limits-only')
+
+    expect(caps?.efforts).toBeUndefined()
+    expect(caps?.effortChannel).toBeUndefined()
+    expect(caps?.acceptsMaxTokens).toBe(true)
+    expect(caps?.maxTokensCeiling).toBe(4096)
+  })
+
+  test('a max_tokens without a maximum still allows the field', async () => {
+    const caps = (
+      await loadCatalog([
+        {
+          modelId: 'no-maximum',
+          additionalModelRequestFieldsSchema: {
+            properties: {
+              output_config: { properties: { effort: { enum: ['low', 'high'] } } },
+              max_tokens: { type: 'integer' }
+            },
+            additionalProperties: false
+          }
+        }
+      ])
+    )('no-maximum')
+
+    expect(caps?.acceptsMaxTokens).toBe(true)
+    expect(caps?.maxTokensCeiling).toBeUndefined()
+  })
 })
 
 describe('models that reject additionalModelRequestFields', () => {
@@ -354,7 +487,10 @@ describe('models that reject additionalModelRequestFields', () => {
     modelId: 'claude-sonnet-4.6',
     tokenLimits: { maxOutputTokens: 64000 },
     additionalModelRequestFieldsSchema: {
-      properties: { output_config: { properties: { effort: { enum: ['low', 'high'] } } } }
+      properties: {
+        output_config: { properties: { effort: { enum: ['low', 'high'] } } },
+        max_tokens: { type: 'integer', minimum: 1024, maximum: 128000 }
+      }
     }
   }
   const WITHOUT_SCHEMA = { modelId: 'claude-haiku-4.5', tokenLimits: { maxOutputTokens: 64000 } }
@@ -429,6 +565,52 @@ describe('the advertised context window follows the catalog', () => {
 })
 
 describe('a catalog cached by an older version', () => {
+  test('a row written by version 3 is refetched too', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    const { refreshModelCatalog, resetMemoryOnly, getCatalogCapabilities } =
+      await import('../plugin/models.js')
+
+    kiroDb.setModelCatalog(
+      'eu-central-1:',
+      { __catalogVersion: 3, 'kimi-k3': { efforts: ['low', 'high', 'max'] }, 'gpt-5.6-luna': {} },
+      Date.now(),
+      30 * 60 * 1000
+    )
+    resetMemoryOnly()
+
+    const original = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          models: [
+            {
+              modelId: 'gpt-5.6-luna',
+              additionalModelRequestFieldsSchema: {
+                properties: {
+                  reasoning: { properties: { effort: { enum: ['none', 'low', 'high'] } } }
+                },
+                additionalProperties: false
+              }
+            }
+          ]
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+    try {
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+    } finally {
+      globalThis.fetch = original
+    }
+
+    expect(getCatalogCapabilities('gpt-5.6-luna')?.effortChannel).toBe('reasoning')
+  })
+
   test('is refetched rather than read back with fields it never had', async () => {
     // The row that caused this: written before supportsRequestFields existed,
     // still inside its TTL, so it was trusted — and the missing field read as
@@ -629,5 +811,93 @@ describe('a catalog fetched on a stale token', () => {
     )
     expect(calls).toBe(1)
     expect(recoverCalls).toBe(0)
+  })
+})
+
+describe('a catalog read back from disk', () => {
+  test('rebuilds the same capabilities the fetch produced', async () => {
+    const { refreshModelCatalog, resetMemoryOnly, getCatalogCapabilities } =
+      await import('../plugin/models.js')
+
+    const entries = [
+      {
+        modelId: 'kimi-k3',
+        additionalModelRequestFieldsSchema: {
+          properties: { reasoning: { properties: { effort: { enum: ['low', 'high', 'max'] } } } },
+          additionalProperties: false
+        }
+      },
+      {
+        modelId: 'gpt-5.6-luna',
+        additionalModelRequestFieldsSchema: {
+          properties: {
+            reasoning: { properties: { effort: { enum: ['none', 'low', 'max'] } } }
+          },
+          additionalProperties: false
+        }
+      },
+      {
+        modelId: 'claude-sonnet-5',
+        additionalModelRequestFieldsSchema: {
+          properties: {
+            output_config: { properties: { effort: { enum: ['low', 'max'] } } },
+            thinking: { properties: { type: { enum: ['adaptive', 'disabled'] } } },
+            max_tokens: { type: 'integer', maximum: 128000 }
+          },
+          additionalProperties: false
+        }
+      },
+      {
+        modelId: 'no-maximum',
+        additionalModelRequestFieldsSchema: {
+          properties: {
+            output_config: { properties: { effort: { enum: ['low'] } } },
+            max_tokens: { type: 'integer' }
+          },
+          additionalProperties: false
+        }
+      }
+    ]
+    const ids = entries.map((entry) => entry.modelId)
+    const original = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ models: entries }), { status: 200 })) as unknown as typeof fetch
+    try {
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+      const fetched = ids.map((id) => getCatalogCapabilities(id))
+
+      resetMemoryOnly()
+      globalThis.fetch = (async () => {
+        throw new Error('network is down; the stored catalog must answer')
+      }) as unknown as typeof fetch
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+
+      expect(ids.map((id) => getCatalogCapabilities(id))).toEqual(fetched)
+      expect(fetched[0]).toMatchObject({ effortChannel: 'reasoning', acceptsMaxTokens: false })
+      expect(fetched[0]?.thinkingOffChannel).toBeUndefined()
+      expect(fetched[1]).toMatchObject({ effortChannel: 'reasoning', thinkingOffChannel: 'none' })
+      expect(fetched[2]).toMatchObject({
+        effortChannel: 'output_config',
+        thinkingOffChannel: 'disabled',
+        acceptsMaxTokens: true,
+        maxTokensCeiling: 128000
+      })
+      expect(fetched[3]).toMatchObject({ acceptsMaxTokens: true })
+      expect(fetched[3]?.maxTokensCeiling).toBeUndefined()
+    } finally {
+      globalThis.fetch = original
+    }
   })
 })
