@@ -28,4 +28,25 @@ describe('createRequestBridge', () => {
     expect(bridge.isKiroUrl('https://q.us-east-1.amazonaws.com/x')).toBe(true)
     expect(bridge.isKiroUrl('https://api.openai.com/v1/chat/completions')).toBe(false)
   })
+
+  test('isKiroUrl still recognises a request whose URL was rewritten', () => {
+    const bridge = createRequestBridge({ handle: async () => new Response() } as never, noopToast)
+    // Another plugin pointed the request at a local proxy and kept the Kiro
+    // upstream in the path. The request is ours; dropping it here is what left
+    // the user with an empty reply and no explanation.
+    expect(
+      bridge.isKiroUrl(
+        'http://127.0.0.1:18789/bili/https://q.us-east-1.amazonaws.com/chat/completions'
+      )
+    ).toBe(true)
+    expect(
+      bridge.isKiroUrl(
+        'http://127.0.0.1:18789/bili/https://runtime.us-east-1.kiro.dev/v1/chat/completions'
+      )
+    ).toBe(true)
+    // A request to a proxy that is not carrying Kiro is still not ours.
+    expect(
+      bridge.isKiroUrl('http://127.0.0.1:18789/bili/https://api.openai.com/v1/chat/completions')
+    ).toBe(false)
+  })
 })
