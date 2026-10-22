@@ -19,14 +19,12 @@ import { UsageTracker } from '../account/usage-tracker'
 import { IdcAuthMethod } from '../auth/idc-auth-method.js'
 import { TokenRefresher } from '../auth/token-refresher'
 import { ErrorHandler } from './error-handler'
+import { resolveKiroUrl } from './kiro-url'
 import { ResponseHandler } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
-// Matches both the standard q.amazonaws.com endpoint and the Pro runtime.kiro.dev endpoint
-const KIRO_API_PATTERN =
-  /^(https?:\/\/)?(q\.[a-z0-9-]+\.amazonaws\.com|runtime\.[a-z0-9-]+\.kiro\.dev)/
 const REAUTH_BASE_COOLDOWN_MS = 5_000
 const REAUTH_MAX_COOLDOWN_MS = 60_000
 const REAUTH_MIN_WAIT_MS = 120_000
@@ -219,9 +217,18 @@ export class RequestHandler {
   async handle(input: any, init: any, showToast: ToastFunction): Promise<Response> {
     const url = typeof input === 'string' ? input : input.url
 
-    if (!KIRO_API_PATTERN.test(url)) {
+    // Another plugin may have rewritten the URL to point somewhere else while
+    // keeping the original upstream in it. The request is still ours, so it is
+    // unwrapped to the Kiro URL it was aimed at before anything else reads it.
+    const kiroUrl = resolveKiroUrl(url)
+    if (kiroUrl === null) {
       logPassthrough(url)
       return fetch(input, init)
+    }
+    if (kiroUrl !== url) {
+      logger.debug(
+        `[URL] request URL was rewritten; using the Kiro upstream it carries: ${kiroUrl}`
+      )
     }
 
     const sessionId = extractSessionId(init?.headers)
@@ -230,11 +237,11 @@ export class RequestHandler {
     const accountCount = this.accountManager.getAccountCount()
     if (accountCount <= 1) {
       logger.debug(`[QUEUE] bypassed (accounts=${accountCount}) session=${sessionId ?? 'none'}`)
-      return this.handleKiroRequest(url, init, showToast, sessionId)
+      return this.handleKiroRequest(kiroUrl, init, showToast, sessionId)
     }
 
     return this.enqueueKiroRequest(this.queueLane(sessionId), () =>
-      this.handleKiroRequest(url, init, showToast, sessionId)
+      this.handleKiroRequest(kiroUrl, init, showToast, sessionId)
     )
   }
 
