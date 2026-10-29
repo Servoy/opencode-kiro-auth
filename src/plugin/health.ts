@@ -46,3 +46,24 @@ export function isPermanentError(reason?: string): boolean {
     r.includes('unauthorized')
   )
 }
+
+/**
+ * A server-side "try again" Kiro delivers inside an already-open event stream
+ * rather than as an HTTP status, so the SDK's own retry never sees it. Safe to
+ * replay only before anything is emitted; the caller enforces that window.
+ */
+export function isTransientStreamError(reason?: string): boolean {
+  if (!reason) return false
+  const r = reason.toLowerCase()
+  return (
+    r.includes('model_temporarily_unavailable') ||
+    r.includes('temporarily unavailable') ||
+    r.includes('service is unavailable') ||
+    r.includes('serviceunavailable') ||
+    r.includes('service_unavailable') ||
+    r.includes('throttl') ||
+    r.includes('too many requests') ||
+    r.includes('slow down') ||
+    r.includes('try again later')
+  )
+}

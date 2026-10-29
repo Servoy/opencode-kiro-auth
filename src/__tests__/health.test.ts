@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { isPermanentError, isTransientNetworkError } from '../plugin/health.js'
+import {
+  isPermanentError,
+  isTransientNetworkError,
+  isTransientStreamError
+} from '../plugin/health.js'
 
 describe('isPermanentError', () => {
   test('returns false for undefined', () => {
@@ -101,6 +105,42 @@ describe('what a failed token refresh tells the user', () => {
     for (const reason of ['invalid_grant', 'Invalid refresh token', 'expired_token']) {
       expect(isPermanentError(reason)).toBe(true)
       expect(isTransientNetworkError(reason)).toBe(false)
+    }
+  })
+})
+
+describe('isTransientStreamError', () => {
+  test('returns false for undefined or empty', () => {
+    expect(isTransientStreamError(undefined)).toBe(false)
+    expect(isTransientStreamError('')).toBe(false)
+  })
+
+  test('detects the in-stream reasons Kiro delivers as a payload, not a status', () => {
+    // These arrive mid-stream, outside the SDK's own retry — the whole reason
+    // this classifier exists. The live one is the first.
+    for (const reason of [
+      'MODEL_TEMPORARILY_UNAVAILABLE',
+      'The service is temporarily unavailable. Please try again later.',
+      'ServiceUnavailableException',
+      'ThrottlingException: Rate exceeded',
+      'Too Many Requests',
+      'Slow down',
+      'please try again later'
+    ]) {
+      expect(isTransientStreamError(reason)).toBe(true)
+    }
+  })
+
+  test('does not treat a credential or a context-length failure as transient', () => {
+    // These must stay out: a dead token needs sign-in, an oversized prompt
+    // needs compaction — replaying either just burns the retry budget.
+    for (const reason of [
+      'invalid_grant',
+      'The bearer token included in the request is invalid',
+      'Invalid model ID',
+      'input is too long for requested model'
+    ]) {
+      expect(isTransientStreamError(reason)).toBe(false)
     }
   })
 })
