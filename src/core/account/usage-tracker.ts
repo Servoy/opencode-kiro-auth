@@ -60,7 +60,8 @@ export class UsageTracker {
       id: account.id,
       usedCount: account.usedCount ?? 0,
       limitCount: account.limitCount ?? 0,
-      lastSync: Date.now()
+      lastSync: Date.now(),
+      overageEnabled: account.overageEnabled
     })
     this.repository.invalidateCache()
   }

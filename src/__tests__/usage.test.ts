@@ -72,6 +72,32 @@ describe('updateAccountQuota', () => {
     expect(acc.usedCount).toBe(0)
     expect(acc.limitCount).toBe(0)
   })
+
+  test('sets overageEnabled true when overageStatus is ENABLED', () => {
+    const acc = makeAccount()
+    updateAccountQuota(acc, { usedCount: 0, limitCount: 0, overageStatus: 'ENABLED' })
+    expect(acc.overageEnabled).toBe(true)
+  })
+
+  test('sets overageEnabled false when overageStatus is DISABLED', () => {
+    const acc = makeAccount({ overageEnabled: true })
+    updateAccountQuota(acc, { usedCount: 0, limitCount: 0, overageStatus: 'DISABLED' })
+    expect(acc.overageEnabled).toBe(false)
+  })
+
+  test('leaves overageEnabled untouched when overageStatus is absent', () => {
+    const acc = makeAccount({ overageEnabled: true })
+    updateAccountQuota(acc, { usedCount: 5, limitCount: 100 })
+    expect(acc.overageEnabled).toBe(true)
+  })
+
+  test('forwards overageEnabled to accountManager.updateUsage', () => {
+    const acc = makeAccount()
+    const calls: any[] = []
+    const mgr = { updateUsage: (id: string, meta: any) => calls.push({ id, meta }) }
+    updateAccountQuota(acc, { usedCount: 0, limitCount: 0, overageStatus: 'ENABLED' }, mgr)
+    expect(calls[0].meta.overageEnabled).toBe(true)
+  })
 })
 
 // ── fetchUsageLimits ──────────────────────────────────────────────────────────

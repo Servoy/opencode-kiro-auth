@@ -58,4 +58,20 @@ describe('usage merge', () => {
     expect(acc.lastSync).toBeUndefined()
     expect(acc.usageUpdatedAt).toBeGreaterThan(0)
   })
+
+  test('a never-synced incoming reading cannot erase a stored overage flag', () => {
+    const stored = account({ overageEnabled: true, usageUpdatedAt: 1000 })
+    const untouched = account({ overageEnabled: undefined })
+
+    expect(mergeAccounts([stored], [untouched])[0]!.overageEnabled).toBe(true)
+  })
+
+  test('the fresher overage reading wins, including flipping it off', () => {
+    const stored = account({ overageEnabled: true, usageUpdatedAt: 1000 })
+    const fresh = account({ overageEnabled: false, usageUpdatedAt: 2000 })
+
+    expect(mergeAccounts([stored], [fresh])[0]!.overageEnabled).toBe(false)
+    // ...and a stale incoming reading does not flip a newer stored one.
+    expect(mergeAccounts([fresh], [stored])[0]!.overageEnabled).toBe(false)
+  })
 })

@@ -82,6 +82,14 @@ function aggregateSessionRows(
   }
 }
 
+/** SQLite stores overage_enabled as a tri-state: 1, 0, or NULL for "unsynced". */
+function encodeOverage(v: boolean | undefined): number | null {
+  return v === undefined ? null : v ? 1 : 0
+}
+function decodeOverage(v: number | null | undefined): boolean | undefined {
+  return v == null ? undefined : v === 1
+}
+
 export class KiroDatabase {
   private db: SqliteDatabase
   private path: string
@@ -106,7 +114,8 @@ export class KiroDatabase {
         refresh_token TEXT NOT NULL, access_token TEXT NOT NULL, expires_at INTEGER NOT NULL,
         rate_limit_reset INTEGER DEFAULT 0, is_healthy INTEGER DEFAULT 1, unhealthy_reason TEXT,
         recovery_time INTEGER, fail_count INTEGER DEFAULT 0, last_used INTEGER DEFAULT 0,
-        used_count INTEGER DEFAULT 0, limit_count INTEGER DEFAULT 0, last_sync INTEGER DEFAULT 0
+        used_count INTEGER DEFAULT 0, limit_count INTEGER DEFAULT 0, last_sync INTEGER DEFAULT 0,
+        overage_enabled INTEGER
       )
     `)
     runMigrations(this.db)
@@ -141,8 +150,8 @@ export class KiroDatabase {
         id, email, auth_method, region, oidc_region, client_id, client_secret,
         profile_arn, start_url, refresh_token, access_token, expires_at, rate_limit_reset,
         is_healthy, unhealthy_reason, recovery_time, fail_count, last_used,
-        used_count, limit_count, last_sync
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        used_count, limit_count, last_sync, overage_enabled
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         id=excluded.id, email=excluded.email, auth_method=excluded.auth_method,
         region=excluded.region, oidc_region=excluded.oidc_region, client_id=excluded.client_id, client_secret=excluded.client_secret,
@@ -151,7 +160,8 @@ export class KiroDatabase {
         rate_limit_reset=excluded.rate_limit_reset, is_healthy=excluded.is_healthy,
         unhealthy_reason=excluded.unhealthy_reason, recovery_time=excluded.recovery_time,
         fail_count=excluded.fail_count, last_used=excluded.last_used,
-        used_count=excluded.used_count, limit_count=excluded.limit_count, last_sync=excluded.last_sync
+        used_count=excluded.used_count, limit_count=excluded.limit_count, last_sync=excluded.last_sync,
+        overage_enabled=excluded.overage_enabled
     `
       )
       .run(
@@ -175,7 +185,8 @@ export class KiroDatabase {
         acc.lastUsed || 0,
         acc.usedCount || 0,
         acc.limitCount || 0,
-        acc.lastSync || 0
+        acc.lastSync || 0,
+        encodeOverage(acc.overageEnabled)
       )
   }
 
@@ -264,15 +275,32 @@ export class KiroDatabase {
     usedCount: number
     limitCount: number
     lastSync: number
+    overageEnabled?: boolean
   }): Promise<void> {
     await withDatabaseLock(
       this.path,
       async () => {
-        this.db
-          .prepare(
-            'UPDATE accounts SET used_count = ?, limit_count = ?, last_sync = ? WHERE id = ?'
-          )
-          .run(fields.usedCount, fields.limitCount, fields.lastSync, fields.id)
+        // overageEnabled omitted (a sync whose params carried no overage data)
+        // leaves the stored flag untouched rather than clearing it to NULL.
+        if (fields.overageEnabled === undefined) {
+          this.db
+            .prepare(
+              'UPDATE accounts SET used_count = ?, limit_count = ?, last_sync = ? WHERE id = ?'
+            )
+            .run(fields.usedCount, fields.limitCount, fields.lastSync, fields.id)
+        } else {
+          this.db
+            .prepare(
+              'UPDATE accounts SET used_count = ?, limit_count = ?, last_sync = ?, overage_enabled = ? WHERE id = ?'
+            )
+            .run(
+              fields.usedCount,
+              fields.limitCount,
+              fields.lastSync,
+              fields.overageEnabled ? 1 : 0,
+              fields.id
+            )
+        }
       },
       'updateAccountUsage'
     )
@@ -411,7 +439,8 @@ export class KiroDatabase {
       lastUsed: row.last_used,
       usedCount: row.used_count,
       limitCount: row.limit_count,
-      lastSync: row.last_sync
+      lastSync: row.last_sync,
+      overageEnabled: decodeOverage(row.overage_enabled)
     }
   }
 

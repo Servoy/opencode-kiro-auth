@@ -229,6 +229,37 @@ describe('KiroDatabase: accounts', () => {
     expect(db.getAccounts()).toHaveLength(0)
   })
 
+  test('overageEnabled round-trips through upsert and getAccounts', async () => {
+    await db.upsertAccount(makeAccount({ id: 'paid', overageEnabled: true }))
+    await db.upsertAccount(makeAccount({ id: 'free', email: 'f@x.com', overageEnabled: false }))
+    const rows = db.getAccounts()
+    expect(rows.find((r: any) => r.id === 'paid').overage_enabled).toBe(1)
+    expect(rows.find((r: any) => r.id === 'free').overage_enabled).toBe(0)
+  })
+
+  test('a never-synced account stores overage_enabled as NULL, not 0', async () => {
+    await db.upsertAccount(makeAccount({ id: 'unknown' }))
+    expect(db.getAccounts()[0].overage_enabled).toBeNull()
+  })
+
+  test('updateAccountUsage with overageEnabled persists the flag', async () => {
+    await db.upsertAccount(makeAccount({ id: 'a' }))
+    await db.updateAccountUsage({
+      id: 'a',
+      usedCount: 5,
+      limitCount: 100,
+      lastSync: 1,
+      overageEnabled: true
+    })
+    expect(db.getAccounts()[0].overage_enabled).toBe(1)
+  })
+
+  test('updateAccountUsage without overageEnabled leaves a stored flag intact', async () => {
+    await db.upsertAccount(makeAccount({ id: 'a', overageEnabled: true }))
+    await db.updateAccountUsage({ id: 'a', usedCount: 9, limitCount: 100, lastSync: 2 })
+    expect(db.getAccounts()[0].overage_enabled).toBe(1)
+  })
+
   test('batchUpsertAccounts stores multiple accounts', async () => {
     const a = makeAccount({ id: 'a', email: 'a@example.com' })
     const b = makeAccount({ id: 'b', email: 'b@example.com' })

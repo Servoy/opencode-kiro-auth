@@ -152,13 +152,21 @@ export function updateAccountQuota(
   usage: any,
   accountManager?: any
 ): void {
+  // A response without overageStatus keeps the known flag rather than clearing
+  // it, so a param combo that omits overage data does not wipe a prior ENABLED.
+  const overageEnabled =
+    typeof usage.overageStatus === 'string'
+      ? usage.overageStatus === 'ENABLED'
+      : account.overageEnabled
   const meta = {
     usedCount: usage.usedCount || 0,
     limitCount: usage.limitCount || 0,
-    email: usage.email
+    email: usage.email,
+    overageEnabled
   }
   account.usedCount = meta.usedCount
   account.limitCount = meta.limitCount
+  account.overageEnabled = overageEnabled
   account.usageUpdatedAt = Date.now()
   if (usage.email) account.email = usage.email
   if (accountManager) accountManager.updateUsage(account.id, meta)

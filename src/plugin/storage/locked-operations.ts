@@ -98,6 +98,7 @@ export function mergeAccounts(
         ...acc,
         lastUsed: Math.max(existingAcc.lastUsed || 0, acc.lastUsed || 0),
         ...pickUsage(acc, existingAcc),
+        overageEnabled: pickOverageEnabled(acc, existingAcc),
         usageUpdatedAt: Math.max(existingAcc.usageUpdatedAt || 0, acc.usageUpdatedAt || 0),
         rateLimitResetTime: Math.max(
           existingAcc.rateLimitResetTime || 0,
@@ -149,6 +150,27 @@ function pickUsage(
     usedCount: Math.max(existing.usedCount || 0, incoming.usedCount || 0),
     limitCount: Math.max(existing.limitCount || 0, incoming.limitCount || 0)
   }
+}
+
+/**
+ * Carry the overage flag forward from the fresher usage reading.
+ *
+ * The flag is only known after a usage sync, so an incoming row that was never
+ * synced (undefined) must not erase a stored value. When the incoming reading
+ * is the fresher of the two it wins — including flipping the flag off — so a
+ * user turning overage off in Kiro takes effect; otherwise the existing value
+ * stands, falling back across either side being undefined.
+ */
+function pickOverageEnabled(
+  incoming: ManagedAccount,
+  existing: ManagedAccount
+): boolean | undefined {
+  const incomingAt = incoming.usageUpdatedAt || 0
+  const existingAt = existing.usageUpdatedAt || 0
+  if (incoming.overageEnabled !== undefined && incomingAt >= existingAt) {
+    return incoming.overageEnabled
+  }
+  return existing.overageEnabled ?? incoming.overageEnabled
 }
 
 export function deduplicateAccounts(accounts: ManagedAccount[]): ManagedAccount[] {

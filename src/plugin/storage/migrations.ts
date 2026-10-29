@@ -16,6 +16,22 @@ export function runMigrations(db: SqliteDatabase): void {
   migrateSessionAccountsTable(db)
   migrateSessionUsageTable(db)
   migratePluginInstancesTable(db)
+  migrateOverageEnabledColumn(db)
+}
+
+/**
+ * Whether an account bills overage, so selection can keep it last and drain the
+ * free accounts' included quota first. Nullable (not 0-default): NULL means
+ * "not yet learned from a usage sync", distinct from a known-disabled 0, so a
+ * never-synced account is not mistaken for a confirmed free one.
+ */
+function migrateOverageEnabledColumn(db: SqliteDatabase): void {
+  const names = new Set(
+    (db.prepare('PRAGMA table_info(accounts)').all() as Array<{ name: string }>).map((c) => c.name)
+  )
+  if (!names.has('overage_enabled')) {
+    db.exec('ALTER TABLE accounts ADD COLUMN overage_enabled INTEGER')
+  }
 }
 
 /**

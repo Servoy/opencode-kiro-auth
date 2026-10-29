@@ -48,6 +48,14 @@ export interface ManagedAccount {
   usedCount?: number
   limitCount?: number
   lastSync?: number
+  /**
+   * Whether this account bills overage (paid usage past the included quota),
+   * read from getUsageLimits' overageStatus. An overage account never 429s on a
+   * full quota — it keeps serving and charges — so selection keeps it last: the
+   * pool drains every free account's included quota before spending money here.
+   * Undefined until a usage sync has read the account's overage configuration.
+   */
+  overageEnabled?: boolean
   /** When usage was last read from the service. In-memory only. */
   usageUpdatedAt?: number
   lastUsed?: number
