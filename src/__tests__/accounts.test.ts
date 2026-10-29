@@ -382,6 +382,114 @@ describe('AccountManager: lowest-usage strategy', () => {
   })
 })
 
+// ── billing-overage account is selected last ──────────────────────────────────
+
+describe('AccountManager: a billing overage account is selected last', () => {
+  // A synced account: only then is usedCount the credit figure, not the request
+  // counter, so the quota comparison in wouldBillNow is meaningful.
+  const synced = (o: Partial<ManagedAccount>): ManagedAccount =>
+    makeAccount({ usageUpdatedAt: Date.now(), ...o })
+
+  test('an overage account with credits left ranks alongside the others', () => {
+    // Overage is enabled but quota is not spent, so it does not bill yet. Under
+    // lowest-usage its lower usedCount wins — it is just another free bank now.
+    const free = synced({ id: 'free', email: 'free@x.com', usedCount: 900, limitCount: 1000 })
+    const paid = synced({
+      id: 'paid',
+      email: 'paid@x.com',
+      usedCount: 100,
+      limitCount: 1000,
+      overageEnabled: true
+    })
+    const mgr = new AccountManager([free, paid], 'lowest-usage')
+    expect(mgr.getCurrentOrNext()!.id).toBe('paid')
+  })
+
+  test('a spent overage account is skipped while a free one can still serve', () => {
+    const free = synced({ id: 'free', email: 'free@x.com', usedCount: 1, limitCount: 1000 })
+    const paidSpent = synced({
+      id: 'paid',
+      email: 'paid@x.com',
+      usedCount: 1000,
+      limitCount: 1000,
+      overageEnabled: true
+    })
+    const mgr = new AccountManager([paidSpent, free], 'sticky')
+    expect(mgr.getCurrentOrNext()!.id).toBe('free')
+  })
+
+  test('the overage account with credits left is preferred over a spent one', () => {
+    // The two-overage scenario: both have overage on, one still has credits. The
+    // one with credits does not bill and is picked; the spent one bills and is last.
+    const spent = synced({
+      id: 'spent',
+      email: 'spent@x.com',
+      usedCount: 1000,
+      limitCount: 1000,
+      overageEnabled: true
+    })
+    const hasCredits = synced({
+      id: 'credits',
+      email: 'credits@x.com',
+      usedCount: 400,
+      limitCount: 1000,
+      overageEnabled: true
+    })
+    const mgr = new AccountManager([spent, hasCredits], 'sticky')
+    expect(mgr.getCurrentOrNext()!.id).toBe('credits')
+  })
+
+  test('falls back to a spent overage account once every free one is unusable', () => {
+    const freeSpent = synced({ id: 'free', email: 'free@x.com', usedCount: 1000, limitCount: 1000 })
+    const paidSpent = synced({
+      id: 'paid',
+      email: 'paid@x.com',
+      usedCount: 1000,
+      limitCount: 1000,
+      overageEnabled: true
+    })
+    // The free account at its limit 429s and is unusable; the spent overage one
+    // keeps serving, so it falls through as the only usable account.
+    freeSpent.rateLimitResetTime = Date.now() + 60_000
+    const mgr = new AccountManager([freeSpent, paidSpent], 'sticky')
+    expect(mgr.getCurrentOrNext()!.id).toBe('paid')
+  })
+
+  test('an unsynced overage account is treated as free (quota unknown)', () => {
+    // No usageUpdatedAt: usedCount is the request counter, not credits, so the
+    // quota comparison must not run — the account counts as free until a sync.
+    const unsynced = makeAccount({
+      id: 'paid',
+      email: 'paid@x.com',
+      usedCount: 9999,
+      limitCount: 1000,
+      overageEnabled: true
+    })
+    const mgr = new AccountManager([unsynced], 'sticky')
+    expect(mgr.getCurrentOrNext()!.id).toBe('paid')
+  })
+
+  test('fallback prefers an unhealthy free account over a usable spent-overage one', () => {
+    const free = synced({
+      id: 'free',
+      email: 'free@x.com',
+      usedCount: 1,
+      limitCount: 1000,
+      isHealthy: false,
+      failCount: 3
+    })
+    const paidSpent = synced({
+      id: 'paid',
+      email: 'paid@x.com',
+      usedCount: 1000,
+      limitCount: 1000,
+      overageEnabled: true
+    })
+    const mgr = new AccountManager([paidSpent, free], 'sticky')
+    expect(mgr.getCurrentOrNext()!.id).toBe('free')
+  })
+})
+
 // ── markRateLimited ───────────────────────────────────────────────────────────
 
 describe('AccountManager.markRateLimited', () => {

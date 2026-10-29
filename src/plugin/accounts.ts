@@ -72,7 +72,9 @@ export class AccountManager {
       failCount: r.fail_count || 0,
       lastUsed: r.last_used,
       usedCount: r.used_count,
-      limitCount: r.limit_count
+      limitCount: r.limit_count,
+      // Tri-state: NULL/undefined means no usage sync has read overage yet.
+      overageEnabled: r.overage_enabled == null ? undefined : r.overage_enabled === 1
     }))
     return new AccountManager(accounts, strategy || 'sticky')
   }
@@ -115,9 +117,24 @@ export class AccountManager {
     return acc
   }
 
+  /**
+   * Whether serving a request on this account would incur paid overage now:
+   * overage billing on AND the included quota already spent. An overage account
+   * with credits left still serves for free and is not billing yet.
+   *
+   * Gated on a usage sync (`usageUpdatedAt`): before one, `usedCount` is the
+   * per-process request counter {@link getCurrentOrNext} increments, not the
+   * credit figure, so the quota comparison would be meaningless — treat as free.
+   */
+  private wouldBillNow(a: ManagedAccount): boolean {
+    if (!a.overageEnabled || !a.usageUpdatedAt) return false
+    const limit = a.limitCount ?? 0
+    return limit > 0 && (a.usedCount ?? 0) >= limit
+  }
+
   getCurrentOrNext(): ManagedAccount | null {
     const now = Date.now()
-    const available = this.accounts.filter((a) => {
+    const usable = this.accounts.filter((a) => {
       if (!evaluateAccount(a, now).usable) return false
       // Recovered past recoveryTime: clear stale flags to match the live verdict.
       if (!a.isHealthy) {
@@ -127,6 +144,10 @@ export class AccountManager {
       }
       return true
     })
+    // Drain accounts that serve for free before any that would bill now, so
+    // money is spent only once no free one is usable. See wouldBillNow.
+    const free = usable.filter((a) => !this.wouldBillNow(a))
+    const available = free.length > 0 ? free : usable
     let selected: ManagedAccount | undefined
     if (available.length > 0) {
       if (this.strategy === 'sticky') {
@@ -149,15 +170,15 @@ export class AccountManager {
       }
     }
     if (!selected) {
-      // Fallback to a temporarily-unhealthy account, but never a permanently-unusable one.
-      const fallback = this.accounts
-        .filter(
-          (a) =>
-            !a.isHealthy && a.failCount < 10 && !a.recoveryTime && !isPermanentlyUnusable(a, now)
-        )
-        .sort(
-          (a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0)
-        )[0]
+      // Fall back to a temporarily-unhealthy account, never a permanent one, and
+      // still prefer a free one over a billing one.
+      const candidates = this.accounts.filter(
+        (a) => !a.isHealthy && a.failCount < 10 && !a.recoveryTime && !isPermanentlyUnusable(a, now)
+      )
+      const freeCandidates = candidates.filter((a) => !this.wouldBillNow(a))
+      const fallback = (freeCandidates.length > 0 ? freeCandidates : candidates).sort(
+        (a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0)
+      )[0]
       if (fallback) {
         fallback.isHealthy = true
         delete fallback.unhealthyReason
@@ -174,12 +195,16 @@ export class AccountManager {
     }
     return null
   }
-  updateUsage(id: string, meta: { usedCount: number; limitCount: number; email?: string }): void {
+  updateUsage(
+    id: string,
+    meta: { usedCount: number; limitCount: number; email?: string; overageEnabled?: boolean }
+  ): void {
     const a = this.accounts.find((x) => x.id === id)
     if (a) {
       a.usedCount = meta.usedCount
       a.limitCount = meta.limitCount
       if (meta.email) a.email = meta.email
+      if (meta.overageEnabled !== undefined) a.overageEnabled = meta.overageEnabled
       if (!isPermanentError(a.unhealthyReason)) {
         a.failCount = 0
         a.isHealthy = true
