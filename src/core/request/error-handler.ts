@@ -69,8 +69,15 @@ export class ErrorHandler {
       }
     }
 
-    if (response.status === 500) {
-      let errorMessage = 'Internal Server Error'
+    // 500 and 503 are both server-side "try again" — the server is briefly
+    // under pressure, not this account's fault. Back off on the same account
+    // and never switch: a switch abandons the conversationId and the warm
+    // prompt cache, so the whole rest of the session is re-billed at full input
+    // rate. Waiting it out keeps the cache; the backoff sleep is excluded from
+    // the request-timeout budget. Account state is left untouched.
+    if (response.status === 500 || response.status === 503) {
+      const status = response.status
+      let errorMessage = status === 503 ? 'Service Unavailable' : 'Internal Server Error'
       try {
         const errorBody = await response.text()
         const errorData = JSON.parse(errorBody)
@@ -81,22 +88,31 @@ export class ErrorHandler {
         }
       } catch (e) {}
 
-      logger.warn(`HTTP 500 on ${account.email} (attempt ${context.retry + 1}): ${errorMessage}`)
+      logger.warn(
+        `HTTP ${status} on ${account.email} (attempt ${context.retry + 1}): ${errorMessage}`
+      )
 
       if (context.retry < this.config.rate_limit_max_retries) {
         const delay = 1000 * Math.pow(2, context.retry)
-        showToast(`500: ${errorMessage}. Retrying in ${Math.ceil(delay / 1000)}s...`, 'warning')
+        showToast(
+          `${status}: ${errorMessage}. Retrying in ${Math.ceil(delay / 1000)}s...`,
+          'warning'
+        )
         await this.sleep(delay)
-        return { shouldRetry: true, newContext: { ...context, retry: context.retry + 1 } }
+        return {
+          shouldRetry: true,
+          newContext: {
+            ...context,
+            retry: context.retry + 1,
+            excludedMs: (context.excludedMs ?? 0) + delay
+          }
+        }
       }
 
-      // 500 is server-side; never mark unhealthy.
-      if (this.accountManager.getAccountCount() > 1) {
-        showToast(`500: ${errorMessage}. Switching account...`, 'warning')
-        return { shouldRetry: true, switchAccount: true }
-      }
-
-      showToast(`500: ${errorMessage}. Persistent server error, please retry shortly.`, 'error')
+      showToast(
+        `${status}: ${errorMessage}. Persistent server error, please retry shortly.`,
+        'error'
+      )
       return {
         shouldRetry: false,
         terminalReason: `${errorMessage}. Persistent server error, please retry shortly.`

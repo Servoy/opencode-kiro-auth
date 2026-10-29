@@ -19,7 +19,7 @@ import { UsageTracker } from '../account/usage-tracker'
 import { IdcAuthMethod } from '../auth/idc-auth-method.js'
 import { TokenRefresher } from '../auth/token-refresher'
 import { ErrorHandler } from './error-handler'
-import { ResponseHandler } from './response-handler'
+import { ResponseHandler, TransientStreamError } from './response-handler'
 import { RetryStrategy } from './retry-strategy'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -519,6 +519,26 @@ export class RequestHandler {
         logger.warn(
           `[REQ] error convId=${sdkPrep.conversationId}: ${e?.name || ''} ${e?.message?.slice(0, 200) || String(e).slice(0, 200)}`
         )
+        // A transient failure Kiro delivered in-band before the first chunk —
+        // outside the SDK's retry, with no HTTP status. The model itself is
+        // briefly unavailable, which is service-wide: a second account would hit
+        // the same wall, so we never switch. Back off on this account, bounded,
+        // then fail with the reason rather than burning another account's quota.
+        if (e instanceof TransientStreamError) {
+          if (retry < this.config.rate_limit_max_retries) {
+            const delay = 1000 * Math.pow(2, retry)
+            showToast(
+              `Model temporarily unavailable. Retrying in ${Math.ceil(delay / 1000)}s...`,
+              'warning'
+            )
+            await this.sleep(delay)
+            this.retryStrategy.markSleep(retryContext, delay)
+            retry++
+            continue
+          }
+          return errorResponse(503, `Kiro: ${e.reason}`)
+        }
+
         const httpStatus = e?.$metadata?.httpStatusCode
 
         if (httpStatus && apiTimestamp) {

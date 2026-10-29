@@ -1,4 +1,5 @@
 import { restoreToolName } from '../../infrastructure/transformers/tool-transformer.js'
+import { isTransientStreamError } from '../../plugin/health.js'
 import { transformSdkStream } from '../../plugin/streaming/sdk-stream-transformer.js'
 import type { ToolNameMap } from '../../plugin/types.js'
 
@@ -6,6 +7,19 @@ interface AccumulatedToolCall {
   toolUseId: string
   name?: string
   input: string
+}
+
+/**
+ * A transient stream failure Kiro delivered before the first chunk, so the
+ * request is still safe to replay. Thrown while the caller's try/catch is live,
+ * it routes back through the same backoff-and-switch an HTTP 503 takes; never
+ * thrown once a chunk is out, since a started stream cannot be retried.
+ */
+export class TransientStreamError extends Error {
+  override readonly name = 'TransientStreamError'
+  constructor(readonly reason: string) {
+    super(reason)
+  }
 }
 
 export class ResponseHandler {
@@ -36,6 +50,13 @@ export class ResponseHandler {
     return response
   }
 
+  /**
+   * The first chunk is pulled here, before the Response is built, so a
+   * transient failure that Kiro delivers before any output is still inside the
+   * caller's try/catch and can be replayed. Once the first chunk is in hand the
+   * body is committed: the stream is wrapped around it and read lazily, and any
+   * later failure can only end the stream — never retry it.
+   */
   private async handleSdkStreaming(
     sdkResponse: any,
     model: string,
@@ -44,12 +65,32 @@ export class ResponseHandler {
     onStreamEnd?: () => void
   ): Promise<Response> {
     const s = transformSdkStream(sdkResponse, model, conversationId, toolNameMap)
+
+    let first: IteratorResult<any>
+    try {
+      first = await s.next()
+    } catch (err) {
+      // Nothing was emitted, so the request is safe to replay. Release the
+      // client here — no stream will run to do it — and hand the caller a
+      // retryable error for a transient reason, or rethrow anything else.
+      onStreamEnd?.()
+      const reason = err instanceof Error ? err.message : String(err)
+      if (isTransientStreamError(reason)) {
+        throw new TransientStreamError(reason)
+      }
+      throw err
+    }
+
+    const encoder = new TextEncoder()
     return new Response(
       new ReadableStream({
         async start(c) {
           try {
-            for await (const e of s) {
-              c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(e)}\n\n`))
+            if (!first.done) {
+              c.enqueue(encoder.encode(`data: ${JSON.stringify(first.value)}\n\n`))
+              for await (const e of s) {
+                c.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`))
+              }
             }
             c.close()
           } catch (err) {

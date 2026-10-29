@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { ResponseHandler } from '../core/request/response-handler.js'
+import { ResponseHandler, TransientStreamError } from '../core/request/response-handler.js'
 
 const MODEL = 'claude-sonnet-4-5'
 
@@ -127,13 +127,15 @@ describe('handleSdkSuccess streaming: onStreamEnd and error propagation', () => 
     expect(text).toContain('data:')
   })
 
-  test('still releases the client when the underlying stream throws mid-flight', async () => {
-    // A stream that breaks partway must not leak the client: onStreamEnd runs in
-    // the finally, so release happens on the error path too.
+  test('still releases the client when the underlying stream throws after a chunk is out', async () => {
+    // A stream that breaks after real output is on the wire must not leak the
+    // client: onStreamEnd runs in the finally, so release happens on the error
+    // path too. The content is long enough to clear the thinking-tag lookahead
+    // buffer, so a chunk is genuinely emitted before the break.
     let released = 0
     const breaking = {
       generateAssistantResponseResponse: (async function* () {
-        yield { assistantResponseEvent: { content: 'partial' } }
+        yield { assistantResponseEvent: { content: 'a real chunk of visible assistant text' } }
         throw new Error('socket closed')
       })()
     }
@@ -160,6 +162,119 @@ describe('handleSdkSuccess streaming: onStreamEnd and error propagation', () => 
       threw = true
     }
 
+    expect(threw).toBe(true)
+    expect(released).toBe(1)
+  })
+})
+
+describe('handleSdkSuccess streaming: transient failure before the first chunk', () => {
+  test('a transient first-event failure is thrown as a retryable TransientStreamError, not committed to the body', async () => {
+    // Kiro delivers MODEL_TEMPORARILY_UNAVAILABLE as the very first event, so
+    // the iterator throws before anything is emitted. The whole request is
+    // still safe to replay, so handleSdkSuccess throws it back to the caller's
+    // retry loop instead of building a doomed stream.
+    let released = 0
+    const failingFirst = {
+      generateAssistantResponseResponse: (async function* () {
+        throw new Error(
+          'The service is temporarily unavailable. Please try again later. (MODEL_TEMPORARILY_UNAVAILABLE)'
+        )
+        // eslint-disable-next-line no-unreachable
+        yield { assistantResponseEvent: { content: 'never' } }
+      })()
+    }
+
+    let caught: unknown
+    try {
+      await new ResponseHandler().handleSdkSuccess(
+        failingFirst,
+        MODEL,
+        'conv-t1',
+        true,
+        undefined,
+        () => {
+          released++
+        }
+      )
+    } catch (e) {
+      caught = e
+    }
+
+    expect(caught).toBeInstanceOf(TransientStreamError)
+    expect((caught as TransientStreamError).reason).toContain('temporarily unavailable')
+    // The client must still be released even though no stream ran.
+    expect(released).toBe(1)
+  })
+
+  test('a non-transient first-event failure is rethrown unchanged, not reclassified as retryable', async () => {
+    // A bad-model or credential failure before the first chunk must not be
+    // swallowed into a retry — it rethrows as-is so the caller handles it.
+    const failingFirst = {
+      generateAssistantResponseResponse: (async function* () {
+        throw new Error('Invalid model ID')
+        // eslint-disable-next-line no-unreachable
+        yield { assistantResponseEvent: { content: 'never' } }
+      })()
+    }
+
+    let caught: unknown
+    try {
+      await new ResponseHandler().handleSdkSuccess(failingFirst, MODEL, 'conv-t2', true)
+    } catch (e) {
+      caught = e
+    }
+
+    expect(caught).toBeInstanceOf(Error)
+    expect(caught).not.toBeInstanceOf(TransientStreamError)
+    expect((caught as Error).message).toBe('Invalid model ID')
+  })
+
+  test('a transient failure AFTER the first chunk ends the stream and is never retried', async () => {
+    // Once a chunk is out the body is committed — per the Smithy rule a started
+    // stream cannot be replayed. The same transient reason that would retry
+    // before the first chunk must only break the stream here, never throw a
+    // TransientStreamError back to the caller. The content is long enough to
+    // clear the thinking-tag lookahead so a chunk is genuinely emitted first.
+    let released = 0
+    const breakAfterFirst = {
+      generateAssistantResponseResponse: (async function* () {
+        // Two content events: the first clears the transformer's thinking-tag
+        // lookahead so a chunk is genuinely yielded, committing the body,
+        // before the second turn throws the transient failure.
+        yield { assistantResponseEvent: { content: 'a real chunk of visible assistant text' } }
+        yield { assistantResponseEvent: { content: ' and more text to flush the buffer' } }
+        throw new Error('MODEL_TEMPORARILY_UNAVAILABLE')
+      })()
+    }
+
+    // handleSdkSuccess resolves to a Response — it does NOT throw, because the
+    // first chunk pulled cleanly.
+    const response = await new ResponseHandler().handleSdkSuccess(
+      breakAfterFirst,
+      MODEL,
+      'conv-t3',
+      true,
+      undefined,
+      () => {
+        released++
+      }
+    )
+
+    const reader = response.body!.getReader()
+    let text = ''
+    let threw = false
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value) text += new TextDecoder().decode(value)
+      }
+    } catch {
+      threw = true
+    }
+
+    // The first chunk reached the client, then the stream errored.
+    expect(text).toContain('data:')
     expect(threw).toBe(true)
     expect(released).toBe(1)
   })

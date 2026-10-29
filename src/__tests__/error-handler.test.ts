@@ -258,7 +258,11 @@ describe('ErrorHandler: 500', () => {
     expect(acc.isHealthy).toBe(true)
   })
 
-  test('multi-account: switches to next after retry budget exhausted, keeps account healthy', async () => {
+  test('multi-account: NEVER switches on 500 — a switch abandons the warm prompt cache', async () => {
+    // A second account standing by is no reason to switch: the server is
+    // briefly busy, not this account. Switching would drop the conversationId
+    // and re-bill the whole session at full input rate, so it fails terminally
+    // on the same account instead and leaves both healthy.
     const acc1 = makeAccount({ id: 'a', failCount: 0 })
     const acc2 = makeAccount({ id: 'b', failCount: 0 })
     const mgr = new AccountManager([acc1, acc2])
@@ -271,8 +275,8 @@ describe('ErrorHandler: 500', () => {
       { retry: defaultConfig.rate_limit_max_retries },
       noToast
     )
-    expect(result.shouldRetry).toBe(true)
-    expect(result.switchAccount).toBe(true)
+    expect(result.shouldRetry).toBe(false)
+    expect(result.switchAccount).toBeUndefined()
     expect(acc1.isHealthy).toBe(true)
     expect(acc2.isHealthy).toBe(true)
   })
@@ -290,6 +294,66 @@ describe('ErrorHandler: 500', () => {
       noToast
     )
     expect(result.shouldRetry).toBe(false)
+    expect(acc.isHealthy).toBe(true)
+    expect(acc.unhealthyReason).toBeUndefined()
+  })
+})
+
+// ── 503 (shares 500's handling: backoff on the same account, never switch) ────
+
+describe('ErrorHandler: 503', () => {
+  test('retries with backoff and excludes the sleep from the timeout budget', async () => {
+    const acc = makeAccount({ failCount: 0 })
+    const mgr = new AccountManager([acc])
+    const handler = new ErrorHandler(defaultConfig, mgr)
+    const res = makeResponse(503, { message: 'MODEL_TEMPORARILY_UNAVAILABLE' })
+    const result = await handler.handle(null, res, acc, { retry: 0, excludedMs: 0 }, noToast)
+    expect(result.shouldRetry).toBe(true)
+    expect(result.newContext?.retry).toBe(1)
+    // The backoff sleep is handed back so the retry strategy does not count it
+    // against the request timeout — a 503 blip must not shorten the budget.
+    expect(result.newContext?.excludedMs).toBe(1000)
+    // Server-side: account state untouched.
+    expect(acc.failCount).toBe(0)
+    expect(acc.isHealthy).toBe(true)
+  })
+
+  test('multi-account: NEVER switches on 503 — the warm cache stays on this account', async () => {
+    // Same rule as 500: a waiting second account is no reason to abandon the
+    // conversationId and re-bill the session. It fails terminally here, both
+    // accounts untouched.
+    const acc1 = makeAccount({ id: 'a', failCount: 0 })
+    const acc2 = makeAccount({ id: 'b', failCount: 0 })
+    const mgr = new AccountManager([acc1, acc2])
+    const handler = new ErrorHandler(defaultConfig, mgr)
+    const res = makeResponse(503, { message: 'Service Unavailable' })
+    const result = await handler.handle(
+      null,
+      res,
+      acc1,
+      { retry: defaultConfig.rate_limit_max_retries },
+      noToast
+    )
+    expect(result.shouldRetry).toBe(false)
+    expect(result.switchAccount).toBeUndefined()
+    expect(acc1.isHealthy).toBe(true)
+    expect(acc2.isHealthy).toBe(true)
+  })
+
+  test('single-account: fails terminally after the retry budget without marking unhealthy', async () => {
+    const acc = makeAccount({ id: 'only', failCount: 0 })
+    const mgr = new AccountManager([acc])
+    const handler = new ErrorHandler(defaultConfig, mgr)
+    const res = makeResponse(503, { message: 'MODEL_TEMPORARILY_UNAVAILABLE' })
+    const result = await handler.handle(
+      null,
+      res,
+      acc,
+      { retry: defaultConfig.rate_limit_max_retries },
+      noToast
+    )
+    expect(result.shouldRetry).toBe(false)
+    expect(result.terminalReason).toContain('MODEL_TEMPORARILY_UNAVAILABLE')
     expect(acc.isHealthy).toBe(true)
     expect(acc.unhealthyReason).toBeUndefined()
   })
