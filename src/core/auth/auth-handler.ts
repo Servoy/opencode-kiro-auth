@@ -1,5 +1,6 @@
 import type { AuthHook } from '@opencode-ai/plugin'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
+import { shouldSkipUsageResync } from '../../plugin/account-usability.js'
 import { RegionSchema } from '../../plugin/config/schema.js'
 import * as logger from '../../plugin/logger.js'
 import type { ManagedAccount } from '../../plugin/types.js'
@@ -125,15 +126,17 @@ export class AuthHandler {
     // Held for its TTL, not released here: one instance fetches, siblings within
     // the window read stored usage. Releasing per fetch let them 429 in turn.
     if (!kiroDb.acquireUsageSyncLock()) return
+    const now = Date.now()
     for (const acc of this.accountManager.getAccounts()) {
-      if (!acc.isHealthy) continue
+      // Re-read an unhealthy account too unless a sync cannot help it, so a
+      // quota-exhausted one revives after its reset instead of staying frozen.
+      if (!acc.isHealthy && shouldSkipUsageResync(acc, now)) continue
       try {
         const { account: usable } = await tokenRefresher.refreshIfNeeded(
           acc,
           this.accountManager.toAuthDetails(acc),
           toast
         )
-        if (!usable.isHealthy) continue
         await usageTracker.syncNow(usable, this.accountManager.toAuthDetails(usable))
       } catch (e) {
         logger.warn('Startup usage fetch failed; keeping stored value', {
@@ -198,15 +201,22 @@ export class AuthHandler {
 
     for (const acc of accounts) {
       const { used, limit, pct } = summarizeUsage(acc.usedCount ?? 0, acc.limitCount ?? 0)
+      // Show which account bills: overage on past its spent quota is paying now.
+      const spent = limit > 0 && used >= limit
+      const overage = acc.overageEnabled
+        ? spent
+          ? ' [overage: billing]'
+          : ' [overage: enabled, free credits left]'
+        : ''
       if (limit > 0) {
-        const msg = `Kiro usage (${acc.email}): ${used}/${limit} (${pct}%)`
+        const msg = `Kiro usage (${acc.email}): ${used}/${limit} (${pct}%)${overage}`
         logger.log(msg)
         if (showToast) {
           const variant = pct >= 90 ? 'warning' : 'info'
           setTimeout(() => showToast(msg, variant), 3000)
         }
       } else if (used > 0) {
-        const msg = `Kiro usage (${acc.email}): ${used} requests used`
+        const msg = `Kiro usage (${acc.email}): ${used} requests used${overage}`
         logger.log(msg)
         if (showToast) setTimeout(() => showToast(msg, 'info'), 3000)
       }

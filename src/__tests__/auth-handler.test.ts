@@ -174,6 +174,100 @@ describe('AuthHandler.refreshUsageFromApi', () => {
     }
   })
 
+  test('re-syncs a quota-exhausted account whose recovery window has passed', async () => {
+    // The real regression: an account marked unhealthy on "You have reached the
+    // limit." with a recoveryTime now in the past. It must be re-fetched so its
+    // reset quota and overage status are read, instead of staying frozen.
+    const acc = makeAccount({
+      profileArn: 'arn:aws:codewhisperer:eu-central-1:1:profile/A',
+      usedCount: 9999.68,
+      limitCount: 10000,
+      isHealthy: false,
+      failCount: 10,
+      unhealthyReason: 'You have reached the limit.',
+      recoveryTime: Date.now() - 60_000
+    })
+    const handler = new AuthHandler(
+      { usage_tracking_enabled: true, token_expiry_buffer_ms: 300000, auto_sync_kiro_cli: false },
+      fakeRepo
+    )
+    handler.setAccountManager(makeManager(acc))
+
+    let calls = 0
+    const original = globalThis.fetch
+    globalThis.fetch = mock(async () => {
+      calls++
+      return new Response(CREDIT_RESPONSE, { status: 200 })
+    }) as any
+    try {
+      await handler.refreshUsageFromApi()
+      expect(calls).toBe(1)
+      expect(acc.usedCount).toBe(70.45) // fresh (reset) quota read
+    } finally {
+      globalThis.fetch = original
+      const { kiroDb } = await import('../plugin/storage/sqlite.js')
+      kiroDb.releaseUsageSyncLock()
+    }
+  })
+
+  test('does not re-sync an account still inside its recovery window', async () => {
+    const acc = makeAccount({
+      profileArn: 'arn:aws:codewhisperer:eu-central-1:1:profile/A',
+      isHealthy: false,
+      failCount: 10,
+      unhealthyReason: 'You have reached the limit.',
+      recoveryTime: Date.now() + 3_600_000
+    })
+    const handler = new AuthHandler(
+      { usage_tracking_enabled: true, token_expiry_buffer_ms: 300000, auto_sync_kiro_cli: false },
+      fakeRepo
+    )
+    handler.setAccountManager(makeManager(acc))
+
+    let calls = 0
+    const original = globalThis.fetch
+    globalThis.fetch = mock(async () => {
+      calls++
+      return new Response(CREDIT_RESPONSE, { status: 200 })
+    }) as any
+    try {
+      await handler.refreshUsageFromApi()
+      expect(calls).toBe(0)
+    } finally {
+      globalThis.fetch = original
+      const { kiroDb } = await import('../plugin/storage/sqlite.js')
+      kiroDb.releaseUsageSyncLock()
+    }
+  })
+
+  test('does not re-sync a permanently-unusable account', async () => {
+    const acc = makeAccount({
+      isHealthy: false,
+      failCount: 10,
+      unhealthyReason: 'ExpiredTokenException'
+    })
+    const handler = new AuthHandler(
+      { usage_tracking_enabled: true, token_expiry_buffer_ms: 300000, auto_sync_kiro_cli: false },
+      fakeRepo
+    )
+    handler.setAccountManager(makeManager(acc))
+
+    let calls = 0
+    const original = globalThis.fetch
+    globalThis.fetch = mock(async () => {
+      calls++
+      return new Response(CREDIT_RESPONSE, { status: 200 })
+    }) as any
+    try {
+      await handler.refreshUsageFromApi()
+      expect(calls).toBe(0)
+    } finally {
+      globalThis.fetch = original
+      const { kiroDb } = await import('../plugin/storage/sqlite.js')
+      kiroDb.releaseUsageSyncLock()
+    }
+  })
+
   test('skips fetch silently when another instance holds the usage-sync lock', async () => {
     const { kiroDb } = await import('../plugin/storage/sqlite.js')
     expect(kiroDb.acquireUsageSyncLock()).toBe(true)

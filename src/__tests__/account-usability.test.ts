@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import {
   evaluateAccount,
   isPermanentlyUnusable,
-  isUsableAccount
+  isUsableAccount,
+  shouldSkipUsageResync
 } from '../plugin/account-usability'
 import type { ManagedAccount } from '../plugin/types'
 
@@ -75,5 +76,46 @@ describe('evaluateAccount invariants', () => {
   test('failCount at threshold is permanently unusable', () => {
     const a = acc({ isHealthy: false, failCount: 10, recoveryTime: Date.now() - 1000 })
     expect(isPermanentlyUnusable(a)).toBe(true)
+  })
+})
+
+describe('shouldSkipUsageResync', () => {
+  test('healthy accounts are not skipped (the caller only asks about unhealthy ones)', () => {
+    expect(shouldSkipUsageResync(acc())).toBe(false)
+  })
+
+  test('a quota-exhausted account past its recovery window is re-synced', () => {
+    // The real regression: failCount 10, "reached the limit", recovery elapsed.
+    const a = acc({
+      isHealthy: false,
+      failCount: 10,
+      unhealthyReason: 'You have reached the limit.',
+      recoveryTime: Date.now() - 60_000
+    })
+    expect(shouldSkipUsageResync(a)).toBe(false)
+  })
+
+  test('an account still inside its recovery window is skipped', () => {
+    const a = acc({
+      isHealthy: false,
+      failCount: 10,
+      unhealthyReason: 'You have reached the limit.',
+      recoveryTime: Date.now() + 3_600_000
+    })
+    expect(shouldSkipUsageResync(a)).toBe(true)
+  })
+
+  test('a permanent-error account is skipped (a sync cannot revive it)', () => {
+    const a = acc({ isHealthy: false, failCount: 10, unhealthyReason: 'ExpiredTokenException' })
+    expect(shouldSkipUsageResync(a)).toBe(true)
+  })
+
+  test('an IDC account without a profileArn is skipped', () => {
+    const a = acc({ isHealthy: false, profileArn: undefined })
+    expect(shouldSkipUsageResync(a)).toBe(true)
+  })
+
+  test('an account missing a token is skipped', () => {
+    expect(shouldSkipUsageResync(acc({ isHealthy: false, accessToken: '' }))).toBe(true)
   })
 })
