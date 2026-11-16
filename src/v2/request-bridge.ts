@@ -1,14 +1,6 @@
+import { resolveKiroUrl } from '../core/request/kiro-url.js'
 import type { RequestHandler } from '../core/request/request-handler.js'
 import type { ToastFn } from '../plugin/toast.js'
-
-/**
- * Matches Kiro's inference endpoints: the Pro `runtime.<region>.kiro.dev` host
- * and the standard `q.<region>.amazonaws.com` host. Kept in sync with the
- * pattern in `request-handler.ts` so the v2 hook only intercepts Kiro traffic
- * and lets every other provider request pass through untouched.
- */
-const KIRO_API_PATTERN =
-  /^(https?:\/\/)?(q\.[a-z0-9-]+\.amazonaws\.com|runtime\.[a-z0-9-]+\.kiro\.dev)/
 
 export interface RequestBridge {
   /** True when the URL is a Kiro endpoint this plugin should handle. */
@@ -28,7 +20,9 @@ export interface RequestBridge {
 export function createRequestBridge(handler: RequestHandler, toast: ToastFn): RequestBridge {
   return {
     isKiroUrl(url: string): boolean {
-      return KIRO_API_PATTERN.test(url)
+      // A URL another plugin rewrote still names its Kiro upstream, so the
+      // request is recognised either way; see core/request/kiro-url.ts.
+      return resolveKiroUrl(url) !== null
     },
     handleRequest(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
       return handler.handle(input, init, toast)

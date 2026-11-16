@@ -264,6 +264,19 @@ This happens when the plugin has no records in `~/.config/opencode/kiro.db`.
 3. Retry the request; the plugin will attempt a Kiro CLI sync when it detects zero
    accounts.
 
+### Empty reply, and nothing in the log
+
+A reply that comes back empty, with `upstream stream ended before a completion
+event` in the host log, means the request never reached this plugin: another
+plugin rewrote the request URL to a local proxy before the host sent it, and
+the proxy forwarded an OpenAI-shaped request to Kiro, which answered with
+`UnknownOperationException`.
+
+The plugin now recognises a request whose URL was rewritten and unwraps it to
+the Kiro upstream it carries, so this no longer depends on the other plugin
+behaving. A `[URL] request URL was rewritten` line in `kiro-plugin.log` says
+the unwrapping happened.
+
 ### Note: `/connect` vs `opencode auth login`
 
 If you need to enter provider-specific values for an OAuth login (like IAM Identity
