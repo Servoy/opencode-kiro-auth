@@ -14,8 +14,8 @@ import {
   AccountSelectionStrategySchema,
   DEFAULT_CONFIG,
   KiroConfigSchema,
-  RegionSchema,
   RETIRED_SETTINGS,
+  ServiceRegionSchema,
   type KiroConfig
 } from './schema'
 
@@ -157,6 +157,16 @@ function loadConfigFile(path: string): Partial<KiroConfig> | null {
       return null
     }
 
+    // `.catch` on a field substitutes rather than rejects, so a stale value is
+    // kept out of the config without discarding the file it came from — but it
+    // must not pass unannounced, or a request lands in a region nobody chose.
+    const asked = (rawConfig as Record<string, unknown>)?.default_region
+    if (typeof asked === 'string' && asked !== result.data.default_region) {
+      logger.warn(
+        `Config at ${path}: default_region "${asked}" is not a region Kiro serves; using "${result.data.default_region}"`
+      )
+    }
+
     return result.data
   } catch (error) {
     if (error instanceof SyntaxError) {
@@ -212,7 +222,7 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
       : config.account_selection_strategy,
 
     default_region: env.KIRO_DEFAULT_REGION
-      ? RegionSchema.catch('us-east-1').parse(env.KIRO_DEFAULT_REGION)
+      ? ServiceRegionSchema.catch('us-east-1').parse(env.KIRO_DEFAULT_REGION)
       : config.default_region,
 
     rate_limit_retry_delay_ms: parseNumberEnv(

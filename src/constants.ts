@@ -1,4 +1,4 @@
-import { RegionSchema } from './plugin/config/schema'
+import { RegionSchema, ServiceRegionSchema } from './plugin/config/schema'
 import type { KiroAuthDetails, KiroRegion } from './plugin/types'
 
 const VALID_REGIONS: readonly KiroRegion[] = RegionSchema.options
@@ -173,5 +173,10 @@ export const KIRO_AUTH_SERVICE = {
   ]
 }
 
-/** Regions that host the Kiro/Q endpoints. */
-export const KIRO_SERVICE_REGIONS: readonly KiroRegion[] = ['us-east-1', 'eu-central-1']
+/**
+ * Regions that host the Kiro/Q endpoints.
+ *
+ * Derived from the schema so the list a user is allowed to configure and the
+ * list sign-in probes can never drift apart.
+ */
+export const KIRO_SERVICE_REGIONS: readonly KiroRegion[] = ServiceRegionSchema.options

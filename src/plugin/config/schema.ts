@@ -53,6 +53,18 @@ export const RegionSchema = z.enum([
 ])
 export type Region = z.infer<typeof RegionSchema>
 
+/**
+ * The regions that actually host Kiro, as opposed to the AWS regions above.
+ *
+ * Only these two answer in the commercial partition: `management`, `runtime`
+ * and `q` have no DNS record anywhere else, so a config naming another region
+ * failed with a name-resolution error that said nothing about the real cause.
+ * Identity Center is a different service and runs where the organisation put
+ * it, which is why `idc_region` keeps the full list.
+ */
+export const ServiceRegionSchema = z.enum(['us-east-1', 'eu-central-1'])
+export type ServiceRegion = z.infer<typeof ServiceRegionSchema>
+
 export const KiroConfigSchema = z.object({
   $schema: z.string().optional(),
 
@@ -66,7 +78,10 @@ export const KiroConfigSchema = z.object({
 
   account_selection_strategy: AccountSelectionStrategySchema.default('lowest-usage'),
 
-  default_region: RegionSchema.default('us-east-1'),
+  // `.catch` rather than a plain reject: a validation failure discards the
+  // whole file, so rejecting one stale region would silently reset every other
+  // setting in it. The loader reports the substitution instead.
+  default_region: ServiceRegionSchema.catch('us-east-1').default('us-east-1'),
 
   rate_limit_retry_delay_ms: z.number().min(1000).max(60000).default(5000),
 

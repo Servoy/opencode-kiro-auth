@@ -330,7 +330,7 @@ so it always lists what the plugin actually does.
 ### Configuration Options
 
 - `account_selection_strategy`: Which account serves a new session: `sticky`, `round-robin` or `lowest-usage`. A session then stays on whichever one answered. Default: `"lowest-usage"`.
-- `default_region`: AWS region used when an account does not name one. Default: `"us-east-1"`.
+- `default_region`: Region used when an account does not name one. Only `"us-east-1"` and `"eu-central-1"` host Kiro — the `management`, `runtime` and `q` endpoints have no DNS record anywhere else in the commercial partition — so anything else is replaced by `"us-east-1"` and the substitution is logged. This is not `idc_region`: Identity Center is a different service and runs wherever your organisation put it, so that setting still takes any AWS region. Default: `"us-east-1"`.
 - `rate_limit_retry_delay_ms`: How long to wait after a 429 before trying again. Default: `5000`.
 - `rate_limit_max_retries`: How many times, before the error is shown instead. Default: `3`.
 - `max_request_iterations`: Attempts within one request — account switches, token refreshes, retries. Not agent steps: the guard against a request that never settles. Default: `20`.
