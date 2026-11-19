@@ -1,6 +1,7 @@
 import type { AuthHook } from '@opencode-ai/plugin'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
 import { shouldSkipUsageResync } from '../../plugin/account-usability.js'
+import { hostHasCredential } from '../../plugin/auth-bootstrap.js'
 import { RegionSchema } from '../../plugin/config/schema.js'
 import * as logger from '../../plugin/logger.js'
 import type { ManagedAccount } from '../../plugin/types.js'
@@ -67,7 +68,9 @@ export class AuthHandler {
 
   constructor(
     private config: any,
-    private repository: AccountRepository
+    private repository: AccountRepository,
+    /** Provider id, to read the host's auth entry during reconcile. */
+    private providerId: string = 'kiro'
   ) {}
 
   async initialize(showToast?: ToastFunction): Promise<void> {
@@ -86,6 +89,7 @@ export class AuthHandler {
     }
 
     await this.autoRegisterApiKey()
+    await this.reconcileApiKeyWithHost()
 
     // Refresh usage before the summary toast: the persisted value is stale after
     // the monthly reset until the first request syncs. Backgrounded so it never
@@ -175,6 +179,43 @@ export class AuthHandler {
         error: e instanceof Error ? e.message : String(e)
       })
     }
+  }
+
+  /**
+   * Drop stored API-key accounts once the host no longer holds a key for us.
+   *
+   * The plugin keeps credentials in kiro.db, separate from OpenCode's auth
+   * store, so an OpenCode logout removed the auth.json entry but left the key
+   * live in kiro.db — the plugin kept spending a key the user had withdrawn and
+   * handed to a pipeline. This runs after autoRegister (which re-adds a key
+   * still configured in kiro.json/KIRO_API_KEY): only when the host has no
+   * credential AND none is configured is the key truly gone, so the stored
+   * apikey rows are deleted and pruned from the live pool. IDC/desktop logins
+   * are untouched — they are not stored in auth.json.
+   */
+  private async reconcileApiKeyWithHost(): Promise<void> {
+    if (configuredApiKey(this.config)) return
+    if (hostHasCredential(this.providerId)) return
+
+    let accounts: ManagedAccount[]
+    try {
+      accounts = await this.repository.findAll()
+    } catch {
+      return // A findAll hiccup must not delete accounts on a guess.
+    }
+    if (!accounts.some((a) => a.authMethod === 'apikey')) return
+
+    const { kiroDb } = await import('../../plugin/storage/sqlite.js')
+    const removed = await kiroDb.deleteApiKeyAccounts()
+    if (removed.length === 0) return
+    this.repository.invalidateCache()
+    const removedIds = new Set(removed)
+    for (const acc of this.accountManager?.getAccounts() ?? []) {
+      if (removedIds.has(acc.id)) this.accountManager?.removeAccount(acc)
+    }
+    logger.log('API key reconcile: host has no key, dropped stored apikey account(s)', {
+      count: removed.length
+    })
   }
 
   /**

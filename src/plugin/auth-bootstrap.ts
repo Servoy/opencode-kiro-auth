@@ -73,6 +73,27 @@ function writeAuthFile(authPath: string, auth: Record<string, any>): void {
  * This writes a minimal placeholder entry into auth.json so OpenCode calls the
  * loader on the next startup, where real credentials are synced from Kiro CLI DB.
  */
+/**
+ * Whether the host still holds a real Kiro credential for this provider.
+ *
+ * A logout removes the provider's entry from auth.json; a sign-in writes one.
+ * The bootstrap placeholder (`kiro-bootstrap-placeholder`) is written by this
+ * plugin to make the loader run and is NOT a real credential — treated as
+ * absent, so a stored API-key account is not kept alive by the plugin's own
+ * placeholder. `configPath` is the auth.json location; defaulted for callers.
+ */
+export function hostHasCredential(
+  providerId: string,
+  authPath: string = getOpenCodeAuthPath()
+): boolean {
+  const auth = readAuthFile(authPath)
+  if (!auth) return false
+  const entry = auth[providerId]
+  if (!entry || typeof entry !== 'object') return false
+  if (entry.key === 'kiro-bootstrap-placeholder') return false
+  return true
+}
+
 export function bootstrapAuthIfNeeded(providerId: string): void {
   try {
     // Trigger on a local Kiro CLI DB (the social/IDC token source) or a

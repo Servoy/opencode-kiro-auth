@@ -17,6 +17,20 @@ export function runMigrations(db: SqliteDatabase): void {
   migrateSessionUsageTable(db)
   migratePluginInstancesTable(db)
   migrateOverageEnabledColumn(db)
+  migrateMeteredSince(db)
+}
+
+/**
+ * Small key/value table for db-wide facts, holding `metered_since`: the moment
+ * this db switched from apportioning account deltas to booking each response's
+ * metered credits. INSERT OR IGNORE keeps the first moment, so later starts and
+ * sibling instances never move it.
+ */
+function migrateMeteredSince(db: SqliteDatabase): void {
+  db.exec('CREATE TABLE IF NOT EXISTS kiro_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  db.prepare("INSERT OR IGNORE INTO kiro_meta (key, value) VALUES ('metered_since', ?)").run(
+    String(Date.now())
+  )
 }
 
 /**
@@ -56,11 +70,10 @@ function migratePluginInstancesTable(db: SqliteDatabase): void {
 }
 
 /**
- * Per-session, per-account Kiro request counts — the basis for the panel's
- * session-cost estimate. Kiro bills per request (invocation), not per token, so
- * a request count is the honest unit; the panel apportions each account's
- * credit delta across the sessions that spent it, by their share of that
- * account's requests in the same window.
+ * Per-session, per-account Kiro request counts and credits. `est_credits` keeps
+ * its name for existing databases; since `metered_since` it holds the sum of
+ * Kiro's own per-response metering, booked by the instance that served each
+ * response, rather than an apportioned share of the account delta.
  *
  * The row is keyed on (session_id, account_id): one session can be served by
  * several accounts (rotation on rate-limit, or an explicit account switch), and

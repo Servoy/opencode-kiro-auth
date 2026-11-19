@@ -24,10 +24,15 @@ export class TransientStreamError extends Error {
 
 export class ResponseHandler {
   /**
+   * Turn a successful SDK response into the Response OpenCode reads.
+   *
    * `onStreamEnd` fires once the response is fully consumed — after the last
    * streamed event, or immediately for a non-streaming body. The caller uses it
    * to release the SDK client: the stream is read lazily after this returns, so
    * releasing any earlier would free a client whose socket is still in use.
+   *
+   * @param onCredits called once with the credits Kiro metered for this
+   *   response, after it is fully read; not called when Kiro sent none
    */
   async handleSdkSuccess(
     sdkResponse: any,
@@ -35,16 +40,25 @@ export class ResponseHandler {
     conversationId: string,
     streaming: boolean,
     toolNameMap?: ToolNameMap,
-    onStreamEnd?: () => void
+    onStreamEnd?: () => void,
+    onCredits?: (credits: number) => void
   ): Promise<Response> {
     if (streaming) {
-      return this.handleSdkStreaming(sdkResponse, model, conversationId, toolNameMap, onStreamEnd)
+      return this.handleSdkStreaming(
+        sdkResponse,
+        model,
+        conversationId,
+        toolNameMap,
+        onStreamEnd,
+        onCredits
+      )
     }
     const response = await this.handleSdkNonStreaming(
       sdkResponse,
       model,
       conversationId,
-      toolNameMap
+      toolNameMap,
+      onCredits
     )
     onStreamEnd?.()
     return response
@@ -62,9 +76,10 @@ export class ResponseHandler {
     model: string,
     conversationId: string,
     toolNameMap?: ToolNameMap,
-    onStreamEnd?: () => void
+    onStreamEnd?: () => void,
+    onCredits?: (credits: number) => void
   ): Promise<Response> {
-    const s = transformSdkStream(sdkResponse, model, conversationId, toolNameMap)
+    const s = transformSdkStream(sdkResponse, model, conversationId, toolNameMap, onCredits)
 
     let first: IteratorResult<any>
     try {
@@ -108,10 +123,12 @@ export class ResponseHandler {
     sdkResponse: any,
     model: string,
     conversationId: string,
-    toolNameMap?: ToolNameMap
+    toolNameMap?: ToolNameMap,
+    onCredits?: (credits: number) => void
   ): Promise<Response> {
     // For non-streaming SDK responses, collect all events
     let content = ''
+    let credits: number | undefined
     const toolCallFragments = new Map<string, AccumulatedToolCall>()
     const toolCallOrder: string[] = []
     let inputTokens = 0
@@ -154,8 +171,11 @@ export class ResponseHandler {
           cacheReadInputTokens = tu.cacheReadInputTokens || 0
           cacheWriteInputTokens = tu.cacheWriteInputTokens || 0
         }
+        const metered = (event as { meteringEvent?: { usage?: unknown } }).meteringEvent?.usage
+        if (typeof metered === 'number') credits = (credits ?? 0) + metered
       }
     }
+    if (credits !== undefined) onCredits?.(credits)
 
     const toolCalls = toolCallOrder
       .map((toolUseId) => toolCallFragments.get(toolUseId))

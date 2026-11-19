@@ -2,6 +2,13 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getConfigDir } from './config/paths.js'
 import * as logger from './logger.js'
+import {
+  peekOpenCodeInsights,
+  refreshOpenCodeInsights,
+  type SessionInsights,
+  type TokenTotals,
+  type ToolCount
+} from './opencode-insights.js'
 import { kiroDb } from './storage/sqlite.js'
 import type { ManagedAccount } from './types'
 import type { UsageResult } from './usage.js'
@@ -51,11 +58,33 @@ export interface SessionUsageSnapshot {
   title?: string
   directory?: string
   requests: number
-  /** Estimated credits, apportioned per account from that account's deltas by request share. */
+  /**
+   * Credits for the session. Rows active since `meteredSince` hold the sum of
+   * Kiro's per-response metering; older rows hold the former apportioned estimate.
+   */
   estCredits: number
   firstUsed: number
   lastUsed: number
   accounts: SessionAccountUsageSnapshot[]
+  /** Kiro tokens over the session and its subagents, from OpenCode. Absent when unreadable. */
+  tokens?: TokenTotals
+  /** Tool calls by name over the session and its subagents, from OpenCode. */
+  tools?: ToolCount[]
+  toolCalls?: number
+  /** How the session's Kiro turns ended, from OpenCode. */
+  turns?: SessionInsights['turns']
+}
+
+/** Tool-call totals across every Kiro session in the window, from OpenCode. */
+export interface ToolTotalsSnapshot {
+  windowDays: number
+  totalCalls: number
+  items: ToolCount[]
+}
+
+/** Token totals across every Kiro session in the window, from OpenCode. */
+export interface TokenTotalsSnapshot extends TokenTotals {
+  windowDays: number
 }
 
 /**
@@ -68,6 +97,8 @@ export interface BurnTotalSnapshot {
   accountId: string
   windowDays: number
   credits: number
+  /** Exact request count over the window — the unit Kiro bills on. */
+  requests: number
   earliestUsed: number
 }
 
@@ -82,9 +113,19 @@ export interface PluginInstanceSnapshot {
   lastSeen: number
 }
 
+/**
+ * Snapshot schema generation. `version` is the file format (unchanged at 1);
+ * `schema` tracks which insight fields are present, so the panel can tell an
+ * old plugin that writes none from a current one with nothing to report yet.
+ * Bump it when a new insight field is added to the written file.
+ */
+export const SNAPSHOT_SCHEMA = 2
+
 /** The whole snapshot file: a version marker plus every managed account. */
 export interface UsageSnapshotFile {
   version: 1
+  /** Insight-field generation; see SNAPSHOT_SCHEMA. Absent on pre-2.11 snapshots. */
+  schema?: number
   writtenAt: number
   /** The version of the instance that wrote this file. */
   pluginVersion?: string
@@ -97,16 +138,41 @@ export interface UsageSnapshotFile {
   accounts: AccountUsageSnapshot[]
   /** Recent sessions with request counts and estimated credits (newest first). */
   sessions: SessionUsageSnapshot[]
+  /** Distinct sessions active in the burn window; the `sessions` list is capped. */
+  sessionsTotal?: number
+  /**
+   * How session and burn credits are produced: 'metered' sums Kiro's own
+   * per-response metering. Absent on snapshots from builds that apportioned.
+   */
+  creditsSource?: 'metered'
+  /**
+   * Unix ms this db began metering. `burn` counts only sessions that started at
+   * or after it, so until older sessions leave the window, burn is a measured
+   * lower bound. A listed session with `firstUsed` before it still carries the
+   * former apportioned estimate in its credits.
+   */
+  meteredSince?: number
   /**
    * Per-account burn totals over a fixed window, across ALL sessions. The
    * `sessions` list is capped for display, so the panel uses this — not that
    * list — to compute credits/day, which otherwise collapsed with many sessions.
    */
   burn: BurnTotalSnapshot[]
+  /** Window tool totals; absent when OpenCode's db could not be read. */
+  tools?: ToolTotalsSnapshot
+  /** Window token totals, all accounts together; absent when OpenCode's db could not be read. */
+  tokens?: TokenTotalsSnapshot
 }
 
 /** Window the burn totals cover, in days. */
 const BURN_WINDOW_DAYS = 7
+
+/**
+ * Sessions listed in the snapshot. The credit history in kiro.db spans seven
+ * days, which on heavy use is around fifty sessions; an older session has no
+ * credit estimate, so listing it would add nothing the panel can show.
+ */
+export const SNAPSHOT_SESSION_LIMIT = 50
 
 /**
  * The running plugin's version and the path it loaded from, for the panel's
@@ -233,12 +299,18 @@ export function writeUsageSnapshot(
     let sessions: SessionUsageSnapshot[] = []
     let pluginInstances: PluginInstanceSnapshot[] = []
     let burn: BurnTotalSnapshot[] = []
+    let sessionsTotal = 0
+    let meteredSince: number | undefined
+    const burnWindowMs = BURN_WINDOW_DAYS * 24 * 60 * 60 * 1000
     try {
-      sessions = kiroDb.getRecentSessionUsage(20)
-      burn = kiroDb.getBurnTotals(BURN_WINDOW_DAYS * 24 * 60 * 60 * 1000, now).map((b) => ({
+      sessions = kiroDb.getRecentSessionUsage(SNAPSHOT_SESSION_LIMIT)
+      sessionsTotal = kiroDb.getSessionsTotal(burnWindowMs, now)
+      meteredSince = kiroDb.getMeteredSince()
+      burn = kiroDb.getBurnTotals(burnWindowMs, now, meteredSince ?? 0).map((b) => ({
         accountId: b.accountId,
         windowDays: BURN_WINDOW_DAYS,
         credits: b.credits,
+        requests: b.requests,
         earliestUsed: b.earliestUsed
       }))
       if (registeredPluginVersion) {
@@ -254,14 +326,42 @@ export function writeUsageSnapshot(
     } catch {
       // A missing/locked store must not stop the account snapshot being written.
     }
+    const insights = peekOpenCodeInsights()
+    if (insights) {
+      for (const s of sessions) {
+        const i = insights.sessions.get(s.sessionId)
+        if (!i) continue
+        s.tokens = i.tokens
+        s.tools = i.tools
+        s.toolCalls = i.toolCalls
+        s.turns = i.turns
+      }
+    }
+    scheduleInsightsRefresh(
+      accounts,
+      usageByAccountId,
+      sessions.map((s) => s.sessionId)
+    )
     const file: UsageSnapshotFile = {
       version: 1,
+      // Bumped when any insight field below is written, so the panel tells an
+      // old plugin (no field) from a genuinely idle one (field present, empty).
+      schema: SNAPSHOT_SCHEMA,
       writtenAt: now,
       pluginVersion: registeredPluginVersion,
       pluginInstances,
       accounts: accounts.map((a) => buildAccountSnapshot(a, usageByAccountId.get(a.id), now)),
       sessions,
-      burn
+      sessionsTotal,
+      creditsSource: 'metered',
+      ...(meteredSince !== undefined ? { meteredSince } : {}),
+      burn,
+      ...(insights
+        ? {
+            tools: { windowDays: insights.window.windowDays, ...insights.window.tools },
+            tokens: { windowDays: insights.window.windowDays, ...insights.window.tokens }
+          }
+        : {})
     }
     const target = snapshotPath()
     const tmp = `${target}.${process.pid}.tmp`
@@ -272,4 +372,29 @@ export function writeUsageSnapshot(
       error: e instanceof Error ? e.message : String(e)
     })
   }
+}
+
+/**
+ * Refresh OpenCode insights off the write path, then rewrite the snapshot once
+ * with them. The rewrite is the only one per refresh: refreshOpenCodeInsights
+ * returns false while its one-minute cache holds, which ends the loop.
+ *
+ * @param accounts the accounts the triggering write rendered
+ * @param usageByAccountId the fresh usage the triggering write rendered
+ * @param rootIds the session ids listed in that write
+ */
+function scheduleInsightsRefresh(
+  accounts: ManagedAccount[],
+  usageByAccountId: Map<string, UsageResult>,
+  rootIds: string[]
+): void {
+  void refreshOpenCodeInsights(rootIds, BURN_WINDOW_DAYS)
+    .then((changed) => {
+      if (changed) writeUsageSnapshot(accounts, usageByAccountId)
+    })
+    .catch((e: unknown) => {
+      logger.warn('OpenCode insights refresh failed (non-fatal)', {
+        error: e instanceof Error ? e.message : String(e)
+      })
+    })
 }

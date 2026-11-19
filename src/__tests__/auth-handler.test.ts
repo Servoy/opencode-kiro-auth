@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 // Capture logger calls so the lock-held test can assert no warning was logged.
 const warnings: string[] = []
@@ -531,5 +534,99 @@ describe('AuthHandler.initialize auto-registers a configured API key', () => {
     }
     expect(saved).toHaveLength(0)
     expect(fetched).toBe(false)
+  })
+})
+
+describe('AuthHandler.initialize reconciles a withdrawn API key', () => {
+  const savedEnvKey = process.env.KIRO_API_KEY
+  const savedHome = process.env.HOME
+  const savedXdg = process.env.XDG_DATA_HOME
+  let home: string
+
+  beforeEach(() => {
+    delete process.env.KIRO_API_KEY
+    home = mkdtempSync(join(tmpdir(), 'kiro-reconcile-'))
+    process.env.HOME = home
+    process.env.XDG_DATA_HOME = join(home, '.local', 'share')
+  })
+  afterEach(() => {
+    if (savedEnvKey === undefined) delete process.env.KIRO_API_KEY
+    else process.env.KIRO_API_KEY = savedEnvKey
+    if (savedHome === undefined) delete process.env.HOME
+    else process.env.HOME = savedHome
+    if (savedXdg === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = savedXdg
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  function writeHostAuth(entry: unknown): void {
+    const dir = join(home, '.local', 'share', 'opencode')
+    mkdirSync(dir, { recursive: true })
+    const auth = entry === undefined ? {} : { kiro: entry }
+    writeFileSync(join(dir, 'auth.json'), JSON.stringify(auth))
+  }
+
+  // A real kiroDb seeded with an apikey account; the reconcile deletes from it.
+  async function seedApiKeyAccount(): Promise<{ id: string }> {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    for (const row of kiroDb.getAccounts()) await kiroDb.deleteAccount(row.id)
+    const acc = makeAccount({
+      id: 'withdrawn-key',
+      email: 'pipeline@x',
+      authMethod: 'apikey',
+      profileArn: 'arn:aws:codewhisperer:eu-central-1:1:profile/P',
+      accessToken: 'ksk_WITHDRAWN00000000000000000000000'
+    })
+    await kiroDb.upsertAccount(acc)
+    return { id: acc.id }
+  }
+
+  function handlerOver(accountManager: any): AuthHandler {
+    const repo =
+      new (require('../infrastructure/database/account-repository.js').AccountRepository)(
+        new (require('../infrastructure/database/account-cache.js').AccountCache)(0)
+      )
+    const h = new AuthHandler({ auto_sync_kiro_cli: false }, repo, 'kiro')
+    h.setAccountManager(accountManager)
+    return h
+  }
+
+  test('deletes the stored apikey account when the host no longer holds a key', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    await seedApiKeyAccount()
+    writeHostAuth(undefined) // OpenCode logout: no kiro entry
+
+    const pool = [makeAccount({ id: 'withdrawn-key', authMethod: 'apikey' })]
+    const removed: string[] = []
+    const am = {
+      getAccounts: () => pool,
+      removeAccount: (a: ManagedAccount) => removed.push(a.id),
+      toAuthDetails: () => makeAuth()
+    }
+    await handlerOver(am).initialize()
+
+    expect(kiroDb.getAccounts().some((r) => r.auth_method === 'apikey')).toBe(false)
+    expect(removed).toContain('withdrawn-key')
+  })
+
+  test('keeps the account when the host still holds the credential', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    await seedApiKeyAccount()
+    writeHostAuth({ type: 'api', key: 'kiro-managed' })
+
+    await handlerOver({ getAccounts: () => [], toAuthDetails: () => makeAuth() }).initialize()
+
+    expect(kiroDb.getAccounts().some((r) => r.auth_method === 'apikey')).toBe(true)
+  })
+
+  test('keeps the account when a key is still configured, even with no host entry', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    await seedApiKeyAccount()
+    writeHostAuth(undefined)
+    process.env.KIRO_API_KEY = 'ksk_STILLCONFIGURED0000000000000000'
+
+    await handlerOver({ getAccounts: () => [], toAuthDetails: () => makeAuth() }).initialize()
+
+    expect(kiroDb.getAccounts().some((r) => r.auth_method === 'apikey')).toBe(true)
   })
 })

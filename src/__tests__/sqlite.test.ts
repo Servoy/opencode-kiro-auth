@@ -277,6 +277,112 @@ describe('KiroDatabase: accounts', () => {
   test('deleteAccount on non-existent id is a no-op', async () => {
     await expect(db.deleteAccount('does-not-exist')).resolves.toBeUndefined()
   })
+
+  test('deleteApiKeyAccounts removes only apikey rows and returns their ids', async () => {
+    await db.upsertAccount(makeAccount({ id: 'k1', email: 'k1@x', authMethod: 'apikey' }))
+    await db.upsertAccount(makeAccount({ id: 'k2', email: 'k2@x', authMethod: 'apikey' }))
+    await db.upsertAccount(makeAccount({ id: 'i1', email: 'i1@x', authMethod: 'idc' }))
+
+    const removed = await db.deleteApiKeyAccounts()
+
+    expect(removed.sort()).toEqual(['k1', 'k2'])
+    const left = db.getAccounts()
+    expect(left).toHaveLength(1)
+    expect(left[0].id).toBe('i1')
+  })
+
+  test('deleteApiKeyAccounts is a no-op when no apikey rows exist', async () => {
+    await db.upsertAccount(makeAccount({ id: 'i1', authMethod: 'idc' }))
+    const removed = await db.deleteApiKeyAccounts()
+    expect(removed).toEqual([])
+    expect(db.getAccounts()).toHaveLength(1)
+  })
+})
+
+// ── stale-account sweep ───────────────────────────────────────────────────────
+
+describe('KiroDatabase: cleanupTestAndStaleAccounts', () => {
+  const day = 24 * 60 * 60 * 1000
+
+  const arn = 'arn:aws:codewhisperer:eu-central-1:1:profile/X'
+
+  test('sweeps a permanently-rejected apikey account past its recovery window', async () => {
+    // The exact row that used to survive: a withdrawn/rejected API key, which
+    // 'unauthorized' marks permanent but the old IN (...) list did not match.
+    await db.upsertAccount(
+      makeAccount({
+        id: 'dead',
+        email: 'dead@x',
+        authMethod: 'apikey',
+        profileArn: arn,
+        isHealthy: false,
+        unhealthyReason: 'unauthorized: API key rejected by Kiro',
+        recoveryTime: Date.now() - 40 * day
+      })
+    )
+    const removed = await db.cleanupTestAndStaleAccounts()
+    expect(removed).toBe(1)
+    expect(db.getAccounts()).toHaveLength(0)
+  })
+
+  test('keeps a permanent account still inside its recovery window', async () => {
+    await db.upsertAccount(
+      makeAccount({
+        id: 'resting',
+        email: 'resting@x',
+        authMethod: 'apikey',
+        profileArn: arn,
+        isHealthy: false,
+        unhealthyReason: 'unauthorized: API key rejected by Kiro',
+        recoveryTime: Date.now() + 5 * day
+      })
+    )
+    const removed = await db.cleanupTestAndStaleAccounts()
+    expect(removed).toBe(0)
+    expect(db.getAccounts()).toHaveLength(1)
+  })
+
+  test('keeps a healthy account and a transiently-unhealthy one', async () => {
+    await db.upsertAccount(
+      makeAccount({
+        id: 'ok',
+        email: 'ok@x',
+        authMethod: 'apikey',
+        profileArn: arn,
+        isHealthy: true
+      })
+    )
+    await db.upsertAccount(
+      makeAccount({
+        id: 'blip',
+        email: 'blip@x',
+        authMethod: 'apikey',
+        profileArn: arn,
+        isHealthy: false,
+        unhealthyReason: 'Internal Server Error',
+        recoveryTime: Date.now() - 40 * day
+      })
+    )
+    const removed = await db.cleanupTestAndStaleAccounts()
+    expect(removed).toBe(0)
+    expect(db.getAccounts()).toHaveLength(2)
+  })
+
+  test('still sweeps a suspended account, as before', async () => {
+    await db.upsertAccount(
+      makeAccount({
+        id: 'susp',
+        email: 'susp@x',
+        authMethod: 'idc',
+        profileArn: 'arn:aws:codewhisperer:eu-central-1:1:profile/X',
+        isHealthy: false,
+        unhealthyReason: 'Account Suspended',
+        recoveryTime: Date.now() - 40 * day
+      })
+    )
+    const removed = await db.cleanupTestAndStaleAccounts()
+    expect(removed).toBe(1)
+  })
 })
 
 // ── reauth lock ───────────────────────────────────────────────────────────────
@@ -643,42 +749,74 @@ describe('KiroDatabase: session_usage', () => {
     expect(byId.get('acc-2')).toBe(1)
   })
 
-  test('apportionSessionCredits splits an account delta by request share within that account', () => {
-    db.recordSessionRequest('ses-a', 'acc-1') // acc-1: 1 request
-    db.recordSessionRequest('ses-b', 'acc-1')
-    db.recordSessionRequest('ses-b', 'acc-1')
-    db.recordSessionRequest('ses-b', 'acc-1') // acc-1: 3 requests
-    // 4 total acc-1 requests, 40 credits → a gets 10, b gets 30.
-    db.apportionSessionCredits('acc-1', 40, 0)
-    expect(db.getSessionUsage('ses-a')?.estCredits).toBeCloseTo(10, 5)
-    expect(db.getSessionUsage('ses-b')?.estCredits).toBeCloseTo(30, 5)
-  })
-
-  test('apportionSessionCredits only touches the given account, not others', () => {
+  test('addMeteredCredits books one response on its own session and account only', () => {
     db.recordSessionRequest('ses-m', 'acc-1')
     db.recordSessionRequest('ses-m', 'acc-2')
-    // acc-1's delta lands only on acc-1's share of ses-m.
-    db.apportionSessionCredits('acc-1', 10, 0)
+    db.recordSessionRequest('ses-other', 'acc-1')
+    db.addMeteredCredits('ses-m', 'acc-1', 1.25)
+    db.addMeteredCredits('ses-m', 'acc-1', 0.75)
     const usage = db.getSessionUsage('ses-m')
     const byId = new Map(usage!.accounts.map((a) => [a.accountId, a.estCredits]))
-    expect(byId.get('acc-1')).toBeCloseTo(10, 5)
+    expect(byId.get('acc-1')).toBeCloseTo(2, 10)
     expect(byId.get('acc-2')).toBe(0)
-    expect(usage?.estCredits).toBeCloseTo(10, 5)
+    expect(db.getSessionUsage('ses-other')?.estCredits).toBe(0)
   })
 
-  test('apportionSessionCredits ignores rows used before the window', () => {
-    db.recordSessionRequest('old', 'acc-1') // last_used ~ now
-    const future = Date.now() + 60_000
-    // Nothing was used at/after `future`, so no credits are apportioned.
-    db.apportionSessionCredits('acc-1', 100, future)
-    expect(db.getSessionUsage('old')?.estCredits).toBe(0)
-  })
-
-  test('apportionSessionCredits is a no-op for a zero or negative delta', () => {
+  test('addMeteredCredits ignores zero, negative and non-numeric credits', () => {
     db.recordSessionRequest('ses-x', 'acc-1')
-    db.apportionSessionCredits('acc-1', 0, 0)
-    db.apportionSessionCredits('acc-1', -5, 0)
+    db.addMeteredCredits('ses-x', 'acc-1', 0)
+    db.addMeteredCredits('ses-x', 'acc-1', -5)
+    db.addMeteredCredits('ses-x', 'acc-1', Number.NaN)
     expect(db.getSessionUsage('ses-x')?.estCredits).toBe(0)
+  })
+
+  test('addMeteredCredits creates no row for a session whose request was never recorded', () => {
+    db.addMeteredCredits('ghost', 'acc-1', 3)
+    expect(db.getSessionUsage('ghost')).toBeUndefined()
+  })
+
+  test('two instances sharing one db book a spend exactly once', () => {
+    // The regression: each project instance computed its own account delta and
+    // apportioned it into the shared db, so N syncing instances booked a spend
+    // N times. Now only the instance that served a response books its metering.
+    const second = new KiroDatabase(dbPath)
+    try {
+      db.recordSessionRequest('shared', 'acc-1') // instance A serves a request
+      second.recordSessionRequest('shared', 'acc-1') // instance B serves another
+      db.addMeteredCredits('shared', 'acc-1', 10) // A's response metered 10
+      second.addMeteredCredits('shared', 'acc-1', 4) // B's response metered 4
+      const burn = db.getBurnTotals(7 * 24 * 60 * 60 * 1000).find((b) => b.accountId === 'acc-1')
+      expect(burn?.credits).toBeCloseTo(14, 10)
+      expect(burn?.requests).toBe(2)
+    } finally {
+      second.close()
+    }
+  })
+
+  test('getBurnTotals leaves out sessions that began before metering', () => {
+    db.recordSessionRequest('pre', 'acc-1')
+    db.addMeteredCredits('pre', 'acc-1', 50)
+    const preStart = db.getSessionUsage('pre')!.firstUsed
+    // A cutoff just after 'pre' began, as if metering started mid-session.
+    const measuredSince = preStart + 1
+    const window = 7 * 24 * 60 * 60 * 1000
+    const now = preStart + 1000
+    expect(db.getBurnTotals(window, now, 0).find((b) => b.accountId === 'acc-1')?.credits).toBe(50)
+    expect(
+      db.getBurnTotals(window, now, measuredSince).find((b) => b.accountId === 'acc-1')
+    ).toBeUndefined()
+    // The default cutoff (0) keeps every row, so callers without metering see all.
+    expect(db.getBurnTotals(window, now).find((b) => b.accountId === 'acc-1')?.requests).toBe(1)
+  })
+
+  test('metered_since is set once and survives a reopen', async () => {
+    const first = db.getMeteredSince()
+    expect(typeof first).toBe('number')
+    expect(first!).toBeLessThanOrEqual(Date.now())
+    db.close()
+    await new Promise((r) => setTimeout(r, 5))
+    db = new KiroDatabase(dbPath)
+    expect(db.getMeteredSince()).toBe(first!)
   })
 
   test('getRecentSessionUsage returns newest first with metadata, one row per session', () => {
@@ -694,8 +832,10 @@ describe('KiroDatabase: session_usage', () => {
   })
 
   test('getBurnTotals sums est_credits per account across every session, not the display page', () => {
-    for (let i = 0; i < 30; i++) db.recordSessionRequest(`burn-${i}`, 'acc-1')
-    db.apportionSessionCredits('acc-1', 60, 0) // 60 credits spread over 30 sessions
+    for (let i = 0; i < 30; i++) {
+      db.recordSessionRequest(`burn-${i}`, 'acc-1')
+      db.addMeteredCredits(`burn-${i}`, 'acc-1', 2) // 60 credits over 30 sessions
+    }
     const totals = db.getBurnTotals(7 * 24 * 60 * 60 * 1000)
     const acc1 = totals.find((t) => t.accountId === 'acc-1')
     // The recent-session page caps at 20, but the burn total covers all 30.
@@ -706,8 +846,8 @@ describe('KiroDatabase: session_usage', () => {
     const now = Date.now()
     db.recordSessionRequest('burn-a', 'acc-1')
     db.recordSessionRequest('burn-b', 'acc-2')
-    db.apportionSessionCredits('acc-1', 10, 0)
-    db.apportionSessionCredits('acc-2', 25, 0)
+    db.addMeteredCredits('burn-a', 'acc-1', 10)
+    db.addMeteredCredits('burn-b', 'acc-2', 25)
     const totals = db.getBurnTotals(7 * 24 * 60 * 60 * 1000, now)
     const byId = new Map(totals.map((t) => [t.accountId, t]))
     expect(byId.get('acc-1')?.credits).toBeCloseTo(10, 5)
@@ -717,9 +857,32 @@ describe('KiroDatabase: session_usage', () => {
     expect(byId.get('acc-1')!.earliestUsed).toBeLessThanOrEqual(now)
   })
 
+  test('getBurnTotals sums the exact request count per account over the window', () => {
+    db.recordSessionRequest('r1', 'acc-1')
+    db.recordSessionRequest('r1', 'acc-1') // same session, +1 request
+    db.recordSessionRequest('r2', 'acc-1')
+    db.recordSessionRequest('r3', 'acc-2')
+    const totals = db.getBurnTotals(7 * 24 * 60 * 60 * 1000)
+    const byId = new Map(totals.map((t) => [t.accountId, t]))
+    expect(byId.get('acc-1')?.requests).toBe(3)
+    expect(byId.get('acc-2')?.requests).toBe(1)
+  })
+
+  test('getSessionsTotal counts distinct sessions in the window, not rows', () => {
+    db.recordSessionRequest('s1', 'acc-1')
+    db.recordSessionRequest('s1', 'acc-2') // same session across two accounts
+    db.recordSessionRequest('s2', 'acc-1')
+    expect(db.getSessionsTotal(7 * 24 * 60 * 60 * 1000)).toBe(2)
+  })
+
+  test('getSessionsTotal excludes sessions whose last activity predates the window', () => {
+    db.recordSessionRequest('old', 'acc-1')
+    expect(db.getSessionsTotal(1, Date.now() + 60 * 60 * 1000)).toBe(0)
+  })
+
   test('getBurnTotals excludes sessions whose last activity predates the window', () => {
     db.recordSessionRequest('recent', 'acc-1')
-    db.apportionSessionCredits('acc-1', 5, 0)
+    db.addMeteredCredits('recent', 'acc-1', 5)
     // Evaluate the window as if now were an hour in the future with a 1ms span:
     // the row's last_used sits well before that cutoff, so it must be excluded.
     const totals = db.getBurnTotals(1, Date.now() + 60 * 60 * 1000)

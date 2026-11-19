@@ -279,3 +279,79 @@ describe('handleSdkSuccess streaming: transient failure before the first chunk',
     expect(released).toBe(1)
   })
 })
+
+describe('handleSdkSuccess: metered credits', () => {
+  test('streaming reports Kiro metering once, summed over every metering event', async () => {
+    const seen: number[] = []
+    const response = await new ResponseHandler().handleSdkSuccess(
+      sdkResponse([
+        { assistantResponseEvent: { content: 'a' } },
+        { meteringEvent: { usage: 1.25, unit: 'credit' } },
+        { meteringEvent: { usage: 0.5, unit: 'credit' } }
+      ]),
+      MODEL,
+      'conv-m1',
+      true,
+      undefined,
+      undefined,
+      (c) => seen.push(c)
+    )
+    await response.text()
+    expect(seen).toEqual([1.75])
+  })
+
+  test('non-streaming reports summed metering once', async () => {
+    const seen: number[] = []
+    await new ResponseHandler().handleSdkSuccess(
+      sdkResponse([
+        { assistantResponseEvent: { content: 'a' } },
+        { meteringEvent: { usage: 2, unit: 'credit' } },
+        { meteringEvent: { usage: 0.25, unit: 'credit' } }
+      ]),
+      MODEL,
+      'conv-m2',
+      false,
+      undefined,
+      undefined,
+      (c) => seen.push(c)
+    )
+    expect(seen).toEqual([2.25])
+  })
+
+  test('a response without numeric metering reports nothing, in both modes', async () => {
+    for (const streaming of [true, false]) {
+      const seen: number[] = []
+      const response = await new ResponseHandler().handleSdkSuccess(
+        sdkResponse([{ assistantResponseEvent: { content: 'a' } }, { meteringEvent: {} }]),
+        MODEL,
+        'conv-m3',
+        streaming,
+        undefined,
+        undefined,
+        (c) => seen.push(c)
+      )
+      await response.text()
+      expect(seen).toEqual([])
+    }
+  })
+
+  test('a throwing credit sink never breaks the stream the user is reading', async () => {
+    const response = await new ResponseHandler().handleSdkSuccess(
+      sdkResponse([
+        { assistantResponseEvent: { content: 'visible' } },
+        { meteringEvent: { usage: 1, unit: 'credit' } }
+      ]),
+      MODEL,
+      'conv-m4',
+      true,
+      undefined,
+      undefined,
+      () => {
+        throw new Error('db locked')
+      }
+    )
+    const text = await response.text()
+    expect(text).toContain('visible')
+    expect(text).toContain('"finish_reason":"stop"')
+  })
+})

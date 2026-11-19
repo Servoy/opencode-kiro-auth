@@ -492,13 +492,15 @@ export class RequestHandler {
         this.recordSessionRequest(sessionId, acc.id)
         this.usageTracker.syncUsage(acc, auth)
 
+        const servedBy = acc.id
         const result = await this.responseHandler.handleSdkSuccess(
           sdkResponse,
           model,
           sdkPrep.conversationId,
           sdkPrep.streaming,
           sdkPrep.toolNameMap,
-          releaseOnce
+          releaseOnce,
+          (credits) => this.recordMeteredCredits(sessionId, servedBy, credits)
         )
         // Which side is slow is otherwise unanswerable. `upstream` is the wait
         // for Kiro to start answering and dominates everything else; `handoff`
@@ -701,13 +703,13 @@ export class RequestHandler {
   }
 
   /**
-   * Count one served request against its session for the panel's cost estimate.
+   * Count one served request against its session for the panel.
    *
    * Best-effort: a store hiccup here must never fail a request that already
    * succeeded, so failures are swallowed to the log. No sessionId (a request
    * with no affinity header) is simply not attributed. `accountId` is the
-   * account that served this request, so its credits are later apportioned to
-   * the right account even when a session rotates across several.
+   * account that served this request, so a session that rotates across
+   * accounts keeps each account's share separate.
    */
   private recordSessionRequest(sessionId: string | undefined, accountId: string): void {
     if (!sessionId) return
@@ -717,6 +719,31 @@ export class RequestHandler {
       logger.debug(
         `[USAGE] session request not recorded: ${e instanceof Error ? e.message : String(e)}`
       )
+    }
+  }
+
+  /**
+   * Book the credits Kiro metered for one response on its session and account.
+   *
+   * Called from the stream's end, so the row recordSessionRequest created for
+   * this request already exists. Best-effort for the same reason as that call.
+   *
+   * @param sessionId the session the response belongs to; unattributed when absent
+   * @param accountId the account that served the response
+   * @param credits the credits Kiro metered for it
+   */
+  private recordMeteredCredits(
+    sessionId: string | undefined,
+    accountId: string,
+    credits: number
+  ): void {
+    if (!sessionId) return
+    try {
+      kiroDb.addMeteredCredits(sessionId, accountId, credits)
+    } catch (e) {
+      logger.warn('Metered credits not recorded (non-fatal)', {
+        error: e instanceof Error ? e.message : String(e)
+      })
     }
   }
 

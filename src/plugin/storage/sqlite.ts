@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { getConfigDir } from '../config/paths'
+import { isPermanentError } from '../health'
 import type { ManagedAccount } from '../types'
 import { openDatabase, type SqliteDatabase } from './database-driver'
 import { deduplicateAccounts, mergeAccounts, withDatabaseLock } from './locked-operations'
@@ -139,6 +140,27 @@ export class KiroDatabase {
       },
       'dropLoginsSupersededByApiKey'
     )
+    return dropped
+  }
+
+  /**
+   * Delete every API-key account, under the write lock, returning their ids.
+   *
+   * Used when the host no longer holds a Kiro API-key credential (an OpenCode
+   * logout) and no key is configured in kiro.json/KIRO_API_KEY to stand in for
+   * one: the key the plugin was serving has been withdrawn, so a token the user
+   * handed to a pipeline must stop being spent here. IDC/desktop logins are
+   * untouched — they do not live in auth.json.
+   */
+  async deleteApiKeyAccounts(): Promise<string[]> {
+    let dropped: string[] = []
+    await withDatabaseLock(this.path, async () => {
+      const rows = this.db
+        .prepare(`SELECT id FROM accounts WHERE auth_method = 'apikey'`)
+        .all() as Array<{ id: string }>
+      dropped = rows.map((r) => r.id)
+      this.db.prepare(`DELETE FROM accounts WHERE auth_method = 'apikey'`).run()
+    })
     return dropped
   }
 
@@ -371,21 +393,38 @@ export class KiroDatabase {
   async cleanupTestAndStaleAccounts(staleDays = 30): Promise<number> {
     const cutoffMs = Date.now() - staleDays * 24 * 60 * 60 * 1000
     return withDatabaseLock(this.path, async () => {
-      const before = (this.db.prepare('SELECT COUNT(*) AS n FROM accounts').get() as { n: number })
-        .n
+      const before = this.db.prepare('SELECT COUNT(*) AS n FROM accounts').get() as { n: number }
+      // Structural rows go on sight; a permanently-dead credential (revoked key,
+      // expired token, suspension) goes once its recovery window has passed, so
+      // a brief blip is not swept. "Permanent" is decided by isPermanentError —
+      // the same verdict selection and reauth use — rather than a hand-kept list
+      // that already missed "unauthorized: API key rejected by Kiro".
       this.db
         .prepare(
           `DELETE FROM accounts
            WHERE email = 'test@example.com'
               OR email LIKE 'placeholder-%@awsapps.local'
-              OR (auth_method = 'idc' AND (profile_arn IS NULL OR profile_arn = ''))
-              OR (is_healthy = 0
-                  AND unhealthy_reason IN ('Account Suspended', 'ExpiredTokenException')
-                  AND (recovery_time IS NULL OR recovery_time < ?))`
+              OR (auth_method = 'idc' AND (profile_arn IS NULL OR profile_arn = ''))`
         )
-        .run(cutoffMs)
-      const after = (this.db.prepare('SELECT COUNT(*) AS n FROM accounts').get() as { n: number }).n
-      return before - after
+        .run()
+      const unhealthy = this.db
+        .prepare(
+          `SELECT id, unhealthy_reason, recovery_time FROM accounts
+           WHERE is_healthy = 0 AND unhealthy_reason IS NOT NULL`
+        )
+        .all() as Array<{ id: string; unhealthy_reason: string; recovery_time: number | null }>
+      const del = this.db.prepare('DELETE FROM accounts WHERE id = ?')
+      for (const row of unhealthy) {
+        if (!isPermanentError(row.unhealthy_reason)) continue
+        // recovery_time is a future instant the account may revive at; a row
+        // still short of it is deliberately resting, so keep it. Only a null or
+        // long-past window (older than the stale cutoff) is swept — matching the
+        // original `recovery_time IS NULL OR recovery_time < cutoff` condition.
+        if (row.recovery_time != null && row.recovery_time >= cutoffMs) continue
+        del.run(row.id)
+      }
+      const after = this.db.prepare('SELECT COUNT(*) AS n FROM accounts').get() as { n: number }
+      return before.n - after.n
     })
   }
 
@@ -708,12 +747,11 @@ export class KiroDatabase {
    * Record one Kiro request for a (session, account) pair and return that
    * pair's running request count.
    *
-   * The count is the raw unit Kiro bills on (one invocation), incremented on
-   * every served request. `accountId` is the account that actually served it,
-   * so credits can later be apportioned per account — a session that rotates
-   * across accounts keeps each account's share separate. Credit apportioning
-   * happens in `apportionSessionCredits`. Rows expire past ttlDays so the table
-   * tracks recent work, not all history.
+   * The count is incremented on every served request. `accountId` is the
+   * account that actually served it, so a session that rotates across accounts
+   * keeps each account's share separate. The response's metered credits are
+   * added to the same row by `addMeteredCredits` once its stream ends. Rows
+   * expire past ttlDays so the table tracks recent work, not all history.
    */
   recordSessionRequest(
     sessionId: string,
@@ -749,39 +787,44 @@ export class KiroDatabase {
   }
 
   /**
-   * Spread one account's credit delta across the (session, account) rows that
-   * ran on *that account* since the last apportioning, weighted by each row's
-   * request share.
+   * Add the credits Kiro metered for one response to its (session, account) row.
    *
-   * `deltaCredits` is (new account total − previous total) from a usage sync,
-   * so it belongs only to work served by `accountId`; rows for other accounts
-   * are untouched. Only rows used at/after `sinceMs` share it, so credits land
-   * on the work that produced them. This is an estimate: a cheap and an
-   * expensive request both count as one, and a shared account can mix in a
-   * colleague's usage. The panel labels it as such.
+   * Only the instance that served the response calls this, once, so a spend is
+   * booked exactly once however many project instances share this db. The
+   * account-delta apportioning this replaced booked every spend once per
+   * instance that synced the account, roughly doubling credits on real use.
+   * A response that arrives after its row expired creates none: its request
+   * was never counted, so its credits have no session left to belong to.
+   *
+   * @param sessionId the session the response belongs to
+   * @param accountId the account that served it
+   * @param credits the credits Kiro metered for it; non-positive values are ignored
    */
-  apportionSessionCredits(accountId: string, deltaCredits: number, sinceMs: number): void {
-    if (!(deltaCredits > 0)) return
-    const rows = this.db
+  addMeteredCredits(sessionId: string, accountId: string, credits: number): void {
+    if (!(credits > 0)) return
+    this.db
       .prepare(
-        'SELECT session_id, requests FROM session_usage WHERE account_id = ? AND last_used >= ? AND requests > 0'
-      )
-      .all(accountId, sinceMs) as Array<{ session_id: string; requests: number }>
-    const totalRequests = rows.reduce((n, r) => n + r.requests, 0)
-    if (totalRequests <= 0) return
-    this.db.exec('BEGIN TRANSACTION')
-    try {
-      const stmt = this.db.prepare(
         'UPDATE session_usage SET est_credits = est_credits + ? WHERE session_id = ? AND account_id = ?'
       )
-      for (const r of rows) {
-        stmt.run((deltaCredits * r.requests) / totalRequests, r.session_id, accountId)
-      }
-      this.db.exec('COMMIT')
-    } catch (e) {
-      this.db.exec('ROLLBACK')
-      throw e
-    }
+      .run(credits, sessionId, accountId)
+  }
+
+  /**
+   * When this db started booking metered credits, in Unix ms.
+   *
+   * Recorded once, the first time a db is opened by a build that meters, and
+   * never moved. Rows active before it hold apportioned credits, so the panel
+   * labels totals "measured since" this moment instead of presenting a mix of
+   * both as one figure.
+   *
+   * @returns the timestamp, or undefined if the meta row is missing
+   */
+  getMeteredSince(): number | undefined {
+    const row = this.db.prepare("SELECT value FROM kiro_meta WHERE key = 'metered_since'").get() as
+      | { value: string }
+      | undefined
+    const n = row ? Number(row.value) : NaN
+    return Number.isFinite(n) ? n : undefined
   }
 
   /**
@@ -860,20 +903,46 @@ export class KiroDatabase {
    */
   getBurnTotals(
     windowMs: number,
-    now = Date.now()
-  ): Array<{ accountId: string; credits: number; earliestUsed: number }> {
+    now = Date.now(),
+    measuredSince = 0
+  ): Array<{ accountId: string; credits: number; requests: number; earliestUsed: number }> {
     const cutoff = now - windowMs
+    // A row that began before metering mixes the old apportioned (doubled)
+    // credits with metered ones in one number, so it is left out entirely: the
+    // total is then a measured lower bound until those rows age out of the window.
     const rows = this.db
       .prepare(
-        `SELECT account_id, SUM(est_credits) AS credits, MIN(first_used) AS earliest
-         FROM session_usage WHERE last_used >= ? GROUP BY account_id`
+        `SELECT account_id, SUM(est_credits) AS credits, SUM(requests) AS requests, MIN(first_used) AS earliest
+         FROM session_usage WHERE last_used >= ? AND first_used >= ? GROUP BY account_id`
       )
-      .all(cutoff) as Array<{ account_id: string; credits: number; earliest: number }>
+      .all(cutoff, measuredSince) as Array<{
+      account_id: string
+      credits: number
+      requests: number
+      earliest: number
+    }>
     return rows.map((r) => ({
       accountId: r.account_id,
       credits: r.credits ?? 0,
+      // Exact: the raw request count Kiro bills on, summed over the window.
+      requests: r.requests ?? 0,
       earliestUsed: r.earliest ?? now
     }))
+  }
+
+  /**
+   * Count of distinct sessions active in the last `windowMs`.
+   *
+   * The panel shows only a capped `sessions` page; this is the true total behind
+   * it, so "N sessions" is honest even when the list is truncated. Exact: one
+   * row per (session, account), counted distinct on session.
+   */
+  getSessionsTotal(windowMs: number, now = Date.now()): number {
+    const cutoff = now - windowMs
+    const row = this.db
+      .prepare(`SELECT COUNT(DISTINCT session_id) AS n FROM session_usage WHERE last_used >= ?`)
+      .get(cutoff) as { n: number } | undefined
+    return row?.n ?? 0
   }
 
   /**

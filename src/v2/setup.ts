@@ -43,7 +43,7 @@ export function createV2Setup(id: string) {
 
     const cache = new AccountCache(60000)
     const repository = new AccountRepository(cache)
-    const authHandler = new AuthHandler(config, repository)
+    const authHandler = new AuthHandler(config, repository, id)
     const accountManager = await AccountManager.loadFromDisk(config.account_selection_strategy)
     authHandler.setAccountManager(accountManager)
     await authHandler.initialize(toast)

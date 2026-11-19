@@ -3,7 +3,13 @@ import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ManagedAccount } from '../plugin/types.js'
-import { _atomicReplaceForTest, buildAccountSnapshot } from '../plugin/usage-snapshot.js'
+import {
+  _atomicReplaceForTest,
+  buildAccountSnapshot,
+  SNAPSHOT_SCHEMA,
+  SNAPSHOT_SESSION_LIMIT,
+  writeUsageSnapshot
+} from '../plugin/usage-snapshot.js'
 import type { UsageResult } from '../plugin/usage.js'
 
 function makeAccount(overrides: Partial<ManagedAccount> = {}): ManagedAccount {
@@ -94,6 +100,148 @@ describe('buildAccountSnapshot', () => {
   test('resetAt is undefined when neither the sync nor the account has one', () => {
     const snap = buildAccountSnapshot(makeAccount(), { usedCount: 1, limitCount: 10 }, 1_000)
     expect(snap.resetAt).toBeUndefined()
+  })
+})
+
+describe('writeUsageSnapshot insight fields', () => {
+  // Real kiroDb under tmpdir (NODE_ENV=test routes it there). Seed session
+  // activity, write the snapshot, read it back — proving the SMALL insight
+  // fields reach the file the panel reads.
+  test('writes schema, sessionsTotal and burn[].requests from real session usage', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    const { getConfigDir } = await import('../plugin/config/paths.js')
+    for (const row of kiroDb.getAccounts()) await kiroDb.deleteAccount(row.id)
+
+    kiroDb.recordSessionRequest('s1', 'acc-1')
+    kiroDb.recordSessionRequest('s1', 'acc-1') // same session, +1 request
+    kiroDb.recordSessionRequest('s2', 'acc-1')
+
+    const acc = makeAccount({ id: 'acc-1' })
+    writeUsageSnapshot([acc], new Map())
+
+    const file = JSON.parse(readFileSync(join(getConfigDir(), 'kiro-usage.json'), 'utf8')) as {
+      schema?: number
+      sessionsTotal?: number
+      burn: Array<{ accountId: string; requests: number }>
+    }
+    expect(file.schema).toBe(SNAPSHOT_SCHEMA)
+    expect(file.sessionsTotal).toBe(2)
+    const burn = file.burn.find((b) => b.accountId === 'acc-1')
+    expect(burn?.requests).toBe(3)
+  })
+
+  test('lists up to 50 sessions, not the old 20', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    const { getConfigDir } = await import('../plugin/config/paths.js')
+    for (let i = 0; i < 60; i++) kiroDb.recordSessionRequest(`cap-${i}`, 'acc-1')
+
+    writeUsageSnapshot([makeAccount({ id: 'acc-1' })], new Map())
+
+    const file = JSON.parse(readFileSync(join(getConfigDir(), 'kiro-usage.json'), 'utf8')) as {
+      sessions: unknown[]
+    }
+    expect(file.sessions).toHaveLength(SNAPSHOT_SESSION_LIMIT)
+    expect(SNAPSHOT_SESSION_LIMIT).toBe(50)
+  })
+
+  test('merges OpenCode tokens, tools and turns into listed sessions and adds window totals', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    const { getConfigDir } = await import('../plugin/config/paths.js')
+    const { resetOpenCodeInsightsForTest } = await import('../plugin/opencode-insights.js')
+    const { openDatabase } = await import('../plugin/storage/database-driver.js')
+
+    // An OpenCode-shaped fixture db: one root session with one subagent child.
+    const dir = mkdtempSync(join(tmpdir(), 'kiro-ocdb-'))
+    const dbPath = join(dir, 'opencode.db')
+    const oc = openDatabase(dbPath)
+    oc.exec(
+      'CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, time_updated INTEGER NOT NULL)'
+    )
+    oc.exec(
+      'CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, time_created INTEGER NOT NULL, data TEXT NOT NULL)'
+    )
+    const now = Date.now()
+    oc.prepare('INSERT INTO session_v2 VALUES (?, ?, ?)').run('merge-root', null, now)
+    oc.prepare('INSERT INTO session_v2 VALUES (?, ?, ?)').run('merge-child', 'merge-root', now)
+    const msg = (id: string, sid: string, finish: string, input: number, tools: string[]) =>
+      oc.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)').run(
+        id,
+        sid,
+        'assistant',
+        now,
+        JSON.stringify({
+          model: { providerID: 'kiro' },
+          finish,
+          tokens: { input, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+          content: tools.map((name) => ({ type: 'tool', name }))
+        })
+      )
+    msg('a', 'merge-root', 'tool-calls', 100, ['read'])
+    msg('b', 'merge-child', 'stop', 50, ['shell', 'read'])
+
+    process.env.OPENCODE_DB = dbPath
+    resetOpenCodeInsightsForTest()
+    try {
+      kiroDb.recordSessionRequest('merge-root', 'acc-1')
+      const acc = makeAccount({ id: 'acc-1' })
+      // First write renders without insights and starts the background read;
+      // the read's own rewrite lands the insights.
+      writeUsageSnapshot([acc], new Map())
+      const path = join(getConfigDir(), 'kiro-usage.json')
+      let file: any
+      for (let i = 0; i < 50; i++) {
+        file = JSON.parse(readFileSync(path, 'utf8'))
+        if (file.tools) break
+        await new Promise((r) => setTimeout(r, 20))
+      }
+
+      const s = file.sessions.find((x: any) => x.sessionId === 'merge-root')
+      expect(s.tokens).toEqual({
+        uncachedInputTokens: 150,
+        outputTokens: 2,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reportedRequests: 2
+      })
+      expect(s.turns).toEqual({ toolUse: 1, answer: 1, error: 0 })
+      expect(s.toolCalls).toBe(3)
+      expect(s.tools).toEqual([
+        { name: 'read', count: 2 },
+        { name: 'shell', count: 1 }
+      ])
+      expect(file.tools).toEqual({
+        windowDays: 7,
+        totalCalls: 3,
+        items: [
+          { name: 'read', count: 2 },
+          { name: 'shell', count: 1 }
+        ]
+      })
+      expect(file.tokens.windowDays).toBe(7)
+      expect(file.tokens.reportedRequests).toBe(2)
+    } finally {
+      delete process.env.OPENCODE_DB
+      resetOpenCodeInsightsForTest()
+      oc.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('omits the insight fields when OpenCode cannot be read, so the panel shows not reported', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    const { getConfigDir } = await import('../plugin/config/paths.js')
+    const { resetOpenCodeInsightsForTest } = await import('../plugin/opencode-insights.js')
+    resetOpenCodeInsightsForTest()
+    kiroDb.recordSessionRequest('no-oc', 'acc-1')
+
+    writeUsageSnapshot([makeAccount({ id: 'acc-1' })], new Map())
+
+    const file = JSON.parse(readFileSync(join(getConfigDir(), 'kiro-usage.json'), 'utf8'))
+    expect(file.tools).toBeUndefined()
+    expect(file.tokens).toBeUndefined()
+    const s = file.sessions.find((x: any) => x.sessionId === 'no-oc')
+    expect(s.tokens).toBeUndefined()
+    expect(s.tools).toBeUndefined()
   })
 })
 

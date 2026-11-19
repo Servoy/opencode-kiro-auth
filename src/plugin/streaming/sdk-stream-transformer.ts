@@ -13,11 +13,22 @@ import { findRealTag } from './stream-parser.js'
 import { createTextDeltaEvents, createThinkingDeltaEvents, stopBlock } from './stream-state.js'
 import { StreamState, THINKING_END_TAG, THINKING_START_TAG, ToolCallState } from './types.js'
 
+/**
+ * Translate Kiro's SDK event stream into OpenAI-style chunks for OpenCode.
+ *
+ * @param sdkResponse the SDK response holding `generateAssistantResponseResponse`
+ * @param model the model id echoed into every chunk
+ * @param conversationId the conversation id echoed into every chunk
+ * @param toolNameMap maps sanitised tool names back to OpenCode's names
+ * @param onCredits called once, after the stream is fully read, with the credits
+ *   Kiro metered for this response; not called when it sent no numeric metering
+ */
 export async function* transformSdkStream(
   sdkResponse: any,
   model: string,
   conversationId: string,
-  toolNameMap?: ToolNameMap
+  toolNameMap?: ToolNameMap,
+  onCredits?: (credits: number) => void
 ): AsyncGenerator<any> {
   const thinkingRequested = true
 
@@ -282,7 +293,9 @@ export async function* transformSdkStream(
         }
       } else if ((event as any).meteringEvent) {
         const me = (event as any).meteringEvent
-        if (typeof me.usage === 'number') credits = me.usage
+        // Summed: should one response ever carry several metering events,
+        // keeping only the last would undercount what Kiro charged.
+        if (typeof me.usage === 'number') credits = (credits ?? 0) + me.usage
         if (me.unit) creditUnit = me.unit
       }
     }
@@ -453,6 +466,11 @@ export async function* transformSdkStream(
           ` cacheRead=${cacheReadInputTokens ?? 0} cacheWrite=${cacheWriteInputTokens ?? 0}` +
           ` model=${model}`
       )
+      try {
+        onCredits?.(credits)
+      } catch (e) {
+        logger.warn('Metered credits not recorded (non-fatal)', { error: describeError(e) })
+      }
     }
 
     {

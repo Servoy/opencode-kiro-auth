@@ -10,7 +10,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { bootstrapAuthIfNeeded, hasApiKey } from '../plugin/auth-bootstrap.js'
+import { bootstrapAuthIfNeeded, hasApiKey, hostHasCredential } from '../plugin/auth-bootstrap.js'
 
 const originalHome = process.env.HOME
 const originalXdgDataHome = process.env.XDG_DATA_HOME
@@ -157,6 +157,39 @@ describe('hasApiKey', () => {
     writeFileSync(path, JSON.stringify({ api_key: '   ' })) // whitespace-only is unset
     expect(hasApiKey(path)).toBe(false)
     expect(hasApiKey(join(dir, 'absent.json'))).toBe(false)
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('hostHasCredential', () => {
+  function writeAuth(contents: unknown): string {
+    const dir = mkdtempSync(join(tmpdir(), 'kiro-hostcred-'))
+    const path = join(dir, 'auth.json')
+    writeFileSync(path, JSON.stringify(contents))
+    return path
+  }
+
+  test('true when the host holds a real credential for the provider', () => {
+    const path = writeAuth({ kiro: { type: 'api', key: 'kiro-managed' } })
+    expect(hostHasCredential('kiro', path)).toBe(true)
+    rmSync(join(path, '..'), { recursive: true, force: true })
+  })
+
+  test('false when the provider entry is absent (an OpenCode logout)', () => {
+    const path = writeAuth({ github: { type: 'api', key: 'x' } })
+    expect(hostHasCredential('kiro', path)).toBe(false)
+    rmSync(join(path, '..'), { recursive: true, force: true })
+  })
+
+  test('false for the bootstrap placeholder — it is not a real credential', () => {
+    const path = writeAuth({ kiro: { type: 'api', key: 'kiro-bootstrap-placeholder' } })
+    expect(hostHasCredential('kiro', path)).toBe(false)
+    rmSync(join(path, '..'), { recursive: true, force: true })
+  })
+
+  test('false when auth.json does not exist', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiro-hostcred-'))
+    expect(hostHasCredential('kiro', join(dir, 'absent.json'))).toBe(false)
     rmSync(dir, { recursive: true, force: true })
   })
 })

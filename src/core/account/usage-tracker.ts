@@ -15,8 +15,6 @@ interface UsageTrackerConfig {
 
 export class UsageTracker {
   private lastSyncTime = new Map<string, number>()
-  /** When each account's credits were last apportioned, so the next delta window starts there. */
-  private lastSyncAtByAccount = new Map<string, number>()
   private readonly cooldownMs: number
 
   constructor(
@@ -45,13 +43,9 @@ export class UsageTracker {
   // Fetch usage once and persist it, bypassing the cooldown/retry loop. Used by
   // the startup refresh, where the caller handles token refresh and fallback.
   async syncNow(account: ManagedAccount, auth: KiroAuthDetails): Promise<void> {
-    const previousUsed = account.usedCount ?? 0
     const u = await fetchUsageLimits(auth)
     updateAccountQuota(account, u, this.accountManager)
-
-    // Attribute the credits spent since the last sync to the sessions that ran
-    // in that window, then refresh the panel snapshot with the full response.
-    this.attributeAndSnapshot(account, u, previousUsed)
+    this.writeSnapshot(account, u)
 
     // Single-row usage write, not a full-table batchSave merge: a sync only
     // changes this account's counters, and at 15 projects the per-minute merge
@@ -67,29 +61,23 @@ export class UsageTracker {
   }
 
   /**
-   * Apportion the credit delta to recent sessions and write the panel snapshot.
+   * Refresh the panel snapshot with the fresh account usage.
    *
-   * Isolated so a store hiccup here never fails the usage sync itself — the
-   * account quota is already updated by the time this runs. `previousUsed` is
-   * captured before the fetch so the delta reflects only this interval.
+   * Session credits are no longer derived here: each response books its own
+   * metered credits as it ends (RequestHandler.recordMeteredCredits). Isolated
+   * so a snapshot hiccup never fails the usage sync itself.
+   *
+   * @param account the account just synced
+   * @param usage the getUsageLimits result for it
    */
-  private attributeAndSnapshot(
-    account: ManagedAccount,
-    usage: UsageResult,
-    previousUsed: number
-  ): void {
+  private writeSnapshot(account: ManagedAccount, usage: UsageResult): void {
     try {
-      const delta = (usage.usedCount ?? 0) - previousUsed
-      const since = this.lastSyncAtByAccount.get(account.id) ?? 0
-      if (delta > 0) kiroDb.apportionSessionCredits(account.id, delta, since)
-      this.lastSyncAtByAccount.set(account.id, Date.now())
-
       const usageById = new Map<string, UsageResult>([[account.id, usage]])
       writeUsageSnapshot(this.accountManager.getAccounts(), usageById)
     } catch (e) {
-      logger.debug(
-        `Usage attribution/snapshot skipped: ${e instanceof Error ? e.message : String(e)}`
-      )
+      logger.warn('Usage snapshot after sync skipped (non-fatal)', {
+        error: e instanceof Error ? e.message : String(e)
+      })
     }
   }
 
