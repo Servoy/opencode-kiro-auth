@@ -304,15 +304,34 @@ describe('capabilities the catalog reports', () => {
     expect(caps?.thinkingOffChannel).toBeUndefined()
   })
 
-  test('ignores the prompt-caching block, which this plugin cannot act on', async () => {
-    // The catalog advertises supportsPromptCaching and a checkpoint budget, and
-    // the numbers look plausible. Kiro does not return cached-token counts for
-    // anything this plugin sends, so a checkpoint would be paid for and never
-    // reported. Reading them into the capabilities only invited someone to wire
-    // them back up on the strength of the flag alone.
+  test('reads the prompt-caching block the service sends', async () => {
+    // Read and reported, never acted on. Kiro returns zero cached tokens for
+    // everything this plugin sends, so the only open question is whether the
+    // service offers caching to this account at all — and the service is the
+    // one that answers it. Acting on the flag is still a separate decision.
     const caps = (await loadCatalog([CATALOG_ENTRY]))('claude-sonnet-4-6')
+    expect(caps?.promptCaching).toEqual({
+      supported: true,
+      minimumTokensPerCheckpoint: 1024,
+      maximumCheckpointsPerRequest: 4
+    })
+  })
+
+  test('says nothing about caching for a model the service said nothing about', async () => {
+    // Absent must stay distinguishable from "the service said no": a stored
+    // row from before this field existed reads back undefined too, which is
+    // why the catalog version was bumped alongside it.
+    const { promptCaching: _omitted, ...withoutCaching } = CATALOG_ENTRY
+    const caps = (await loadCatalog([withoutCaching]))('claude-sonnet-4-6')
     expect(caps).toBeDefined()
-    expect(Object.keys(caps!).filter((field) => /cach/i.test(field))).toEqual([])
+    expect(caps?.promptCaching).toBeUndefined()
+  })
+
+  test('takes a flat no from the service as an answer, not as silence', async () => {
+    const caps = (
+      await loadCatalog([{ ...CATALOG_ENTRY, promptCaching: { supportsPromptCaching: false } }])
+    )('claude-sonnet-4-6')
+    expect(caps?.promptCaching).toEqual({ supported: false })
   })
 
   test('lowercases the input modalities', async () => {
@@ -722,6 +741,83 @@ describe('a catalog that could not be fetched', () => {
 
     expect(fetched).toBe(true)
     expect(getCatalogCapabilities('claude-haiku-4-5')?.supportsRequestFields).toBe(false)
+  })
+
+  test('a row written by version 4 is refetched, so caching is not read back as absent', async () => {
+    // Version 4 predates promptCaching. Serving that row would answer "the
+    // service says nothing about caching" for every model, which is the one
+    // thing this field must never be confused with.
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    const { refreshModelCatalog, resetMemoryOnly, getCatalogCapabilities } =
+      await import('../plugin/models.js')
+    kiroDb.setModelCatalog(
+      'eu-central-1:',
+      { __catalogVersion: 4, 'claude-haiku-4.5': { maxInputTokens: 200000 } },
+      Date.now(),
+      30 * 60 * 1000
+    )
+    resetMemoryOnly()
+
+    let fetched = false
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => {
+      fetched = true
+      return new Response(
+        JSON.stringify({
+          models: [
+            {
+              modelId: 'claude-haiku-4.5',
+              tokenLimits: { maxInputTokens: 200000 },
+              promptCaching: { supportsPromptCaching: true, maximumCacheCheckpointsPerRequest: 4 }
+            }
+          ]
+        }),
+        { status: 200 }
+      )
+    }) as unknown as typeof fetch
+    try {
+      await refreshModelCatalog({
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        authMethod: 'idc',
+        region: 'eu-central-1'
+      } as any)
+    } finally {
+      globalThis.fetch = original
+    }
+
+    expect(fetched).toBe(true)
+    expect(getCatalogCapabilities('claude-haiku-4-5')?.promptCaching?.supported).toBe(true)
+  })
+})
+
+describe('reporting what the service says about prompt caching', () => {
+  test('lists one line per model that answered, and skips the silent ones', async () => {
+    const { describePromptCaching } = await import('../plugin/models.js')
+    const lines = describePromptCaching(
+      new Map([
+        [
+          'claude-sonnet-4.6',
+          {
+            promptCaching: {
+              supported: true,
+              minimumTokensPerCheckpoint: 1024,
+              maximumCheckpointsPerRequest: 4
+            }
+          }
+        ],
+        ['claude-opus-4.5', { promptCaching: { supported: false } }],
+        ['minimax-m2.5', { maxInputTokens: 196000 }]
+      ])
+    )
+
+    expect(lines).toEqual(['claude-sonnet-4.6=yes/1024min/4max', 'claude-opus-4.5=no/?min/?max'])
+  })
+
+  test('reports nothing when no model says anything', async () => {
+    const { describePromptCaching } = await import('../plugin/models.js')
+    expect(describePromptCaching(new Map([['minimax-m2.5', {}]]))).toEqual([])
   })
 })
 

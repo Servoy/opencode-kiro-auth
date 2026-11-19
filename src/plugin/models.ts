@@ -19,7 +19,7 @@ export function resolveKiroModel(model: string): string {
  * which is not the same as the service having said no — and a plugin that
  * cannot tell those apart acts on an answer nobody gave.
  */
-const CATALOG_VERSION = 4
+const CATALOG_VERSION = 5
 const VERSION_KEY = '__catalogVersion'
 
 const CATALOG_TTL_MS = 30 * 60 * 1000
@@ -28,6 +28,28 @@ const CATALOG_TTL_MS = 30 * 60 * 1000
 const CATALOG_RETRY_MS = 5 * 60 * 1000
 /** Long enough that no session outlives it; see isPermanentCatalogError. */
 const CATALOG_UNRECOVERABLE_MS = 24 * 60 * 60 * 1000
+
+/**
+ * What the service says about prompt caching for one model.
+ *
+ * Read and reported, never acted on. Kiro has answered every request this
+ * plugin sends with zero cached tokens — 18,079 responses, 4.5 billion input
+ * tokens, not one cache read — so the only open question is whether the
+ * service offers caching to this account at all. That question is the
+ * service's to answer, and this is where it says so.
+ *
+ * The block is read from `promptCaching` on the model entry, the shape the
+ * recorded catalog fixture carries. A service that moved or renamed it would
+ * leave {@link supported} false for every model rather than guessing.
+ */
+export interface PromptCachingSupport {
+  /** Whether the service says this model can cache a prompt prefix. */
+  supported: boolean
+  /** Smallest prefix, in tokens, a checkpoint may cover. */
+  minimumTokensPerCheckpoint?: number
+  /** How many checkpoints one request may carry. */
+  maximumCheckpointsPerRequest?: number
+}
 
 /**
  * What the service says a model can do, as ListAvailableModels reports it.
@@ -53,6 +75,8 @@ export interface ModelCapabilities {
   acceptsMaxTokens?: boolean
   /** The schema's max_tokens maximum, when it states one. */
   maxTokensCeiling?: number
+  /** What the service says about prompt caching; absent when it says nothing. */
+  promptCaching?: PromptCachingSupport
 }
 
 let catalogByKiroModel: Map<string, ModelCapabilities> | null = null
@@ -285,6 +309,12 @@ export async function refreshModelCatalog(
       if (changes.length > 0) {
         logger.log('Model catalog: context windows discovered', { changes })
       }
+      const caching = describePromptCaching(discovered)
+      logger.log('Model catalog: prompt caching', {
+        models: discovered.size,
+        advertised: caching.length,
+        caching
+      })
     } catch (e) {
       catalogAttemptedAt = Date.now()
       catalogTtl = isPermanentCatalogError(e) ? CATALOG_UNRECOVERABLE_MS : CATALOG_RETRY_MS
@@ -449,6 +479,9 @@ function readCapabilities(entry: any): ModelCapabilities {
   const maxTokens = schema?.max_tokens?.maximum
   if (typeof maxTokens === 'number' && maxTokens > 0) caps.maxTokensCeiling = maxTokens
 
+  const caching = readPromptCaching(entry?.promptCaching)
+  if (caching) caps.promptCaching = caching
+
   // 'between_tools' is in the enum for sonnet-5.5, but the live endpoint
   // 400s on it regardless — only 'disabled' is confirmed to work.
   const thinkingTypes: unknown = schema?.thinking?.properties?.type?.enum
@@ -459,6 +492,51 @@ function readCapabilities(entry: any): ModelCapabilities {
   }
 
   return caps
+}
+
+/**
+ * Read the service's prompt-caching block, or nothing when it sent none.
+ *
+ * A block that arrives without the flag still counts as an answer: the
+ * budgets are only ever sent for a model that can cache, so their presence
+ * is the service saying yes.
+ */
+function readPromptCaching(block: any): PromptCachingSupport | undefined {
+  if (!block || typeof block !== 'object') return undefined
+
+  const minimum = block.minimumTokensPerCacheCheckpoint
+  const maximum = block.maximumCacheCheckpointsPerRequest
+  const hasBudget = typeof minimum === 'number' || typeof maximum === 'number'
+  if (typeof block.supportsPromptCaching !== 'boolean' && !hasBudget) return undefined
+
+  const caching: PromptCachingSupport = {
+    supported:
+      block.supportsPromptCaching === true || (hasBudget && block.supportsPromptCaching !== false)
+  }
+  if (typeof minimum === 'number' && minimum > 0) caching.minimumTokensPerCheckpoint = minimum
+  if (typeof maximum === 'number' && maximum > 0) caching.maximumCheckpointsPerRequest = maximum
+  return caching
+}
+
+/**
+ * One line per model that says anything about prompt caching.
+ *
+ * Logged on every network refresh rather than only on a change, because the
+ * question it answers — does this account get caching at all — is asked once
+ * and read out of the log afterwards.
+ */
+export function describePromptCaching(discovered: Map<string, ModelCapabilities>): string[] {
+  const lines: string[] = []
+  for (const [model, caps] of discovered) {
+    const caching = caps.promptCaching
+    if (!caching) continue
+    lines.push(
+      `${model}=${caching.supported ? 'yes' : 'no'}` +
+        `/${caching.minimumTokensPerCheckpoint ?? '?'}min` +
+        `/${caching.maximumCheckpointsPerRequest ?? '?'}max`
+    )
+  }
+  return lines
 }
 
 function describeChanges(discovered: Map<string, ModelCapabilities>): string[] {
