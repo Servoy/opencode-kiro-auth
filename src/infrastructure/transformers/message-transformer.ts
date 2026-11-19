@@ -12,10 +12,33 @@ export function findOriginalToolCall(msgs: any[], toolUseId: string): any | null
   return null
 }
 
+/**
+ * A message whose own arrays are safe to merge into.
+ *
+ * `{ ...m }` shares `content` and `tool_calls` with the caller, so the merge
+ * below pushed straight into the message OpenCode handed us. The request loop
+ * re-prepares the same body on every retry, switch and fallback, so each of
+ * those appended the next message's parts again: one attachment arrived twice,
+ * then three times, and the history Kiro was sent stopped matching the one it
+ * had already been sent — which is also the prefix it prices at half.
+ */
+function detachArrays(m: any): any {
+  const copy = { ...m }
+  if (Array.isArray(m.content)) copy.content = [...m.content]
+  if (Array.isArray(m.tool_calls)) copy.tool_calls = [...m.tool_calls]
+  return copy
+}
+
+/**
+ * Join runs of same-role messages into one, without touching the input.
+ *
+ * Kiro's history has to alternate, so two user messages in a row — a tool
+ * result followed by what the user typed next — become one entry.
+ */
 export function mergeAdjacentMessages(msgs: any[]): any[] {
   const merged: any[] = []
   for (const m of msgs) {
-    if (!merged.length) merged.push({ ...m })
+    if (!merged.length) merged.push(detachArrays(m))
     else {
       const last = merged[merged.length - 1]
       if (last && m.role === last.role) {
@@ -35,7 +58,7 @@ export function mergeAdjacentMessages(msgs: any[]): any[] {
             last.tool_results = [{ content: last.content, tool_call_id: last.tool_call_id }]
           last.tool_results.push({ content: m.content, tool_call_id: m.tool_call_id })
         }
-      } else merged.push({ ...m })
+      } else merged.push(detachArrays(m))
     }
   }
   return merged

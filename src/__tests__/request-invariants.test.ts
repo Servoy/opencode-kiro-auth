@@ -319,3 +319,58 @@ describe('pruneOrphanToolResults, directly', () => {
     expect(history).toEqual(before)
   })
 })
+
+/**
+ * The request loop re-prepares the same body on every retry, account switch
+ * and model fallback, so transforming it has to be a pure read of it.
+ *
+ * It was not: mergeAdjacentMessages shallow-copied each message and then
+ * pushed the next one's parts into the array it shared with the caller. One
+ * attachment was sent twice, then three times, and the history changed shape
+ * between attempts — which also costs real money, since Kiro prices a repeated
+ * history at roughly half (measured: 0.0621 credits against 0.1138 cold).
+ */
+describe('preparing a request', () => {
+  test('leaves the caller’s messages exactly as they were', () => {
+    for (const seed of SEEDS) {
+      const messages = conversation(seed)
+      const before = JSON.stringify(messages)
+      build(messages, seed, 5_000_000)
+      expect({ seed, after: JSON.stringify(messages) }).toEqual({ seed, after: before })
+    }
+  })
+
+  test('leaves tool_calls on the caller’s message alone too', () => {
+    // The randomised conversations carry tool calls as content parts, so the
+    // second array mergeAdjacentMessages pushes into needs its own case.
+    const messages = [
+      { role: 'user', content: [text('go')] },
+      {
+        role: 'assistant',
+        content: 'first',
+        tool_calls: [{ id: 'c1', function: { name: 'read', arguments: '{}' } }]
+      },
+      {
+        role: 'assistant',
+        content: 'second',
+        tool_calls: [{ id: 'c2', function: { name: 'read', arguments: '{}' } }]
+      },
+      { role: 'user', content: [text('and now?')] }
+    ]
+    const before = JSON.stringify(messages)
+    build(messages, 9001, 5_000_000)
+    expect(JSON.stringify(messages)).toEqual(before)
+  })
+
+  test('twice over the same body sends the same history both times', () => {
+    for (const seed of SEEDS) {
+      const messages = conversation(seed)
+      const first = build(messages, seed, 5_000_000)
+      const second = build(messages, seed, 5_000_000)
+      expect({
+        seed,
+        history: JSON.stringify((second.conversationState as any).history)
+      }).toEqual({ seed, history: JSON.stringify((first.conversationState as any).history) })
+    }
+  })
+})
