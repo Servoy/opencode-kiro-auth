@@ -306,6 +306,14 @@ so it always lists what the plugin actually does.
   "max_request_iterations": 20,
   "request_timeout_ms": 300000,
   "stream_idle_timeout_ms": 120000,
+  "model_fallbacks": {
+    "claude-opus-5-5": ["claude-opus-5"],
+    "claude-opus-5": ["claude-opus-4-8"],
+    "claude-opus-4-8": ["claude-opus-4-7"],
+    "claude-sonnet-5-5": ["claude-sonnet-5"],
+    "claude-sonnet-5": ["claude-sonnet-4-6"],
+    "claude-haiku-5-5": ["claude-haiku-4-5"]
+  },
   "token_expiry_buffer_ms": 300000,
   "usage_sync_max_retries": 3,
   "usage_tracking_enabled": true,
@@ -328,6 +336,7 @@ so it always lists what the plugin actually does.
 - `max_request_iterations`: Attempts within one request — account switches, token refreshes, retries. Not agent steps: the guard against a request that never settles. Default: `20`.
 - `request_timeout_ms`: How long Kiro may take to _start_ answering, and how long we keep retrying one request. Not a limit on the answer: once it starts streaming it runs to the end. The wait grows with the conversation — a 300k-token history has been measured at 77 seconds. Default: `300000`.
 - `stream_idle_timeout_ms`: How long Kiro may stay silent between two events of an answer that is already streaming. `request_timeout_ms` stops counting once the response headers arrive, so without this a stream that stops mid-answer waits forever. A stall before any output is retried like a 503; after that the answer ends with an error instead of hanging. `0` turns the watchdog off. Default: `120000`.
+- `model_fallbacks`: Where a turn goes when Kiro reports it cannot serve the model you picked (`MODEL_TEMPORARILY_UNAVAILABLE`, `INSUFFICIENT_MODEL_CAPACITY`). Each key is a model id and each value the models to try after it, in order; chains are followed one hop at a time, a model is never offered twice in one turn, and a model your account is not served is skipped. The move is toasted and the answer carries the id of the model that served it. Throttling, rate limits and plain server errors are **not** covered — those are not the model's fault, and a different model cannot fix them. The defaults only ever step down inside the same family, so a fallback never quietly changes what a turn costs; crossing a family (opus to sonnet) is yours to configure. `{}` turns it off. Default: one hop per family, as above.
 - `token_expiry_buffer_ms`: Refresh a token this long before it expires, so it never expires mid-answer. Default: `300000`.
 - `usage_sync_max_retries`: Attempts to read your quota. Failing leaves the last known percentage in place. Default: `3`.
 - `usage_tracking_enabled`: Track quota and warn as it runs out. Default: `true`.

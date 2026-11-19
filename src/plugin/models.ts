@@ -128,6 +128,18 @@ export function getCatalogCapabilities(model: string): ModelCapabilities | undef
   return capabilitiesFor(model)
 }
 
+/**
+ * Whether a catalog has been read at all.
+ *
+ * {@link getCatalogCapabilities} answers undefined both for a model the
+ * account is not served and for every model before the catalog arrives. A
+ * caller that must tell "no" from "not asked yet" — such as deciding whether a
+ * fallback model exists — needs this to read the silence correctly.
+ */
+export function isCatalogLoaded(): boolean {
+  return catalogByKiroModel !== null
+}
+
 function capabilitiesFor(model: string): ModelCapabilities | undefined {
   if (!catalogByKiroModel) return undefined
   const alias = model.endsWith('-thinking') ? model.slice(0, -'-thinking'.length) : model

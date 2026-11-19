@@ -7,7 +7,8 @@ import type { Effort } from '../../plugin/config/schema'
 import { isPermanentError } from '../../plugin/health'
 import { imageCache } from '../../plugin/image-cache'
 import * as logger from '../../plugin/logger'
-import { refreshModelCatalog } from '../../plugin/models'
+import { isModelCapacityError, nextFallbackModel } from '../../plugin/model-fallback.js'
+import { getCatalogCapabilities, isCatalogLoaded, refreshModelCatalog } from '../../plugin/models'
 import { transformToSdkRequest } from '../../plugin/request'
 import { readRequestOptions } from '../../plugin/request-options'
 import { acquireSdkClient, createSdkClient, releaseSdkClient } from '../../plugin/sdk-client'
@@ -345,6 +346,38 @@ export class RequestHandler {
     }
   }
 
+  /**
+   * Move the turn to another model when Kiro says it cannot serve this one.
+   *
+   * The move is deliberately loud — logged, toasted, and the answer carries
+   * the id of the model that actually served it — because a turn that quietly
+   * came from a different model than the one picked is worse than a failed
+   * one. Only a capacity failure qualifies; see model-fallback.ts.
+   *
+   * @returns the model to continue on, or undefined to let the failure stand
+   */
+  private pickFallbackModel(
+    model: string,
+    tried: Set<string>,
+    reason: string,
+    showToast: ToastFunction
+  ): string | undefined {
+    if (!isModelCapacityError(reason)) return undefined
+
+    const next = nextFallbackModel(
+      model,
+      this.config.model_fallbacks ?? {},
+      tried,
+      // An unread catalog is not a "no" — before it arrives nothing is ruled out.
+      (candidate) => !isCatalogLoaded() || getCatalogCapabilities(candidate) !== undefined
+    )
+    if (!next) return undefined
+
+    logger.warn(`[REQ] ${model} cannot be served (${reason}); continuing on ${next}`)
+    showToast(`${model} has no capacity — continuing on ${next}`, 'warning')
+    return next
+  }
+
   private async runKiroRequest(
     url: string,
     init: any,
@@ -354,7 +387,7 @@ export class RequestHandler {
   ): Promise<Response> {
     const body = init?.body ? JSON.parse(init.body) : {}
     logIncomingRequest(body, init)
-    const model = this.extractModel(url) || body.model || 'claude-sonnet-4-5'
+    let model = this.extractModel(url) || body.model || 'claude-sonnet-4-5'
 
     // Read where OpenCode actually puts them; see request-options.ts.
     const { requestedEffort, thinkingDisabled, think, maxTokens, budget } = readRequestOptions(
@@ -365,6 +398,9 @@ export class RequestHandler {
     let bearerRetried = false
     let consecutiveNullAccounts = 0
     let forceNewConversation = false
+    // Every model this request has been refused by, so a fallback chain never
+    // offers one back and a loop in a configured chain cannot run forever.
+    const triedModels = new Set<string>([model])
     const retryContext = this.retryStrategy.createContext()
 
     while (true) {
@@ -539,6 +575,12 @@ export class RequestHandler {
             retry++
             continue
           }
+          const fallback = this.pickFallbackModel(model, triedModels, e.reason, showToast)
+          if (fallback) {
+            model = fallback
+            retry = 0
+            continue
+          }
           return errorResponse(503, `Kiro: ${e.reason}`)
         }
 
@@ -649,6 +691,19 @@ export class RequestHandler {
           if (this.allAccountsPermanentlyUnhealthy()) {
             const reauthed = await this.triggerReauth(showToast)
             if (reauthed) continue
+          }
+
+          const fallback = this.pickFallbackModel(
+            model,
+            triedModels,
+            errorResult.terminalReason || e?.message || '',
+            showToast
+          )
+          if (fallback) {
+            model = fallback
+            retry = 0
+            bearerRetried = false
+            continue
           }
 
           // Terminal: return the reason in a body the host renders, since the

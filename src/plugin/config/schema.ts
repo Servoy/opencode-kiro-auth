@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { DEFAULT_MODEL_FALLBACKS } from '../model-fallback.js'
 
 export const AccountSelectionStrategySchema = z.enum(['sticky', 'round-robin', 'lowest-usage'])
 export type AccountSelectionStrategy = z.infer<typeof AccountSelectionStrategySchema>
@@ -83,6 +84,13 @@ export const KiroConfigSchema = z.object({
   // 0 disables the watchdog.
   stream_idle_timeout_ms: z.number().min(0).max(600000).default(120000),
 
+  // Where a turn goes when Kiro reports it cannot serve the model asked for.
+  // Each key is a model id and each value the models to try after it, in
+  // order; the move is announced and the answer is labelled with the model
+  // that actually served it. Throttling and plain server errors are not
+  // covered — those are not the model's fault. `{}` turns this off.
+  model_fallbacks: z.record(z.string(), z.array(z.string())).default(DEFAULT_MODEL_FALLBACKS),
+
   token_expiry_buffer_ms: z.number().min(30000).max(300000).default(300000),
 
   usage_sync_max_retries: z.number().min(0).max(5).default(3),
@@ -150,6 +158,7 @@ export const DEFAULT_CONFIG: KiroConfig = {
   max_request_iterations: 20,
   request_timeout_ms: 300000,
   stream_idle_timeout_ms: 120000,
+  model_fallbacks: DEFAULT_MODEL_FALLBACKS,
   token_expiry_buffer_ms: 300000,
   usage_sync_max_retries: 3,
   usage_tracking_enabled: true,
