@@ -9,7 +9,7 @@ import {
   type TokenTotals,
   type ToolCount
 } from './opencode-insights.js'
-import { kiroDb } from './storage/sqlite.js'
+import { kiroDb, type QuotaInfo } from './storage/sqlite.js'
 import type { ManagedAccount } from './types'
 import type { UsageResult } from './usage.js'
 
@@ -96,10 +96,24 @@ export interface TokenTotalsSnapshot extends TokenTotals {
 export interface BurnTotalSnapshot {
   accountId: string
   windowDays: number
+  /**
+   * Metered credits of sessions that began at or after `meteredSince`. A lower
+   * bound while older sessions are still in the window.
+   */
   credits: number
-  /** Exact request count over the window — the unit Kiro bills on. */
+  /** Exact request count over the window, every session included. */
   requests: number
   earliestUsed: number
+  /** First activity among the sessions `credits` covers; absent when there are none. */
+  creditsSince?: number
+  /**
+   * How far Kiro's own credit counter for this account moved within the
+   * window, from the plugin's recorded readings: the exact credits spent,
+   * whatever booked them. Absent when fewer than two readings exist.
+   */
+  counterDelta?: number
+  /** The first counter reading the delta is measured from. */
+  counterSince?: number
 }
 
 /** One live plugin instance in the pool: its version and where it loaded from. */
@@ -232,27 +246,32 @@ function atomicReplace(tmp: string, target: string, fs: AtomicReplaceFs = realFs
 }
 
 /**
- * Build one account's panel snapshot from its live usage fields.
+ * Build one account's panel snapshot.
  *
- * Does no I/O so a test can assert the mapping — plan, overage, the seconds→ms
- * reset conversion — without touching disk. Caches a fresh `nextDateReset` back
- * onto `account.resetAt` so a later sync that omits it can still show the date.
+ * Plan, overage and reset come from the fresh `usage` when this write follows a
+ * sync, otherwise from `stored`: the details the last sync of any instance kept
+ * in kiro.db. Without that fallback a freshly started instance, which writes
+ * before its first sync, emptied these fields for every reader until the next
+ * sync. Does no I/O.
+ *
+ * @param account the account
+ * @param usage this write's fresh getUsageLimits result, if any
+ * @param now current time in ms
+ * @param stored the account's quota details from kiro.db, if any
+ * @returns the account's entry in the snapshot
  */
 export function buildAccountSnapshot(
   account: ManagedAccount,
   usage: UsageResult | undefined,
-  now: number
+  now: number,
+  stored?: QuotaInfo
 ): AccountUsageSnapshot {
   const used = Number((usage?.usedCount ?? account.usedCount ?? 0).toFixed(2))
   const limit = Number((usage?.limitCount ?? account.limitCount ?? 0).toFixed(2))
   const pct = limit > 0 ? Math.round((used / limit) * 100) : 0
-  // nextDateReset is Unix seconds; the panel works in ms. Some param
-  // combinations omit it, so reuse the account's last value to avoid flicker.
-  const resetMs =
-    typeof usage?.nextDateReset === 'number'
-      ? Math.round(usage.nextDateReset * 1000)
-      : account.resetAt
-  if (resetMs) account.resetAt = resetMs
+  const fresh = usage ? quotaInfoFromUsage(usage) : {}
+  const pick = <K extends keyof QuotaInfo>(k: K): QuotaInfo[K] => fresh[k] ?? stored?.[k]
+  const resetAt = pick('resetAt')
   return {
     id: account.id,
     email: usage?.email ?? account.email,
@@ -260,19 +279,45 @@ export function buildAccountSnapshot(
     used,
     limit,
     pct,
-    plan: usage?.subscriptionTitle,
-    planType: usage?.subscriptionType,
-    overageStatus: usage?.overageStatus,
-    overageRate: usage?.overageRate,
-    overageCap: usage?.overageCap,
-    currentOverages: usage?.currentOverages,
-    unit: usage?.unit,
-    resetAt: resetMs,
-    daysUntilReset: usage?.daysUntilReset,
+    plan: pick('plan'),
+    planType: pick('planType'),
+    overageStatus: pick('overageStatus'),
+    overageRate: pick('overageRate'),
+    overageCap: pick('overageCap'),
+    currentOverages: pick('currentOverages'),
+    unit: pick('unit'),
+    resetAt,
+    // Kiro's own daysUntilReset read 0 with the reset 12 days out, so it is
+    // derived from resetAt instead.
+    daysUntilReset:
+      resetAt !== undefined ? Math.max(0, Math.ceil((resetAt - now) / DAY_MS)) : undefined,
     isHealthy: account.isHealthy,
     updatedAt: account.usageUpdatedAt ?? now
   }
 }
+
+/**
+ * The quota details of a getUsageLimits result, in the shape kiro.db keeps.
+ *
+ * @param usage the result
+ * @returns the details; a field the result lacks is undefined
+ */
+export function quotaInfoFromUsage(usage: UsageResult): QuotaInfo {
+  return {
+    // nextDateReset is Unix seconds; the panel works in ms.
+    resetAt:
+      typeof usage.nextDateReset === 'number' ? Math.round(usage.nextDateReset * 1000) : undefined,
+    plan: usage.subscriptionTitle,
+    planType: usage.subscriptionType,
+    overageStatus: usage.overageStatus,
+    overageRate: usage.overageRate,
+    overageCap: usage.overageCap,
+    currentOverages: usage.currentOverages,
+    unit: usage.unit
+  }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
 
 /**
  * Write the account-usage snapshot for the OpenChamber panel.
@@ -306,13 +351,19 @@ export function writeUsageSnapshot(
       sessions = kiroDb.getRecentSessionUsage(SNAPSHOT_SESSION_LIMIT)
       sessionsTotal = kiroDb.getSessionsTotal(burnWindowMs, now)
       meteredSince = kiroDb.getMeteredSince()
-      burn = kiroDb.getBurnTotals(burnWindowMs, now, meteredSince ?? 0).map((b) => ({
-        accountId: b.accountId,
-        windowDays: BURN_WINDOW_DAYS,
-        credits: b.credits,
-        requests: b.requests,
-        earliestUsed: b.earliestUsed
-      }))
+      const counters = kiroDb.getCounterDeltas(burnWindowMs, now)
+      burn = kiroDb.getBurnTotals(burnWindowMs, now, meteredSince ?? 0).map((b) => {
+        const c = counters.get(b.accountId)
+        return {
+          accountId: b.accountId,
+          windowDays: BURN_WINDOW_DAYS,
+          credits: b.credits,
+          requests: b.requests,
+          earliestUsed: b.earliestUsed,
+          ...(b.measuredEarliestUsed !== undefined ? { creditsSince: b.measuredEarliestUsed } : {}),
+          ...(c && c.delta > 0 ? { counterDelta: c.delta, counterSince: c.since } : {})
+        }
+      })
       if (registeredPluginVersion) {
         kiroDb.heartbeatInstance(registeredPluginVersion, registeredPluginSource)
       }
@@ -325,6 +376,14 @@ export function writeUsageSnapshot(
       }))
     } catch {
       // A missing/locked store must not stop the account snapshot being written.
+    }
+    let storedQuota = new Map<string, QuotaInfo>()
+    try {
+      storedQuota = kiroDb.getQuotaInfo()
+    } catch (e) {
+      logger.warn('Stored quota details unreadable; snapshot uses fresh usage only', {
+        error: e instanceof Error ? e.message : String(e)
+      })
     }
     const insights = peekOpenCodeInsights()
     if (insights) {
@@ -350,7 +409,9 @@ export function writeUsageSnapshot(
       writtenAt: now,
       pluginVersion: registeredPluginVersion,
       pluginInstances,
-      accounts: accounts.map((a) => buildAccountSnapshot(a, usageByAccountId.get(a.id), now)),
+      accounts: accounts.map((a) =>
+        buildAccountSnapshot(a, usageByAccountId.get(a.id), now, storedQuota.get(a.id))
+      ),
       sessions,
       sessionsTotal,
       creditsSource: 'metered',

@@ -257,6 +257,6 @@ describe('an attachment that cannot fit', () => {
     )
 
     const content = (result.conversationState as any).currentMessage.userInputMessage.content
-    expect(content).toMatch(/attachment\(s\) dropped/)
+    expect(content).toMatch(/attachment\(s\) from earlier in this conversation were removed/)
   })
 })

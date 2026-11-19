@@ -18,6 +18,42 @@ export function runMigrations(db: SqliteDatabase): void {
   migratePluginInstancesTable(db)
   migrateOverageEnabledColumn(db)
   migrateMeteredSince(db)
+  migrateUsageReadingsTable(db)
+  migrateAccountQuotaInfoTable(db)
+}
+
+/**
+ * The last getUsageLimits details per account (reset date, plan, overage), so
+ * a freshly started instance can render them before its first sync. Kept out
+ * of `accounts` because merges and upserts there rewrite every column from
+ * in-memory copies that may not hold these fields; one JSON row per account,
+ * replaced on each sync, has no such interaction.
+ */
+function migrateAccountQuotaInfoTable(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS account_quota_info (
+      account_id TEXT    PRIMARY KEY,
+      info       TEXT    NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+}
+
+/**
+ * Readings of each account's Kiro credit counter over time, so the panel can
+ * show how far it moved in a window: the only exact "credits this week".
+ * The account row keeps just the latest value; only changed readings are kept,
+ * for about a week.
+ */
+function migrateUsageReadingsTable(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS usage_readings (
+      account_id TEXT    NOT NULL,
+      at         INTEGER NOT NULL,
+      used       REAL    NOT NULL,
+      PRIMARY KEY (account_id, at)
+    )
+  `)
 }
 
 /**
@@ -337,6 +373,19 @@ function migrateConversationsAgentContinuationId(db: SqliteDatabase): void {
   const names = new Set(columns.map((c: any) => c.name))
   if (!names.has('agent_continuation_id')) {
     db.exec('ALTER TABLE conversations ADD COLUMN agent_continuation_id TEXT')
+  }
+  // How many leading history entries this conversation drops. Held across
+  // turns so the prefix Kiro caches stays byte-identical; see trimHistory.
+  if (!names.has('trim_from')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN trim_from INTEGER')
+  }
+  if (!names.has('trim_pairs')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN trim_pairs INTEGER')
+  }
+  // Request size at which this conversation asked the host to compact and has
+  // not fitted since; see RequestHandler.askHostToCompact.
+  if (!names.has('overflow_at')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN overflow_at INTEGER')
   }
 }
 

@@ -469,6 +469,9 @@ export class RequestHandler {
       )
       const tPrepared = Date.now()
 
+      const tooLarge = this.askHostToCompact(sdkPrep)
+      if (tooLarge) return tooLarge
+
       const histLen = (sdkPrep.conversationState as any).history?.length || 0
       const agentContId = (sdkPrep.conversationState as any).agentContinuationId || 'none'
       logger.debug(
@@ -727,6 +730,38 @@ export class RequestHandler {
 
   private extractModel(url: string): string | null {
     return url.match(/models\/([^/:]+)/)?.[1] || null
+  }
+
+  /**
+   * Refuse an over-cap request once, as a context overflow, so the host
+   * compacts the session instead of the plugin cutting its history.
+   *
+   * OpenCode sizes a conversation in tokens only, so screenshots it counts at
+   * ~1,500 tokens each looked roomy while 43 of them held 3.4MB of Kiro's ~5MB,
+   * and it never compacted. A `context_length_exceeded` 400 is what it compacts
+   * on. It recovers once per prompt, so this asks once until a request fits
+   * again: a compacted history still over the cap, or a host that does not
+   * compact, gets the trimmed request instead of a loop of refusals.
+   *
+   * @param sdkPrep the prepared request, already trimmed to fit
+   * @returns the refusal to return, or undefined to send the request
+   */
+  private askHostToCompact(sdkPrep: SdkPreparedRequest): Response | undefined {
+    const { workspace, fingerprint } = sdkPrep.conversationKey
+    const asked = kiroDb.getConversationOverflow(workspace, fingerprint) !== undefined
+    if (!sdkPrep.overflow) {
+      if (asked) kiroDb.setConversationOverflow(workspace, fingerprint, null)
+      return undefined
+    }
+    if (asked) return undefined
+    const { bytes, cap } = sdkPrep.overflow
+    kiroDb.setConversationOverflow(workspace, fingerprint, bytes)
+    logger.warn(
+      `[TRIM] ~${Math.round(bytes / 1024)}KB over the ${Math.round(cap / 1024)}KB cap, asking the host to compact convId=${sdkPrep.conversationId}`
+    )
+    return contextLengthResponse(
+      `prompt is too long: ~${Math.round(bytes / 1024)}KB exceeds Kiro's ${Math.round(cap / 1024)}KB request size limit`
+    )
   }
 
   private prepareSdkRequest(

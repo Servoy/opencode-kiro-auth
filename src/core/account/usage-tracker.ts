@@ -5,7 +5,7 @@ import * as logger from '../../plugin/logger'
 import { kiroDb } from '../../plugin/storage/sqlite'
 import type { KiroAuthDetails, ManagedAccount } from '../../plugin/types'
 import { fetchUsageLimits, updateAccountQuota, type UsageResult } from '../../plugin/usage'
-import { writeUsageSnapshot } from '../../plugin/usage-snapshot'
+import { quotaInfoFromUsage, writeUsageSnapshot } from '../../plugin/usage-snapshot'
 
 interface UsageTrackerConfig {
   usage_tracking_enabled: boolean
@@ -45,6 +45,15 @@ export class UsageTracker {
   async syncNow(account: ManagedAccount, auth: KiroAuthDetails): Promise<void> {
     const u = await fetchUsageLimits(auth)
     updateAccountQuota(account, u, this.accountManager)
+    // Stored before the snapshot so this write and every later one, from any
+    // instance, render the same reset date and plan.
+    try {
+      kiroDb.saveQuotaInfo(account.id, quotaInfoFromUsage(u))
+    } catch (e) {
+      logger.warn('Quota details not stored (non-fatal)', {
+        error: e instanceof Error ? e.message : String(e)
+      })
+    }
     this.writeSnapshot(account, u)
 
     // Single-row usage write, not a full-table batchSave merge: a sync only
@@ -57,6 +66,13 @@ export class UsageTracker {
       lastSync: Date.now(),
       overageEnabled: account.overageEnabled
     })
+    try {
+      kiroDb.recordUsageReading(account.id, account.usedCount ?? 0)
+    } catch (e) {
+      logger.warn('Usage counter reading not recorded (non-fatal)', {
+        error: e instanceof Error ? e.message : String(e)
+      })
+    }
     this.repository.invalidateCache()
   }
 

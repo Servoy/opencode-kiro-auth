@@ -136,7 +136,9 @@ describe('what every request must satisfy, whatever the conversation', () => {
           0
         )
       if (kept === 0) {
-        expect(current.content).toContain('attachment(s) dropped')
+        expect(current.content).toContain(
+          'attachment(s) from earlier in this conversation were removed'
+        )
       }
     }
   })
@@ -372,5 +374,138 @@ describe('preparing a request', () => {
         history: JSON.stringify((second.conversationState as any).history)
       }).toEqual({ seed, history: JSON.stringify((first.conversationState as any).history) })
     }
+  })
+})
+
+/**
+ * A conversation that grows one exchange per turn, the way OpenCode re-sends it.
+ * Every entry carries text unique to its turn, so two entries never serialise
+ * the same and "the same history" can be checked byte for byte. Tool pairs stay
+ * single so the history builder never rewrites an earlier entry.
+ */
+function growing(seed: number, turns: number): any[][] {
+  const rand = (n: number) => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) % n
+  const filler = () => 'x'.repeat(2_000 + rand(12_000))
+  const messages: any[] = [{ role: 'user', content: [text(`u0 ${filler()}`)] }]
+  const out: any[][] = [[...messages]]
+  for (let i = 1; i <= turns; i++) {
+    if (rand(4) === 0) {
+      messages.push({
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: `tool${i}`, name: 'read', input: { n: i } }]
+      })
+      messages.push({
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: `tool${i}`, content: `r${i} ${filler()}` }]
+      })
+    }
+    messages.push({ role: 'assistant', content: [text(`a${i} ${filler()}`)] })
+    const kind = rand(6)
+    const parts: any[] = [text(`u${i} ${filler()}`)]
+    if (kind === 0) parts.push(image())
+    else if (kind === 1) parts.push(document())
+    messages.push({ role: 'user', content: parts })
+    out.push([...messages])
+  }
+  return out
+}
+
+function sendTurn(messages: any[], sessionId: string, cap: number) {
+  const r = transformToSdkRequest(
+    { messages },
+    'auto',
+    auth,
+    false,
+    0,
+    undefined,
+    '/inv-cut',
+    true,
+    sessionId,
+    cap
+  )
+  const history: any[] = (r.conversationState as any).history ?? []
+  return { r, wire: history.map((h) => JSON.stringify(h)) }
+}
+
+describe('the history cut holds across turns', () => {
+  const TIGHT = 60_000
+  const ROOMY = 5_000_000
+
+  test('a turn with room to spare re-sends last turn’s history unchanged, then the new entries', () => {
+    // Tight and roomy turns alternate. A tight turn may have to cut further; a
+    // roomy one never needs to, so recomputing from scratch would bring cut
+    // entries back and break the prefix Kiro already holds.
+    for (const seed of SEEDS.slice(0, 30)) {
+      const turns = growing(seed, 16)
+      const sid = `ses_cut_prefix_${seed}`
+      let prev: string[] | undefined
+      for (let k = 0; k < turns.length; k++) {
+        const roomy = k % 2 === 1
+        const { wire } = sendTurn(turns[k]!, sid, roomy ? ROOMY : TIGHT)
+        if (roomy && prev) {
+          expect({ seed, turn: k, prefix: wire.slice(0, prev.length) }).toEqual({
+            seed,
+            turn: k,
+            prefix: prev
+          })
+        }
+        prev = wire
+      }
+    }
+  })
+
+  test('the remembered cut never shrinks while the conversation grows', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    for (const seed of SEEDS.slice(0, 30)) {
+      const turns = growing(seed, 16)
+      const sid = `ses_cut_monotone_${seed}`
+      let last = { pairs: 0, leading: 0 }
+      let everCut = false
+      for (let k = 0; k < turns.length; k++) {
+        const { r } = sendTurn(turns[k]!, sid, k % 2 === 1 ? ROOMY : TIGHT)
+        const key = r.conversationKey!
+        const now = kiroDb.getConversationTrim(key.workspace, key.fingerprint)
+        expect({
+          seed,
+          turn: k,
+          pairs: now.pairs >= last.pairs,
+          leading: now.leading >= last.leading
+        }).toEqual({ seed, turn: k, pairs: true, leading: true })
+        if (now.pairs + now.leading > 0) everCut = true
+        last = now
+      }
+      // Guards the test itself: a run that never cut would prove nothing.
+      expect({ seed, everCut }).toEqual({ seed, everCut: true })
+    }
+  })
+
+  test('a conversation shorter than the remembered cut starts over instead of emptying', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    const sid = 'ses_cut_shrink'
+    // Every user turn carries an image, so the attachment-sparing first pass
+    // can cut nothing and the cut lands on the front: a remembered `leading`,
+    // which alone could empty a shorter history if it were honoured blindly.
+    const long: any[] = [{ role: 'user', content: [text('u0 ' + 'x'.repeat(8_000)), image()] }]
+    for (let i = 1; i <= 16; i++) {
+      long.push({ role: 'assistant', content: [text(`a${i} ` + 'x'.repeat(8_000))] })
+      long.push({ role: 'user', content: [text(`u${i} ` + 'x'.repeat(8_000)), image()] })
+    }
+    const { r } = sendTurn(long, sid, TIGHT)
+    const key = r.conversationKey!
+    const cut = kiroDb.getConversationTrim(key.workspace, key.fingerprint)
+    expect(cut.leading).toBeGreaterThan(4)
+
+    // A compaction: the same session continues with a short summary history.
+    const compacted = [
+      { role: 'user', content: [text('summary of the work so far')] },
+      { role: 'assistant', content: [text('noted')] },
+      { role: 'user', content: [text('carry on')] }
+    ]
+    const after = sendTurn(compacted, sid, ROOMY)
+    expect(after.wire).toHaveLength(2)
+    expect(kiroDb.getConversationTrim(key.workspace, key.fingerprint)).toEqual({
+      pairs: 0,
+      leading: 0
+    })
   })
 })

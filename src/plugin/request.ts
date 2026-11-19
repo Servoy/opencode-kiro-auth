@@ -108,6 +108,7 @@ interface TransformResult {
   agentContinuationId: string
   fingerprint: string
   toolNameMap: ToolNameMap
+  overflow?: { bytes: number; cap: number }
 }
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -413,6 +414,7 @@ function buildCodeWhispererRequest(
   let trimSizeBefore = 0
   let trimSizeAfter = 0
   let droppedAttachments = 0
+  let overflow: { bytes: number; cap: number } | undefined
   if (history.length > 0) {
     const sizes = history.map((h) => wireSize(h) + 1)
     const baseRequest: any = { ...request, conversationState: { ...request.conversationState } }
@@ -421,46 +423,49 @@ function buildCodeWhispererRequest(
     for (const s of sizes) totalSize += s
     trimSizeBefore = totalSize
 
-    // An attachment is only ever sent on the turn it arrived, so dropping the
-    // entry that carries it loses it from the conversation for good. Spend the
-    // text-only turns first and come back for these only if still over cap.
+    // Reported, not acted on here: the request handler decides whether the
+    // host compacts first. See RequestHandler.askHostToCompact.
+    if (totalSize > MAX_PAYLOAD_BYTES) overflow = { bytes: totalSize, cap: MAX_PAYLOAD_BYTES }
+
     const attachmentCount = (h: any): number =>
       (h?.userInputMessage?.documents?.length ?? 0) + (h?.userInputMessage?.images?.length ?? 0)
     const carriesAttachment = (h: any): boolean => attachmentCount(h) > 0
 
-    // In pairs, because history alternates user and assistant and the builder
-    // goes out of its way to keep it that way — it injects a placeholder turn
-    // rather than let two user entries meet. Removing one entry at a time
-    // undid that: a 200KB cap over an image-bearing conversation produced
-    // `uuaua`, a shape the service is never sent by anything else.
-    for (
-      let i = 0;
-      history.length > 2 && totalSize > MAX_PAYLOAD_BYTES && i + 1 < history.length;
-    ) {
-      if (carriesAttachment(history[i]) || carriesAttachment(history[i + 1])) {
-        i += 2
-        continue
-      }
-      totalSize -= (sizes[i] || 0) + (sizes[i + 1] || 0)
-      sizes.splice(i, 2)
-      history.splice(i, 2)
-    }
-
-    // Down to an empty history if need be: stopping short left long sessions
-    // re-sending a payload the service had already rejected.
-    while (history.length > 0 && totalSize > MAX_PAYLOAD_BYTES) {
-      // Drop the two oldest entries (typically user + assistant pair).
-      droppedAttachments += attachmentCount(history[0]) + attachmentCount(history[1])
-      totalSize -= (sizes.shift() || 0) + (sizes.shift() || 0)
-      history.splice(0, 2)
-
-      // Strip leading orphans: assistantResponseMessage can't start the history.
-      while (history.length > 0 && history[0]?.assistantResponseMessage) {
+    // Drop the leading entries this conversation already agreed to drop, even
+    // when the payload would fit without them.
+    //
+    // Kiro prices a repeated prefix at roughly half, and the prefix is the
+    // bytes of the history. Recomputing the cut each turn moved it — 412→242, then
+    // 414→248, then 416→246 on one real session — so every turn sent a prefix
+    // the service had never seen and paid the cold rate, with the prefill that
+    // comes with it. The cut is therefore remembered and only ever grows.
+    //
+    // It is taken from the front, whole turns at a time, rather than skipping
+    // over the ones carrying an attachment. Keeping a screenshot while deleting
+    // the conversation around it left the model looking at a picture whose
+    // question was gone, and pinned the payload at the cap for the rest of the
+    // session: on that same session 43 images held 3.4MB of a 4.9MB request,
+    // none of which could ever be released.
+    const dropLeading = (count: number): number => {
+      let gone = 0
+      for (let i = 0; i < count && history.length > 0; i++) {
+        droppedAttachments += attachmentCount(history[0])
         totalSize -= sizes.shift() || 0
         history.shift()
+        gone++
       }
+      return gone
+    }
 
-      // Strip leading toolResult-only userInputMessages whose toolUseIds are gone.
+    /** Leading entries the service would reject on their own, after a cut. */
+    const stripLeadingOrphans = (): number => {
+      let stripped = 0
+      while (history.length > 0 && history[0]?.assistantResponseMessage) {
+        droppedAttachments += attachmentCount(history[0])
+        totalSize -= sizes.shift() || 0
+        history.shift()
+        stripped++
+      }
       const toolUseIds = new Set<string>(
         history.flatMap(
           (h) => h.assistantResponseMessage?.toolUses?.map((tu: any) => tu.toolUseId) ?? []
@@ -469,12 +474,66 @@ function buildCodeWhispererRequest(
       while (history.length > 0) {
         const trs = history[0]?.userInputMessage?.userInputMessageContext?.toolResults
         if (!trs) break
-        const allMatched = trs.every((tr: any) => toolUseIds.has(tr.toolUseId))
-        if (allMatched) break
+        if (trs.every((tr: any) => toolUseIds.has(tr.toolUseId))) break
+        droppedAttachments += attachmentCount(history[0])
         totalSize -= sizes.shift() || 0
         history.shift()
+        stripped++
       }
+      return stripped
     }
+
+    const remembered = kiroDb.getConversationTrim(workspaceKey, fingerprint)
+    // A history too short to honour the remembered cut means the conversation
+    // shrank — a compaction, or a fingerprint a fresh one reused. Start over
+    // rather than cut into what is left.
+    const reusable = history.length > remembered.leading + remembered.pairs * 2 + 1
+    const target = reusable ? remembered : { pairs: 0, leading: 0 }
+
+    let pairsDropped = 0
+    let leadingDropped = 0
+
+    // Text-only turns first, in pairs, so the turns carrying an attachment are
+    // spared and history keeps alternating — the builder injects a placeholder
+    // rather than let two user entries meet, and removing one entry at a time
+    // undid that.
+    //
+    // At least as many as last turn, however roomy this request happens to be.
+    // The scan is deterministic, so dropping the same count drops the same
+    // turns, and the prefix Kiro already has stays byte-identical. Recomputing
+    // it from scratch let the cut spring back — one real session went 412→242,
+    // then 414→248, then 416→246 — and a prefix that moves is re-read from
+    // cold at roughly twice the credits, plus the prefill that comes with it.
+    for (let i = 0; history.length > 2 && i + 1 < history.length; ) {
+      if (pairsDropped >= target.pairs && totalSize <= MAX_PAYLOAD_BYTES) break
+      if (carriesAttachment(history[i]) || carriesAttachment(history[i + 1])) {
+        i += 2
+        continue
+      }
+      totalSize -= (sizes[i] || 0) + (sizes[i + 1] || 0)
+      sizes.splice(i, 2)
+      history.splice(i, 2)
+      pairsDropped++
+    }
+
+    // Down to an empty history if need be: stopping short left long sessions
+    // re-sending a payload the service had already rejected. Attachments go
+    // here too, with the turn they belong to.
+    while (
+      history.length > 0 &&
+      (leadingDropped < target.leading || totalSize > MAX_PAYLOAD_BYTES)
+    ) {
+      leadingDropped += dropLeading(2)
+      leadingDropped += stripLeadingOrphans()
+    }
+
+    if (pairsDropped !== remembered.pairs || leadingDropped !== remembered.leading) {
+      kiroDb.setConversationTrim(workspaceKey, fingerprint, {
+        pairs: pairsDropped,
+        leading: leadingDropped
+      })
+    }
+
     trimSizeAfter = totalSize
   }
 
@@ -493,11 +552,12 @@ function buildCodeWhispererRequest(
     )
   }
 
-  // An attachment is only sent on the turn it arrives, so one dropped here is
-  // gone from the conversation. Say so rather than let the model answer about
-  // a file it never received.
+  // A user attachment cut from history is gone from the conversation. Say so,
+  // and say it was an earlier one: the bare wording read as "your attachments
+  // on this message did not arrive", and the model told the user so on turns
+  // where they had attached nothing.
   if (droppedAttachments > 0 && uim) {
-    uim.content += `\n\n[${droppedAttachments} attachment(s) dropped: this conversation exceeds Kiro's request size limit]`
+    uim.content += `\n\n[${droppedAttachments} attachment(s) from earlier in this conversation were removed to fit Kiro's request size limit; attachments on this message are unaffected]`
     logger.warn(
       `[TRIM] dropped ${droppedAttachments} attachment(s) to fit ${Math.round(MAX_PAYLOAD_BYTES / 1024)}KB`
     )
@@ -579,6 +639,19 @@ function buildCodeWhispererRequest(
         imageCache.delete(workspaceKey, fingerprint)
       }
     }
+
+    // Where the images on this request came from. A history that carries far
+    // more than the conversation ever sent means we are accumulating our own.
+    const incomingImages = msgs.reduce(
+      (n: number, m: any) =>
+        n + (Array.isArray(m?.content) ? extractAllImages(m.content).length : 0),
+      0
+    )
+    logger.debug(
+      `[IMGSRC] incoming=${incomingImages} history=${historyImages.length} fresh=${freshImages.length}` +
+        ` carried=${(uim.images as unknown[] | undefined)?.length ?? 0} cached=${imageCache.get(workspaceKey, fingerprint)?.length ?? 0}` +
+        ` msgs=${msgs.length} lastSeen=${imageCache.lastSeenAtHistoryLength(workspaceKey, fingerprint) ?? 'none'}`
+    )
   }
 
   return {
@@ -587,7 +660,8 @@ function buildCodeWhispererRequest(
     convId,
     agentContinuationId,
     fingerprint,
-    toolNameMap: toolNameRegistry.toOriginalMap()
+    toolNameMap: toolNameRegistry.toOriginalMap(),
+    overflow
   }
 }
 
@@ -737,17 +811,18 @@ export function transformToSdkRequest(
   maxTokens?: number,
   requestedEffort?: Effort
 ): SdkPreparedRequest {
-  const { request, resolved, convId, fingerprint, toolNameMap } = buildCodeWhispererRequest(
-    body,
-    model,
-    auth,
-    think,
-    budget,
-    workspace,
-    carryForward,
-    sessionId,
-    maxPayloadBytes
-  )
+  const { request, resolved, convId, fingerprint, toolNameMap, overflow } =
+    buildCodeWhispererRequest(
+      body,
+      model,
+      auth,
+      think,
+      budget,
+      workspace,
+      carryForward,
+      sessionId,
+      maxPayloadBytes
+    )
 
   // Resolve effort level based on config and model capabilities
   const effort = thinkingDisabled ? undefined : getEffectiveEffort(resolved, think, requestedEffort)
@@ -779,6 +854,7 @@ export function transformToSdkRequest(
     endpoint,
     toolNameMap,
     effort,
-    modelRequestFields
+    modelRequestFields,
+    overflow
   }
 }

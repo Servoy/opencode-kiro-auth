@@ -8,6 +8,7 @@ import { deduplicateAccounts, mergeAccounts, withDatabaseLock } from './locked-o
 import { dropLoginsSupersededByApiKey, runMigrations } from './migrations'
 
 const DB_PATH = join(getConfigDir(), 'kiro.db')
+const DAY_MS = 24 * 60 * 60 * 1000
 
 /**
  * Clamp kiro.db and its WAL/SHM siblings to 0600. It holds long-lived bearer
@@ -23,6 +24,21 @@ function restrictDbPermissions(path: string): void {
       // Non-POSIX filesystem or a race; the next open retries.
     }
   }
+}
+
+/**
+ * The getUsageLimits details that are not counters: what the panel shows about
+ * the plan and its reset. `resetAt` is Unix ms.
+ */
+export interface QuotaInfo {
+  resetAt?: number
+  plan?: string
+  planType?: string
+  overageStatus?: string
+  overageRate?: number
+  overageCap?: number
+  currentOverages?: number
+  unit?: string
 }
 
 /** One account's share of a session: what it served and what it is estimated to have cost. */
@@ -89,6 +105,20 @@ function encodeOverage(v: boolean | undefined): number | null {
 }
 function decodeOverage(v: number | null | undefined): boolean | undefined {
   return v == null ? undefined : v === 1
+}
+
+/**
+ * How much of a conversation's history is held back, remembered between turns.
+ *
+ * `pairs` counts text-only turns dropped from the front of the scan, which is
+ * what spares the turns carrying an attachment; `leading` counts whole entries
+ * given up from the very front once that was not enough. Both only ever grow,
+ * because a cut that moves back re-sends a prefix the service has already
+ * forgotten and pays the cold rate for it.
+ */
+export interface ConversationTrim {
+  pairs: number
+  leading: number
 }
 
 export class KiroDatabase {
@@ -648,6 +678,81 @@ export class KiroDatabase {
       : undefined
   }
 
+  /**
+   * How many leading history entries this conversation drops, as last agreed.
+   *
+   * 0 when the conversation is unknown or has never had to trim, which is the
+   * same thing as far as the caller is concerned.
+   */
+  getConversationTrim(workspace: string, fingerprint: string): ConversationTrim {
+    try {
+      const row = this.db
+        .prepare(
+          'SELECT trim_from, trim_pairs FROM conversations WHERE workspace = ? AND fingerprint = ?'
+        )
+        .get(workspace, fingerprint) as
+        | { trim_from: number | null; trim_pairs: number | null }
+        | undefined
+      const whole = (n: number | null | undefined): number =>
+        typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0
+      return { leading: whole(row?.trim_from), pairs: whole(row?.trim_pairs) }
+    } catch {
+      // An older row or an unavailable store simply means no cut is remembered.
+      return { leading: 0, pairs: 0 }
+    }
+  }
+
+  /** Remember the cut, so the next turn sends the same prefix it just did. */
+  setConversationTrim(workspace: string, fingerprint: string, trim: ConversationTrim): void {
+    try {
+      this.db
+        .prepare(
+          'UPDATE conversations SET trim_from = ?, trim_pairs = ? WHERE workspace = ? AND fingerprint = ?'
+        )
+        .run(Math.max(0, trim.leading), Math.max(0, trim.pairs), workspace, fingerprint)
+    } catch {
+      // Losing the cut costs one cold turn, never correctness.
+    }
+  }
+
+  /**
+   * The request size, in bytes, at which this conversation asked the host to
+   * compact and has not fitted since.
+   *
+   * @param workspace the conversation's workspace key
+   * @param fingerprint the conversation's fingerprint
+   * @returns the size, or undefined when no request is outstanding
+   */
+  getConversationOverflow(workspace: string, fingerprint: string): number | undefined {
+    try {
+      const row = this.db
+        .prepare('SELECT overflow_at FROM conversations WHERE workspace = ? AND fingerprint = ?')
+        .get(workspace, fingerprint) as { overflow_at: number | null } | undefined
+      const at = row?.overflow_at
+      return typeof at === 'number' && Number.isFinite(at) && at > 0 ? Math.trunc(at) : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Remember that this conversation asked the host to compact, or clear it.
+   *
+   * @param workspace the conversation's workspace key
+   * @param fingerprint the conversation's fingerprint
+   * @param bytes the size of the request that was refused, or null once a
+   *   request fits again
+   */
+  setConversationOverflow(workspace: string, fingerprint: string, bytes: number | null): void {
+    try {
+      this.db
+        .prepare('UPDATE conversations SET overflow_at = ? WHERE workspace = ? AND fingerprint = ?')
+        .run(bytes === null ? null : Math.max(1, Math.trunc(bytes)), workspace, fingerprint)
+    } catch {
+      // Without it the next oversized turn asks again: one extra compaction, never a loop.
+    }
+  }
+
   /** The account that served this session, if one is still remembered. */
   getSessionAccount(sessionId: string): string | undefined {
     const row = this.db
@@ -895,39 +1000,161 @@ export class KiroDatabase {
    * A per-account burn total over the last `windowMs`, across ALL sessions —
    * not just the `getRecentSessionUsage` page (which is capped for display).
    *
-   * The panel derives its "credits/day" from this: with hundreds of sessions,
-   * the capped list only spanned the newest day or two, so the panel divided a
-   * week's spend by a day and over-reported the rate. This sums every session
-   * active in the window and returns the earliest activity, so the divisor is
-   * the true measured span.
+   * `requests` counts every session active in the window: requests are exact
+   * and never depended on how credits were booked. `credits` counts only
+   * sessions that began at or after `measuredSince`, because a session that
+   * began earlier holds the former apportioned (multi-counted) credits mixed
+   * with metered ones in a single number. Until those sessions leave the
+   * window, `credits` is a measured lower bound.
+   *
+   * @param windowMs the window, ending at `now`
+   * @param now current time in ms
+   * @param measuredSince start of per-response metering; 0 counts every row's credits
+   * @returns one total per account with any session active in the window
    */
   getBurnTotals(
     windowMs: number,
     now = Date.now(),
     measuredSince = 0
-  ): Array<{ accountId: string; credits: number; requests: number; earliestUsed: number }> {
+  ): Array<{
+    accountId: string
+    credits: number
+    requests: number
+    earliestUsed: number
+    measuredEarliestUsed: number | undefined
+  }> {
     const cutoff = now - windowMs
-    // A row that began before metering mixes the old apportioned (doubled)
-    // credits with metered ones in one number, so it is left out entirely: the
-    // total is then a measured lower bound until those rows age out of the window.
     const rows = this.db
       .prepare(
-        `SELECT account_id, SUM(est_credits) AS credits, SUM(requests) AS requests, MIN(first_used) AS earliest
-         FROM session_usage WHERE last_used >= ? AND first_used >= ? GROUP BY account_id`
+        `SELECT account_id,
+                SUM(requests) AS requests,
+                MIN(first_used) AS earliest,
+                SUM(CASE WHEN first_used >= ? THEN est_credits ELSE 0 END) AS credits,
+                MIN(CASE WHEN first_used >= ? THEN first_used END) AS measured_earliest
+           FROM session_usage WHERE last_used >= ? GROUP BY account_id`
       )
-      .all(cutoff, measuredSince) as Array<{
+      .all(measuredSince, measuredSince, cutoff) as Array<{
       account_id: string
-      credits: number
       requests: number
       earliest: number
+      credits: number | null
+      measured_earliest: number | null
     }>
     return rows.map((r) => ({
       accountId: r.account_id,
       credits: r.credits ?? 0,
-      // Exact: the raw request count Kiro bills on, summed over the window.
       requests: r.requests ?? 0,
-      earliestUsed: r.earliest ?? now
+      earliestUsed: r.earliest ?? now,
+      measuredEarliestUsed: r.measured_earliest ?? undefined
     }))
+  }
+
+  /**
+   * Store the quota details of an account's latest usage sync.
+   *
+   * Only fields the sync actually returned are written; one it omitted keeps
+   * the stored value, so a param combination that drops `nextDateReset` does
+   * not erase the reset date.
+   *
+   * @param accountId the account synced
+   * @param info the fields to keep, undefined ones ignored
+   */
+  saveQuotaInfo(accountId: string, info: QuotaInfo, at = Date.now()): void {
+    const prev = this.getQuotaInfo().get(accountId) ?? {}
+    const next: QuotaInfo = { ...prev }
+    for (const [k, v] of Object.entries(info) as Array<[keyof QuotaInfo, unknown]>) {
+      if (v !== undefined && v !== null) (next as Record<string, unknown>)[k] = v
+    }
+    this.db
+      .prepare(
+        'INSERT OR REPLACE INTO account_quota_info (account_id, info, updated_at) VALUES (?, ?, ?)'
+      )
+      .run(accountId, JSON.stringify(next), at)
+  }
+
+  /**
+   * The stored quota details of every account, keyed by account id.
+   *
+   * @returns one entry per account that has synced at least once
+   */
+  getQuotaInfo(): Map<string, QuotaInfo> {
+    const rows = this.db.prepare('SELECT account_id, info FROM account_quota_info').all() as Array<{
+      account_id: string
+      info: string
+    }>
+    const out = new Map<string, QuotaInfo>()
+    for (const r of rows) {
+      try {
+        out.set(r.account_id, JSON.parse(r.info) as QuotaInfo)
+      } catch {
+        // A corrupt row is the same as no row: the next sync rewrites it.
+      }
+    }
+    return out
+  }
+
+  /**
+   * Record one reading of an account's Kiro credit counter, then drop readings
+   * older than `retainMs`.
+   *
+   * Readings are kept so the counter's movement over a window can be read back
+   * exactly; a reading is skipped when the counter has not moved since the
+   * last one, so idle syncs do not grow the table.
+   *
+   * @param accountId the account the counter belongs to
+   * @param used the counter value (`usedCount` from getUsageLimits)
+   * @param at when it was read, in ms
+   * @param retainMs how long readings are kept
+   */
+  recordUsageReading(
+    accountId: string,
+    used: number,
+    at = Date.now(),
+    retainMs = 8 * DAY_MS
+  ): void {
+    const last = this.db
+      .prepare('SELECT used FROM usage_readings WHERE account_id = ? ORDER BY at DESC LIMIT 1')
+      .get(accountId) as { used: number } | undefined
+    if (!last || Math.abs(last.used - used) > 1e-9) {
+      this.db
+        .prepare('INSERT OR REPLACE INTO usage_readings (account_id, at, used) VALUES (?, ?, ?)')
+        .run(accountId, at, used)
+    }
+    this.db.prepare('DELETE FROM usage_readings WHERE at < ?').run(at - retainMs)
+  }
+
+  /**
+   * How far each account's Kiro credit counter moved within the window, from
+   * the readings recorded by {@link recordUsageReading}.
+   *
+   * Increases are summed per consecutive pair, so a period reset (the counter
+   * dropping back) does not cancel the spend before it, and a small downward
+   * correction does not count as spend. The pair straddling the window start
+   * is left out, so the figure is a lower bound by at most one sync interval.
+   *
+   * @param windowMs the window, ending at `now`
+   * @param now current time in ms
+   * @returns per account: the counter's increase, and the first reading in the window
+   */
+  getCounterDeltas(
+    windowMs: number,
+    now = Date.now()
+  ): Map<string, { delta: number; since: number }> {
+    const rows = this.db
+      .prepare(
+        'SELECT account_id, at, used FROM usage_readings WHERE at >= ? ORDER BY account_id, at'
+      )
+      .all(now - windowMs) as Array<{ account_id: string; at: number; used: number }>
+    const out = new Map<string, { delta: number; since: number }>()
+    let prev: { account_id: string; used: number } | undefined
+    for (const r of rows) {
+      if (!out.has(r.account_id)) out.set(r.account_id, { delta: 0, since: r.at })
+      if (prev && prev.account_id === r.account_id && r.used > prev.used) {
+        out.get(r.account_id)!.delta += r.used - prev.used
+      }
+      prev = r
+    }
+    return out
   }
 
   /**

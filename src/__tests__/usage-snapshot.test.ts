@@ -46,7 +46,9 @@ describe('buildAccountSnapshot', () => {
       nextDateReset: 1790812800,
       daysUntilReset: 13
     }
-    const snap = buildAccountSnapshot(makeAccount(), usage, 1_000)
+    // 12 days and 23 hours before the reset: rounds up to 13 whole days.
+    const now = 1790812800 * 1000 - (12 * 24 + 23) * 60 * 60 * 1000
+    const snap = buildAccountSnapshot(makeAccount(), usage, now)
 
     expect(snap.used).toBe(4061.45)
     expect(snap.limit).toBe(10000)
@@ -80,26 +82,51 @@ describe('buildAccountSnapshot', () => {
     expect(snap.pct).toBe(0)
   })
 
-  test('a fresh nextDateReset is remembered on the account for later syncs', () => {
-    const account = makeAccount()
-    const withReset: UsageResult = { usedCount: 1, limitCount: 10, nextDateReset: 1790812800 }
-    const snap = buildAccountSnapshot(account, withReset, 1_000)
-    expect(snap.resetAt).toBe(1790812800 * 1000)
-    expect(account.resetAt).toBe(1790812800 * 1000)
+  test('without fresh usage, plan and reset come from the stored quota details', () => {
+    const stored = {
+      resetAt: 1790812800 * 1000,
+      plan: 'KIRO POWER',
+      planType: 'Q_DEVELOPER_STANDALONE_POWER',
+      overageStatus: 'DISABLED',
+      overageRate: 0.04,
+      overageCap: 10000,
+      currentOverages: 0,
+      unit: 'Credit'
+    }
+    const snap = buildAccountSnapshot(makeAccount(), undefined, 1_000, stored)
+    expect(snap.resetAt).toBe(stored.resetAt)
+    expect(snap.plan).toBe('KIRO POWER')
+    expect(snap.planType).toBe('Q_DEVELOPER_STANDALONE_POWER')
+    expect(snap.overageStatus).toBe('DISABLED')
+    expect(snap.overageRate).toBe(0.04)
+    expect(snap.unit).toBe('Credit')
   })
 
-  test('resetAt falls back to the last known value when a sync omits nextDateReset', () => {
-    // Some getUsageLimits param combinations drop nextDateReset; the panel's
-    // reset date must not flicker away between syncs.
-    const account = makeAccount({ resetAt: 1790812800 * 1000 })
-    const withoutReset: UsageResult = { usedCount: 2, limitCount: 10 }
-    const snap = buildAccountSnapshot(account, withoutReset, 1_000)
+  test('a fresh field wins over the stored one, and an omitted one falls back', () => {
+    const fresh: UsageResult = { usedCount: 2, limitCount: 10, subscriptionTitle: 'KIRO PRO' }
+    const snap = buildAccountSnapshot(makeAccount(), fresh, 1_000, {
+      resetAt: 1790812800 * 1000,
+      plan: 'KIRO POWER'
+    })
+    expect(snap.plan).toBe('KIRO PRO')
     expect(snap.resetAt).toBe(1790812800 * 1000)
   })
 
-  test('resetAt is undefined when neither the sync nor the account has one', () => {
+  test('daysUntilReset is derived from resetAt, not taken from Kiro', () => {
+    const now = 1_800_000_000_000
+    const resetAt = now + 12 * 24 * 60 * 60 * 1000 - 60_000
+    const snap = buildAccountSnapshot(
+      makeAccount(),
+      { usedCount: 1, limitCount: 10, nextDateReset: resetAt / 1000, daysUntilReset: 0 },
+      now
+    )
+    expect(snap.daysUntilReset).toBe(12)
+  })
+
+  test('resetAt is undefined when neither the sync nor the store has one', () => {
     const snap = buildAccountSnapshot(makeAccount(), { usedCount: 1, limitCount: 10 }, 1_000)
     expect(snap.resetAt).toBeUndefined()
+    expect(snap.daysUntilReset).toBeUndefined()
   })
 })
 
@@ -128,6 +155,34 @@ describe('writeUsageSnapshot insight fields', () => {
     expect(file.sessionsTotal).toBe(2)
     const burn = file.burn.find((b) => b.accountId === 'acc-1')
     expect(burn?.requests).toBe(3)
+  })
+
+  test('burn carries every request, metered credits only, and the counter delta', async () => {
+    const { kiroDb } = await import('../plugin/storage/sqlite.js')
+    const { getConfigDir } = await import('../plugin/config/paths.js')
+    const now = Date.now()
+    const meteredSince = kiroDb.getMeteredSince()!
+
+    // A session begun before metering, and one after it: both count as
+    // requests, only the later one as credits.
+    kiroDb.recordSessionRequest('burn-new', 'acc-burn')
+    kiroDb.addMeteredCredits('burn-new', 'acc-burn', 4)
+    kiroDb.recordSessionRequest('burn-old', 'acc-burn')
+    ;(kiroDb as any).db
+      .prepare('UPDATE session_usage SET first_used = ?, est_credits = 99 WHERE session_id = ?')
+      .run(meteredSince - 1, 'burn-old')
+
+    kiroDb.recordUsageReading('acc-burn', 1000, now - 3 * 24 * 60 * 60 * 1000)
+    kiroDb.recordUsageReading('acc-burn', 1012.5, now - 60_000)
+
+    writeUsageSnapshot([makeAccount({ id: 'acc-burn' })], new Map())
+    const file = JSON.parse(readFileSync(join(getConfigDir(), 'kiro-usage.json'), 'utf8'))
+    const b = file.burn.find((x: any) => x.accountId === 'acc-burn')
+    expect(b.requests).toBe(2)
+    expect(b.credits).toBe(4)
+    expect(b.counterDelta).toBeCloseTo(12.5, 10)
+    expect(b.counterSince).toBe(now - 3 * 24 * 60 * 60 * 1000)
+    expect(b.creditsSince).toBeGreaterThanOrEqual(meteredSince)
   })
 
   test('lists up to 50 sessions, not the old 20', async () => {

@@ -59,11 +59,6 @@ export interface ManagedAccount {
   /** When usage was last read from the service. In-memory only. */
   usageUpdatedAt?: number
   lastUsed?: number
-  /**
-   * Last known quota reset, Unix ms. In-memory only; retained so the panel's
-   * reset date survives a sync whose params omit nextDateReset.
-   */
-  resetAt?: number
 }
 
 export interface CodeWhispererMessage {
@@ -148,6 +143,12 @@ export interface SdkPreparedRequest {
   effort?: Effort
   /** The additionalModelRequestFields block this request carries, if any. */
   modelRequestFields?: AdditionalModelRequestFields
+  /**
+   * Set when the request is over Kiro's size limit and the host should compact
+   * rather than have the plugin cut the history: the estimated wire size in
+   * bytes and the cap it exceeds.
+   */
+  overflow?: { bytes: number; cap: number }
   // Resolved endpoint base URL (q.amazonaws.com or runtime.kiro.dev).
   // Set by transformToSdkRequest so callers and logs can show the real target.
   endpoint: string

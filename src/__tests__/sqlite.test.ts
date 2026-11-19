@@ -793,20 +793,72 @@ describe('KiroDatabase: session_usage', () => {
     }
   })
 
-  test('getBurnTotals leaves out sessions that began before metering', () => {
+  test('getBurnTotals counts every request but only credits from sessions begun after metering', () => {
+    db.recordSessionRequest('pre', 'acc-1')
     db.recordSessionRequest('pre', 'acc-1')
     db.addMeteredCredits('pre', 'acc-1', 50)
     const preStart = db.getSessionUsage('pre')!.firstUsed
-    // A cutoff just after 'pre' began, as if metering started mid-session.
     const measuredSince = preStart + 1
     const window = 7 * 24 * 60 * 60 * 1000
     const now = preStart + 1000
-    expect(db.getBurnTotals(window, now, 0).find((b) => b.accountId === 'acc-1')?.credits).toBe(50)
-    expect(
-      db.getBurnTotals(window, now, measuredSince).find((b) => b.accountId === 'acc-1')
-    ).toBeUndefined()
-    // The default cutoff (0) keeps every row, so callers without metering see all.
-    expect(db.getBurnTotals(window, now).find((b) => b.accountId === 'acc-1')?.requests).toBe(1)
+
+    const split = db.getBurnTotals(window, now, measuredSince).find((b) => b.accountId === 'acc-1')!
+    // Requests never depended on how credits were booked: all of them count.
+    expect(split.requests).toBe(2)
+    // The pre-metering session's credits are left out, not mixed in.
+    expect(split.credits).toBe(0)
+    expect(split.measuredEarliestUsed).toBeUndefined()
+
+    // With no cutoff every row's credits count, as before metering existed.
+    const all = db.getBurnTotals(window, now).find((b) => b.accountId === 'acc-1')!
+    expect(all.credits).toBe(50)
+    expect(all.measuredEarliestUsed).toBe(preStart)
+  })
+
+  test('getCounterDeltas sums counter increases within the window, across a period reset', () => {
+    const t0 = 1_800_000_000_000
+    const day = 24 * 60 * 60 * 1000
+    db.recordUsageReading('acc-1', 100, t0 - 9 * day) // before the window: pruned or ignored
+    db.recordUsageReading('acc-1', 4900, t0 - 6 * day)
+    db.recordUsageReading('acc-1', 4900, t0 - 5 * day) // unchanged: not stored
+    db.recordUsageReading('acc-1', 5000, t0 - 4 * day) // +100
+    db.recordUsageReading('acc-1', 20, t0 - 3 * day) // period reset: no negative spend
+    db.recordUsageReading('acc-1', 70, t0 - 1 * day) // +50
+    db.recordUsageReading('acc-2', 7, t0 - 2 * day) // a single reading: no movement yet
+
+    const d = db.getCounterDeltas(7 * day, t0)
+    expect(d.get('acc-1')).toEqual({ delta: 150, since: t0 - 6 * day })
+    expect(d.get('acc-2')).toEqual({ delta: 0, since: t0 - 2 * day })
+  })
+
+  test('saveQuotaInfo keeps a stored field that a later sync omits', () => {
+    db.saveQuotaInfo('acc-q', {
+      resetAt: 1796083200000,
+      plan: 'KIRO POWER',
+      overageStatus: 'DISABLED'
+    })
+    // A param combination that returns no nextDateReset, and a plan change.
+    db.saveQuotaInfo('acc-q', { resetAt: undefined, plan: 'KIRO PRO' })
+    expect(db.getQuotaInfo().get('acc-q')).toEqual({
+      resetAt: 1796083200000,
+      plan: 'KIRO PRO',
+      overageStatus: 'DISABLED'
+    })
+  })
+
+  test('saveQuotaInfo survives a reopen of the db', () => {
+    db.saveQuotaInfo('acc-q2', { resetAt: 1796083200000 })
+    db.close()
+    db = new KiroDatabase(dbPath)
+    expect(db.getQuotaInfo().get('acc-q2')?.resetAt).toBe(1796083200000)
+  })
+
+  test('recordUsageReading prunes readings older than the retention', () => {
+    const t0 = 1_800_000_000_000
+    const day = 24 * 60 * 60 * 1000
+    db.recordUsageReading('acc-1', 1, t0 - 10 * day)
+    db.recordUsageReading('acc-1', 2, t0)
+    expect(db.getCounterDeltas(30 * day, t0).get('acc-1')).toEqual({ delta: 0, since: t0 })
   })
 
   test('metered_since is set once and survives a reopen', async () => {
