@@ -1,5 +1,5 @@
 import { RegionSchema } from './plugin/config/schema'
-import type { KiroRegion } from './plugin/types'
+import type { KiroAuthDetails, KiroRegion } from './plugin/types'
 
 const VALID_REGIONS: readonly KiroRegion[] = RegionSchema.options
 
@@ -12,6 +12,34 @@ export function normalizeRegion(region: string | undefined): KiroRegion {
     return 'us-east-1'
   }
   return region
+}
+
+/**
+ * The one region every call for an account must be sent to.
+ *
+ * The profile ARN wins, because that is where the account's data actually
+ * lives; `region` is only what the sign-in happened to record. Four call sites
+ * used to decide this for themselves — inference and signing read the ARN,
+ * while the model catalog and the usage lookup read `region` — so an account
+ * whose two disagreed had its traffic split across regions with nothing
+ * reporting it. That matters beyond tidiness: these are different
+ * jurisdictions, and an EU account quietly asking a US host is not a detail.
+ *
+ * The last resort stays `us-east-1` so a free Builder ID account with neither
+ * an ARN nor a usable region still works, but it is reported — silence is what
+ * made the split invisible in the first place.
+ */
+export function resolveAccountRegion(
+  auth: Pick<KiroAuthDetails, 'region' | 'profileArn'>,
+  onFallback?: (reason: string) => void
+): KiroRegion {
+  const fromArn = extractRegionFromArn(auth.profileArn)
+  if (fromArn) return fromArn
+  if (auth.region && isValidRegion(auth.region)) return auth.region
+  onFallback?.(
+    `no region from profileArn (${auth.profileArn ?? 'none'}) or region (${auth.region ?? 'none'}); using ${KIRO_CONSTANTS.DEFAULT_REGION}`
+  )
+  return KIRO_CONSTANTS.DEFAULT_REGION
 }
 
 export function buildUrl(template: string, region: KiroRegion): string {
@@ -36,7 +64,11 @@ export function extractRegionFromArn(arn: string | undefined): KiroRegion | unde
 }
 
 export const KIRO_CONSTANTS = {
-  REFRESH_URL: 'https://prod.{{region}}.auth.desktop.kiro.dev/refreshToken',
+  // Not regionalised: only prod.us-east-1 exists, which is why the Kiro CLI
+  // hardcodes it. Templating the account's region here pointed every desktop
+  // account outside us-east-1 at a host with no DNS record at all, so its
+  // token could never be refreshed.
+  REFRESH_URL: 'https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken',
   REFRESH_IDC_URL: 'https://oidc.{{region}}.amazonaws.com/token',
   // Standard endpoint — works for all accounts (Builder ID + Pro)
   BASE_URL: 'https://q.{{region}}.amazonaws.com/generateAssistantResponse',
@@ -126,7 +158,6 @@ export const MODEL_MAPPING: Record<string, string> = {
 export const SUPPORTED_MODELS = Object.keys(MODEL_MAPPING)
 
 export const KIRO_AUTH_SERVICE = {
-  ENDPOINT: 'https://prod.{{region}}.auth.desktop.kiro.dev',
   SSO_OIDC_ENDPOINT: 'https://oidc.{{region}}.amazonaws.com',
   BUILDER_ID_START_URL: 'https://view.awsapps.com/start',
   USER_INFO_URL: 'https://view.awsapps.com/api/user/info',

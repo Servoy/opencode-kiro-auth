@@ -1,3 +1,4 @@
+import { buildUrl, KIRO_CONSTANTS } from '../constants.js'
 import { decodeRefreshToken, encodeRefreshToken } from '../kiro/auth'
 import { describeError } from './describe-error.js'
 import { KiroTokenRefreshError } from './errors'
@@ -15,10 +16,13 @@ export async function refreshAccessToken(auth: KiroAuthDetails): Promise<KiroAut
 
   const p = decodeRefreshToken(auth.refresh)
   const isIdc = auth.authMethod === 'idc'
+  // The IDC token is minted by the Identity Center that registered the device,
+  // so only that region will honour the refresh. The desktop endpoint is not
+  // regionalised at all — see REFRESH_URL.
   const oidcRegion = auth.oidcRegion || auth.region
   const url = isIdc
-    ? `https://oidc.${oidcRegion}.amazonaws.com/token`
-    : `https://prod.${auth.region}.auth.desktop.kiro.dev/refreshToken`
+    ? buildUrl(KIRO_CONSTANTS.REFRESH_IDC_URL, oidcRegion)
+    : KIRO_CONSTANTS.REFRESH_URL
 
   if (isIdc && (!p.clientId || !p.clientSecret)) {
     throw new KiroTokenRefreshError('Missing creds', 'MISSING_CREDENTIALS')

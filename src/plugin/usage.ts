@@ -1,4 +1,6 @@
+import { buildUrl, KIRO_CONSTANTS, resolveAccountRegion } from '../constants.js'
 import { kiroHeaders } from './http-headers.js'
+import * as logger from './logger.js'
 import { KiroAuthDetails, ManagedAccount } from './types'
 
 /**
@@ -41,9 +43,10 @@ export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<UsageResu
   ]
 
   let lastError: Error | null = null
+  const region = resolveAccountRegion(auth, (why) => logger.warn(`Usage limits: ${why}`))
 
   for (const [index, params] of attempts.entries()) {
-    const url = new URL(`https://q.${auth.region}.amazonaws.com/getUsageLimits`)
+    const url = new URL(buildUrl(KIRO_CONSTANTS.USAGE_LIMITS_URL, region))
     url.searchParams.set('isEmailRequired', 'true')
     if (params.origin) url.searchParams.set('origin', params.origin)
     if (params.resourceType) url.searchParams.set('resourceType', params.resourceType)

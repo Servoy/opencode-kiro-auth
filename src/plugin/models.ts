@@ -1,4 +1,4 @@
-import { KIRO_CONSTANTS, MODEL_MAPPING, SUPPORTED_MODELS } from '../constants'
+import { KIRO_CONSTANTS, MODEL_MAPPING, resolveAccountRegion, SUPPORTED_MODELS } from '../constants'
 import { describeError } from './describe-error.js'
 import { kiroHeaders } from './http-headers.js'
 import * as logger from './logger'
@@ -210,7 +210,8 @@ function isPermanentCatalogError(e: unknown): boolean {
 }
 
 async function fetchCatalog(auth: KiroAuthDetails): Promise<Map<string, ModelCapabilities>> {
-  const url = new URL(`https://management.${auth.region}.kiro.dev/`)
+  const region = resolveAccountRegion(auth, (why) => logger.warn(`Model catalog: ${why}`))
+  const url = new URL(`https://management.${region}.kiro.dev/`)
   url.searchParams.set('origin', KIRO_CONSTANTS.ORIGIN_AI_EDITOR)
   if (auth.profileArn) url.searchParams.set('profileArn', auth.profileArn)
 

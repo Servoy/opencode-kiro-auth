@@ -1,6 +1,6 @@
 import { CodeWhispererStreamingClient } from '@aws/codewhisperer-streaming-client'
 import * as crypto from 'crypto'
-import { KIRO_CONSTANTS, buildUrl, extractRegionFromArn } from '../constants.js'
+import { KIRO_CONSTANTS, buildUrl, resolveAccountRegion } from '../constants.js'
 import { kiroHeaders } from './http-headers.js'
 import type { AdditionalModelRequestFields } from './model-request-fields.js'
 import type { KiroAuthDetails } from './types'
@@ -33,11 +33,11 @@ export function kiroUserAgent(auth: KiroAuthDetails): string {
  * order) — SSO home region and profile ARN region can differ for IDC accounts.
  */
 export function resolveKiroEndpoint(auth: KiroAuthDetails): string {
-  const region = extractRegionFromArn(auth.profileArn) ?? auth.region ?? 'us-east-1'
+  const region = resolveAccountRegion(auth)
   if (auth.profileArn) {
-    return buildUrl(KIRO_CONSTANTS.RUNTIME_URL, region as any)
+    return buildUrl(KIRO_CONSTANTS.RUNTIME_URL, region)
   }
-  return buildUrl(KIRO_CONSTANTS.BASE_URL, region as any)
+  return buildUrl(KIRO_CONSTANTS.BASE_URL, region)
 }
 
 /**

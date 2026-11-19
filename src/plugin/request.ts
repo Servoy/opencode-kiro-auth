@@ -1,5 +1,5 @@
 import * as crypto from 'crypto'
-import { KIRO_CONSTANTS, extractRegionFromArn } from '../constants.js'
+import { KIRO_CONSTANTS, resolveAccountRegion } from '../constants.js'
 import {
   buildHistory,
   extractToolNamesFromHistory,
@@ -754,7 +754,7 @@ export function transformToSdkRequest(
   const modelRequestFields = buildModelRequestFields(resolved, effort, thinkingDisabled, maxTokens)
   warnIfThinkingCannotBeDisabled(resolved, thinkingDisabled)
 
-  const region = extractRegionFromArn(auth.profileArn) ?? auth.region
+  const region = resolveAccountRegion(auth)
   // resolveKiroEndpoint returns the full URL including /generateAssistantResponse.
   // Strip the path so the endpoint field holds only the base (what the SDK uses).
   const endpointFull = resolveKiroEndpoint(auth)
