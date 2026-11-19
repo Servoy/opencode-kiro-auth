@@ -1,5 +1,10 @@
 import { restoreToolName } from '../../infrastructure/transformers/tool-transformer.js'
 import { isTransientStreamError } from '../../plugin/health.js'
+import {
+  guardStreamIdle,
+  StreamIdleError,
+  type IdleWatchdogOptions
+} from '../../plugin/streaming/idle-watchdog.js'
 import { transformSdkStream } from '../../plugin/streaming/sdk-stream-transformer.js'
 import type { ToolNameMap } from '../../plugin/types.js'
 
@@ -23,6 +28,12 @@ export class TransientStreamError extends Error {
 }
 
 export class ResponseHandler {
+  /**
+   * @param idle bounds the silence between stream events. Left out, the stream
+   *   is read unguarded — the behaviour every caller had before the watchdog.
+   */
+  constructor(private idle?: IdleWatchdogOptions) {}
+
   /**
    * Turn a successful SDK response into the Response OpenCode reads.
    *
@@ -53,13 +64,22 @@ export class ResponseHandler {
         onCredits
       )
     }
-    const response = await this.handleSdkNonStreaming(
-      sdkResponse,
-      model,
-      conversationId,
-      toolNameMap,
-      onCredits
-    )
+    let response: Response
+    try {
+      response = await this.handleSdkNonStreaming(
+        sdkResponse,
+        model,
+        conversationId,
+        toolNameMap,
+        onCredits
+      )
+    } catch (err) {
+      onStreamEnd?.()
+      // A non-streaming body is only handed back once it is complete, so a
+      // stall leaves nothing emitted and the request stays replayable.
+      if (err instanceof StreamIdleError) throw new TransientStreamError(err.message)
+      throw err
+    }
     onStreamEnd?.()
     return response
   }
@@ -79,7 +99,14 @@ export class ResponseHandler {
     onStreamEnd?: () => void,
     onCredits?: (credits: number) => void
   ): Promise<Response> {
-    const s = transformSdkStream(sdkResponse, model, conversationId, toolNameMap, onCredits)
+    const s = transformSdkStream(
+      sdkResponse,
+      model,
+      conversationId,
+      toolNameMap,
+      onCredits,
+      this.idle
+    )
 
     let first: IteratorResult<any>
     try {
@@ -90,7 +117,10 @@ export class ResponseHandler {
       // retryable error for a transient reason, or rethrow anything else.
       onStreamEnd?.()
       const reason = err instanceof Error ? err.message : String(err)
-      if (isTransientStreamError(reason)) {
+      // A stall before the first chunk is the one stall that can be replayed in
+      // full, so it rejoins the same backoff a 503 takes rather than ending the
+      // turn. After the first chunk the watchdog can only end the stream.
+      if (err instanceof StreamIdleError || isTransientStreamError(reason)) {
         throw new TransientStreamError(reason)
       }
       throw err
@@ -138,7 +168,10 @@ export class ResponseHandler {
 
     const eventStream = sdkResponse.generateAssistantResponseResponse
     if (eventStream) {
-      for await (const event of eventStream) {
+      // Nothing is handed back until the whole body is collected, so a stall
+      // here hangs the caller just as one mid-stream does.
+      const guarded = this.idle ? guardStreamIdle(eventStream, this.idle) : eventStream
+      for await (const event of guarded) {
         if (event.assistantResponseEvent?.content) {
           content += event.assistantResponseEvent.content
         }

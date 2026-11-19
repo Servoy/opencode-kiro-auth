@@ -8,6 +8,7 @@ import * as logger from '../logger.js'
 import { getModelContextLimit } from '../model-registry.js'
 import { estimateTokens } from '../response.js'
 import type { ToolNameMap } from '../types.js'
+import { guardStreamIdle, type IdleWatchdogOptions } from './idle-watchdog.js'
 import { convertToOpenAI } from './openai-converter.js'
 import { findRealTag } from './stream-parser.js'
 import { createTextDeltaEvents, createThinkingDeltaEvents, stopBlock } from './stream-state.js'
@@ -22,13 +23,16 @@ import { StreamState, THINKING_END_TAG, THINKING_START_TAG, ToolCallState } from
  * @param toolNameMap maps sanitised tool names back to OpenCode's names
  * @param onCredits called once, after the stream is fully read, with the credits
  *   Kiro metered for this response; not called when it sent no numeric metering
+ * @param idle bounds the silence between events; omitted leaves the stream
+ *   unguarded, which is what every caller did before the watchdog existed
  */
 export async function* transformSdkStream(
   sdkResponse: any,
   model: string,
   conversationId: string,
   toolNameMap?: ToolNameMap,
-  onCredits?: (credits: number) => void
+  onCredits?: (credits: number) => void,
+  idle?: IdleWatchdogOptions
 ): AsyncGenerator<any> {
   const thinkingRequested = true
 
@@ -79,8 +83,18 @@ export async function* transformSdkStream(
     throw new Error('SDK response has no event stream')
   }
 
+  const guarded = idle
+    ? guardStreamIdle(eventStream, {
+        ...idle,
+        onSoft: (idleMs) =>
+          logger.warn(
+            `[STREAM] no event for ${Math.round(idleMs / 1000)}s convId=${conversationId} model=${model}`
+          )
+      })
+    : eventStream
+
   try {
-    for await (const event of eventStream) {
+    for await (const event of guarded) {
       if (event.reasoningContentEvent) {
         // Native reasoning stream. redactedContent is encrypted by the provider
         // and has no readable form, so only text is surfaced.

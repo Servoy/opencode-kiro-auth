@@ -12,6 +12,7 @@ import { transformToSdkRequest } from '../../plugin/request'
 import { readRequestOptions } from '../../plugin/request-options'
 import { acquireSdkClient, createSdkClient, releaseSdkClient } from '../../plugin/sdk-client'
 import { kiroDb } from '../../plugin/storage/sqlite'
+import { idleWatchdogOptions } from '../../plugin/streaming/idle-watchdog.js'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
 import type { KiroAuthDetails, ManagedAccount, SdkPreparedRequest } from '../../plugin/types'
 import { AccountSelector } from '../account/account-selector'
@@ -211,7 +212,7 @@ export class RequestHandler {
     this.accountSelector = new AccountSelector(accountManager, config, syncFromKiroCli, repository)
     this.tokenRefresher = new TokenRefresher(config, accountManager, syncFromKiroCli, repository)
     this.errorHandler = new ErrorHandler(config, accountManager)
-    this.responseHandler = new ResponseHandler()
+    this.responseHandler = new ResponseHandler(idleWatchdogOptions(config.stream_idle_timeout_ms))
     this.usageTracker = new UsageTracker(config, accountManager, repository)
     this.retryStrategy = new RetryStrategy(config)
   }
@@ -530,7 +531,7 @@ export class RequestHandler {
           if (retry < this.config.rate_limit_max_retries) {
             const delay = 1000 * Math.pow(2, retry)
             showToast(
-              `Model temporarily unavailable. Retrying in ${Math.ceil(delay / 1000)}s...`,
+              `No response from Kiro (${e.reason}). Retrying in ${Math.ceil(delay / 1000)}s...`,
               'warning'
             )
             await this.sleep(delay)

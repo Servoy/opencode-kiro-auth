@@ -305,6 +305,7 @@ so it always lists what the plugin actually does.
   "rate_limit_max_retries": 3,
   "max_request_iterations": 20,
   "request_timeout_ms": 300000,
+  "stream_idle_timeout_ms": 120000,
   "token_expiry_buffer_ms": 300000,
   "usage_sync_max_retries": 3,
   "usage_tracking_enabled": true,
@@ -326,6 +327,7 @@ so it always lists what the plugin actually does.
 - `rate_limit_max_retries`: How many times, before the error is shown instead. Default: `3`.
 - `max_request_iterations`: Attempts within one request — account switches, token refreshes, retries. Not agent steps: the guard against a request that never settles. Default: `20`.
 - `request_timeout_ms`: How long Kiro may take to _start_ answering, and how long we keep retrying one request. Not a limit on the answer: once it starts streaming it runs to the end. The wait grows with the conversation — a 300k-token history has been measured at 77 seconds. Default: `300000`.
+- `stream_idle_timeout_ms`: How long Kiro may stay silent between two events of an answer that is already streaming. `request_timeout_ms` stops counting once the response headers arrive, so without this a stream that stops mid-answer waits forever. A stall before any output is retried like a 503; after that the answer ends with an error instead of hanging. `0` turns the watchdog off. Default: `120000`.
 - `token_expiry_buffer_ms`: Refresh a token this long before it expires, so it never expires mid-answer. Default: `300000`.
 - `usage_sync_max_retries`: Attempts to read your quota. Failing leaves the last known percentage in place. Default: `3`.
 - `usage_tracking_enabled`: Track quota and warn as it runs out. Default: `true`.

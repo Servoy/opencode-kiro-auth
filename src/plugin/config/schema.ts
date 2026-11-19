@@ -75,6 +75,14 @@ export const KiroConfigSchema = z.object({
 
   request_timeout_ms: z.number().min(30000).max(600000).default(300000),
 
+  // How long Kiro may stay silent between two events of a response stream that
+  // is already open. The SDK's request timeout only covers the wait for the
+  // headers and is cleared once they arrive, so nothing bounded the gaps after
+  // that: a stream that stopped mid-answer hung until the socket died. A stall
+  // before the first chunk is replayed; after it the stream ends with an error.
+  // 0 disables the watchdog.
+  stream_idle_timeout_ms: z.number().min(0).max(600000).default(120000),
+
   token_expiry_buffer_ms: z.number().min(30000).max(300000).default(300000),
 
   usage_sync_max_retries: z.number().min(0).max(5).default(3),
@@ -141,6 +149,7 @@ export const DEFAULT_CONFIG: KiroConfig = {
   rate_limit_max_retries: 3,
   max_request_iterations: 20,
   request_timeout_ms: 300000,
+  stream_idle_timeout_ms: 120000,
   token_expiry_buffer_ms: 300000,
   usage_sync_max_retries: 3,
   usage_tracking_enabled: true,
