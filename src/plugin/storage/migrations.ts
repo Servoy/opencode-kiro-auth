@@ -1,6 +1,19 @@
 import * as logger from '../logger'
 import type { SqliteDatabase } from './database-driver'
 
+/**
+ * Bring an existing kiro.db up to the current schema.
+ *
+ * Transactions here and in KiroDatabase open with BEGIN IMMEDIATE, not a
+ * deferred BEGIN. A deferred one starts as a reader and upgrades to a writer
+ * on its first write; when another process wrote in between, SQLite refuses
+ * the upgrade with SQLITE_BUSY at once, without waiting out busy_timeout.
+ * With a dozen OpenCode instances sharing the db, a plugin load hit exactly
+ * that and failed with "database is locked" (19 Nov, 19 failed loads).
+ * IMMEDIATE takes the write lock up front, so busy_timeout applies.
+ *
+ * @param db the open database
+ */
 export function runMigrations(db: SqliteDatabase): void {
   migrateToUniqueRefreshToken(db)
   migrateRealEmailColumn(db)
@@ -398,7 +411,7 @@ function migrateToUniqueRefreshToken(db: SqliteDatabase): void {
 
   if (hasIndex) return
 
-  db.exec('BEGIN TRANSACTION')
+  db.exec('BEGIN IMMEDIATE')
   try {
     const duplicates = db
       .prepare(
@@ -458,7 +471,7 @@ function migrateRealEmailColumn(db: SqliteDatabase): void {
   const columns = db.prepare('PRAGMA table_info(accounts)').all() as any[]
   const names = new Set(columns.map((c) => c.name))
   if (names.has('real_email')) {
-    db.exec('BEGIN TRANSACTION')
+    db.exec('BEGIN IMMEDIATE')
     try {
       db.exec(
         "UPDATE accounts SET email = real_email WHERE real_email IS NOT NULL AND real_email != '' AND email LIKE 'builder-id@aws.amazon.com%'"

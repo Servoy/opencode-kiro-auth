@@ -250,7 +250,7 @@ export class KiroDatabase {
         const merged = mergeAccounts(existing, [acc])
         const deduplicated = deduplicateAccounts(merged)
 
-        this.db.exec('BEGIN TRANSACTION')
+        this.db.exec('BEGIN IMMEDIATE')
         try {
           for (const account of deduplicated) {
             this.upsertAccountInternal(account)
@@ -366,7 +366,7 @@ export class KiroDatabase {
         const merged = mergeAccounts(existing, accounts)
         const deduplicated = deduplicateAccounts(merged)
 
-        this.db.exec('BEGIN TRANSACTION')
+        this.db.exec('BEGIN IMMEDIATE')
         try {
           for (const account of deduplicated) {
             this.upsertAccountInternal(account)
@@ -393,7 +393,7 @@ export class KiroDatabase {
     await withDatabaseLock(this.path, async () => {
       const now = Date.now()
 
-      this.db.exec('BEGIN TRANSACTION')
+      this.db.exec('BEGIN IMMEDIATE')
       try {
         const stmt = this.db.prepare(
           `
@@ -770,7 +770,7 @@ export class KiroDatabase {
   setSessionAccount(sessionId: string, accountId: string, ttlDays = 7): void {
     const now = Date.now()
     const cutoff = now - ttlDays * 24 * 60 * 60 * 1000
-    this.db.exec('BEGIN TRANSACTION')
+    this.db.exec('BEGIN IMMEDIATE')
     try {
       this.db
         .prepare(
@@ -866,7 +866,7 @@ export class KiroDatabase {
   ): number {
     const now = Date.now()
     const cutoff = now - ttlDays * 24 * 60 * 60 * 1000
-    this.db.exec('BEGIN TRANSACTION')
+    this.db.exec('BEGIN IMMEDIATE')
     try {
       this.db
         .prepare(
@@ -1182,7 +1182,7 @@ export class KiroDatabase {
    */
   heartbeatInstance(version: string, source: string | undefined, ttlMs = 120_000): void {
     const now = Date.now()
-    this.db.exec('BEGIN TRANSACTION')
+    this.db.exec('BEGIN IMMEDIATE')
     try {
       this.db
         .prepare(
@@ -1259,7 +1259,7 @@ export class KiroDatabase {
   ): void {
     const now = Date.now()
     const cutoff = now - ttlDays * 24 * 60 * 60 * 1000
-    this.db.exec('BEGIN TRANSACTION')
+    this.db.exec('BEGIN IMMEDIATE')
     try {
       this.db
         .prepare(
