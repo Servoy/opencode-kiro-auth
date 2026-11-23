@@ -20,8 +20,16 @@ both OpenCode v1 and v2 hosts from the same build.
   Start URL), and Kiro Desktop (CLI-based) authentication.
 - **Auto-Sync Kiro CLI**: Imports and synchronizes active sessions from your
   local `kiro-cli` SQLite database.
-- **Gradual Context Truncation**: Trims oversized conversations to prevent an
-  error 400, keeping tool-use/tool-result pairs intact.
+- **Size-limit Handling**: Kiro caps a request at about 5 MB, which OpenCode
+  does not count (it counts tokens). A conversation over the cap is handed back
+  to OpenCode to compact; if that does not bring it under, the plugin trims the
+  oldest turns itself, keeping tool-use/tool-result pairs intact.
+- **Model Fallback**: A turn whose model Kiro cannot serve moves to the next
+  model instead of failing (`model_fallbacks`).
+- **OpenChamber Panel Data**: Writes `kiro-usage.json` with quota, credits,
+  tokens and tool use per account and session, for the
+  [Kiro Usage panel](https://github.com/Servoy/openchamber-panel). See
+  [Usage snapshot](#usage-snapshot-for-the-openchamber-panel).
 - **Intelligent Account Rotation**: Prioritizes multi-account usage based on
   lowest available quota.
 - **High-Performance Storage**: Account and usage management on native Bun/Node
@@ -344,7 +352,7 @@ so it always lists what the plugin actually does.
 - `enable_log_api_request`: Log the full request and response bodies. Heavy; `trace` is usually enough. Default: `false`.
 - `web_search_enabled`: Offer Kiro's web_search tool. Default: `true`.
 - `image_carry_forward`: Repeat an image on later turns of the conversation it arrived in. Without it the model loses sight of it after the first answer. Default: `true`.
-- `max_payload_bytes`: Trim the conversation to fit this before sending. Default: `5000000`.
+- `max_payload_bytes`: The request size, in bytes, above which a conversation is handed to OpenCode to compact, and trimmed by the plugin if it still does not fit. Kiro rejects requests above roughly 5.9 MB. Default: `5000000`.
 - `trace`: Log what each request carries and where its time went. Default: `false`.
 - `show_usage_in_model_name`: Append the account quota to every model name — the one place OpenCode renders for a provider in all its clients. Default: `true`.
 
@@ -370,6 +378,9 @@ on rather than describing them.
 - SQLite Database: `%APPDATA%\opencode\kiro.db`
 - Plugin Config: `%APPDATA%\opencode\kiro.json`
 
+- Usage snapshot: `~/.config/opencode/kiro-usage.json` (`%APPDATA%\opencode\kiro-usage.json` on Windows)
+- Log: `~/.config/opencode/kiro-plugin.log` (`%APPDATA%\opencode\kiro-plugin.log` on Windows)
+
 ### Relocating the storage directory
 
 The plugin follows OpenCode's own directory resolution. You can override it with
@@ -385,6 +396,46 @@ your shell config, so set it where the OS passes it to apps and restart the host
 
 - **macOS:** `launchctl setenv KIRO_IGNORE_XDG true`
 - **Windows:** `setx KIRO_IGNORE_XDG true` (bare `true`, no quotes)
+
+## Usage snapshot for the OpenChamber panel
+
+The plugin writes `kiro-usage.json` next to `kiro.db` for the
+[Kiro Usage panel](https://github.com/Servoy/openchamber-panel) in OpenChamber
+(install it from that repository's URL under **Settings → Extensions**). The
+file is replaced atomically, so a reader never sees half a file. Any tool can
+read it. `schema` says which insight fields the writing plugin
+knows (2 from 2.11; absent or lower means an older plugin), and `pluginVersion`
+and `pluginInstances` show which versions are loaded.
+
+| Field | What it holds |
+| --- | --- |
+| `accounts[]` | Per account: used, limit and percentage, plan, overage, when the quota resets and `daysUntilReset`. The last known details are kept in `kiro.db`, so a freshly started instance does not blank them. |
+| `burn[]` | Per account over 7 days: `requests` (every request, exact), `credits` (metered), `creditsSince`, and `counterDelta` with `counterSince`. |
+| `sessions[]` | The 50 most recent sessions: requests, credits, the accounts that served them, and from OpenCode their `tokens`, `tools`, `toolCalls` and `turns`. `sessionsTotal` is the true count behind the list. |
+| `tools`, `tokens` | 7-day totals across all Kiro sessions. |
+| `creditsSource`, `meteredSince` | Credits are the sum of what Kiro meters per response. `meteredSince` is when this database began doing so. |
+
+How to read the numbers:
+
+- **Credits** are what Kiro reports per response (`meteringEvent.usage`), booked
+  on the session and the account that served it. `burn[].credits` counts only
+  sessions that began at or after `meteredSince`, so until older sessions leave
+  the 7-day window it is a lower bound. Before 2.11 each plugin instance booked
+  the same account delta, which roughly doubled the totals.
+- **`counterDelta`** is how far Kiro's own credit counter moved. It is the exact
+  spend whatever booked it, but only from the first reading the plugin recorded
+  (`counterSince`); readings are kept for about a week.
+- **Tokens are estimates.** Kiro reports no token usage. Output is estimated at
+  about 4 characters per token, and input is derived from the context percentage
+  and the model's window. A panel should label them as estimates.
+- **Tokens, tools and turns come from OpenCode's own database**, opened
+  read-only, for Kiro sessions only and summed over a session and its subagents.
+  When it cannot be read, those fields are absent: absent means "not reported",
+  never 0.
+
+The log is for debugging, not statistics. `kiro-plugin.log` carries per-request
+lines (`[CREDITS]`, `[TIMING]`, `[PAYLOAD]`) only with `"trace": true` in
+`kiro.json`; use `kiro-usage.json` for anything a panel shows.
 
 ## Releases
 
