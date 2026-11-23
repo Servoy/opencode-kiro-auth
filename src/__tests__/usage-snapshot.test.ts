@@ -137,7 +137,11 @@ describe('writeUsageSnapshot insight fields', () => {
   test('writes schema, sessionsTotal and burn[].requests from real session usage', async () => {
     const { kiroDb } = await import('../plugin/storage/sqlite.js')
     const { getConfigDir } = await import('../plugin/config/paths.js')
-    for (const row of kiroDb.getAccounts()) await kiroDb.deleteAccount(row.id)
+    for (const row of kiroDb.getAccounts())
+      await kiroDb.deleteAccount(row.id)
+      // The db is shared by every test file in the process, and sessionsTotal
+      // counts all of them, so start from none rather than from whoever ran first.
+    ;(kiroDb as any).db.exec('DELETE FROM session_usage')
 
     kiroDb.recordSessionRequest('s1', 'acc-1')
     kiroDb.recordSessionRequest('s1', 'acc-1') // same session, +1 request
